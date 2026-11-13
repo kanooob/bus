@@ -3,6 +3,7 @@ package com.example.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.BuildConfig
 import com.example.data.local.PreferencesManager
 import com.example.data.model.BusVehicle
 import com.example.data.model.DepartureComparison
@@ -10,6 +11,8 @@ import com.example.data.model.GtfsStop
 import com.example.data.model.IdeCycleStation
 import com.example.data.model.ParkAndRide
 import com.example.data.model.TrafficAlert
+import com.example.data.remote.AppUpdateState
+import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.IdelisSiriService
 import com.example.data.repository.IdelisRepository
 import kotlinx.coroutines.Job
@@ -83,7 +86,17 @@ data class TransitBoardUiState(
     val queryTypeParam: String = com.example.data.local.PreferencesManager.DEFAULT_QUERY_TYPE,
     val githubRepo: String = com.example.data.local.PreferencesManager.DEFAULT_GITHUB_REPO,
     val githubTag: String = com.example.data.local.PreferencesManager.DEFAULT_GITHUB_TAG,
-    val lastGtfsSyncTimestamp: Long = 0L
+    val lastGtfsSyncTimestamp: Long = 0L,
+    // Arrêt non desservi ("Cet arrêt n'est pas desservi...")
+    val isStopNotServed: Boolean = false,
+    val notServedMessage: String? = null,
+    // Info Trafic en direct (?type=777 requete=infostrafic)
+    val isTrafficLoading: Boolean = false,
+    val trafficErrorMessage: String? = null,
+    // Mise à jour automatique GitHub (vérification + téléchargement Wi-Fi + installation APK)
+    val appUpdateState: AppUpdateState = AppUpdateState.Idle,
+    val updatePromptVisible: Boolean = false,
+    val isWifiConnected: Boolean = false
 )
 
 class TransitBoardViewModel(
@@ -112,6 +125,7 @@ class TransitBoardViewModel(
     private var tickerJob: Job? = null
     private var periodicSyncJob: Job? = null
     private var webSearchJob: Job? = null
+    private var updateJob: Job? = null
     private val REFRESH_INTERVAL_SECONDS = 60
 
     init {
@@ -120,6 +134,7 @@ class TransitBoardViewModel(
         loadComplementaryData()
         startAutoRefreshTicker()
         startPeriodicSyncJob()
+        checkForAppUpdate(autoDownloadOnWifi = true)
     }
 
     private fun downloadDataOnLaunch() {
@@ -179,17 +194,45 @@ class TransitBoardViewModel(
             val pr = repository.getParkAndRide()
             val bikes = repository.getIdeCycleStations()
             val fleet = repository.getFleetVehicles()
-            val alerts = repository.getTrafficAlerts()
 
             _uiState.update {
                 it.copy(
                     parkAndRides = pr,
                     ideCycleStations = bikes,
                     fleetVehicles = fleet,
-                    trafficAlerts = alerts,
                     activePeriod = repository.getCurrentPeriod(),
                     worksNotes = repository.getWorksAlerts()
                 )
+            }
+        }
+        refreshTrafficAlerts()
+    }
+
+    /**
+     * Exécute la requête POST https://www.idelis.fr/?type=777 (requete=infostrafic&requete_val[lignesfav]=0)
+     * et remplace le contenu de la catégorie info par les alertes parsées.
+     */
+    fun refreshTrafficAlerts() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isTrafficLoading = true, trafficErrorMessage = null) }
+            val result = repository.fetchLiveTrafficAlerts()
+            if (result.isSuccess) {
+                _uiState.update {
+                    it.copy(
+                        trafficAlerts = result.getOrNull().orEmpty(),
+                        isTrafficLoading = false,
+                        trafficErrorMessage = null
+                    )
+                }
+            } else {
+                _uiState.update {
+                    it.copy(
+                        trafficAlerts = emptyList(),
+                        isTrafficLoading = false,
+                        trafficErrorMessage = result.exceptionOrNull()?.localizedMessage
+                            ?: "Impossible de récupérer les infos trafic idelis.fr"
+                    )
+                }
             }
         }
     }
@@ -314,13 +357,13 @@ class TransitBoardViewModel(
 
     /**
      * Sélectionne un arrêt renvoyé par l'autocomplétion idelis.fr.
-     * Enregistre l'arrêt avec son pôle exact et lance la requête des prochains passages direct (?type=777).
+     * Enregistre l'arrêt avec son pôle exact et lance la requête des prochains passages direct (?type=777),
+     * tout en conservant le texte recherché ET les résultats de recherche.
      */
     fun selectWebStop(webStop: com.example.data.model.IdelisWebStop) {
         viewModelScope.launch {
             val stop = repository.saveWebStop(webStop)
             selectStop(stop)
-            _uiState.update { it.copy(webSuggestions = emptyList()) }
         }
     }
 
@@ -518,7 +561,9 @@ class TransitBoardViewModel(
                     isOfflineFallback = result.isOfflineFallback,
                     statusMessage = result.statusMessage,
                     lastUpdatedFormatted = updatedStr,
-                    secondsUntilRefresh = REFRESH_INTERVAL_SECONDS
+                    secondsUntilRefresh = REFRESH_INTERVAL_SECONDS,
+                    isStopNotServed = result.isStopNotServed,
+                    notServedMessage = result.notServedMessage
                 )
             }
         }
@@ -683,10 +728,167 @@ class TransitBoardViewModel(
         }
     }
 
+    fun refreshWifiStatus() {
+        val ctx = repository.appContext ?: return
+        val wifi = repository.updaterService.isWifiConnected(ctx)
+        _uiState.update { it.copy(isWifiConnected = wifi) }
+    }
+
+    /**
+     * Vérifie s'il existe une nouvelle version sur GitHub (https://github.com/kanooob/bus).
+     * Si une mise à jour avec APK est disponible et que l'appareil est en Wi-Fi, lance le téléchargement automatiquement.
+     */
+    fun checkForAppUpdate(autoDownloadOnWifi: Boolean = true, manualCheck: Boolean = false) {
+        val ctx = repository.appContext
+        val wifiConnected = ctx?.let { repository.updaterService.isWifiConnected(it) } ?: false
+        _uiState.update {
+            it.copy(
+                appUpdateState = AppUpdateState.Checking,
+                isWifiConnected = wifiConnected
+            )
+        }
+
+        updateJob?.cancel()
+        updateJob = viewModelScope.launch {
+            val repoUrl = _uiState.value.githubRepo.ifBlank {
+                com.example.data.local.PreferencesManager.DEFAULT_GITHUB_REPO
+            }
+            val currentVersion = BuildConfig.VERSION_NAME
+            val checkRes = repository.updaterService.checkLatestRelease(
+                repoUrl = repoUrl,
+                currentVersion = currentVersion
+            )
+
+            if (checkRes.isFailure) {
+                val errMsg = checkRes.exceptionOrNull()?.localizedMessage
+                    ?: "Erreur lors de la vérification GitHub"
+                _uiState.update {
+                    it.copy(
+                        appUpdateState = if (manualCheck) AppUpdateState.Error(errMsg) else AppUpdateState.Idle
+                    )
+                }
+                return@launch
+            }
+
+            val release = checkRes.getOrNull()!!
+            if (!release.isNewerThanCurrent) {
+                _uiState.update {
+                    it.copy(
+                        appUpdateState = AppUpdateState.UpToDate(currentVersion),
+                        updatePromptVisible = false
+                    )
+                }
+                return@launch
+            }
+
+            val isWifiNow = ctx?.let { repository.updaterService.isWifiConnected(it) } ?: false
+            _uiState.update { it.copy(isWifiConnected = isWifiNow, updatePromptVisible = true) }
+
+            if (autoDownloadOnWifi && isWifiNow && ctx != null && !release.apkDownloadUrl.isNullOrBlank()) {
+                startApkDownload(ctx, release)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        appUpdateState = AppUpdateState.UpdateAvailableWaitingWifi(release),
+                        updatePromptVisible = true
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Télécharge l'APK de la release détectée (en vérifiant le Wi-Fi sauf si l'utilisateur force le téléchargement).
+     */
+    fun downloadPendingUpdate(forceWithoutWifi: Boolean = false) {
+        val ctx = repository.appContext ?: return
+        val release: GitHubReleaseInfo = when (val st = _uiState.value.appUpdateState) {
+            is AppUpdateState.UpdateAvailableWaitingWifi -> st.release
+            is AppUpdateState.Error -> return
+            is AppUpdateState.ReadyToInstall -> return
+            is AppUpdateState.Downloading -> return
+            else -> return
+        }
+
+        val isWifiNow = repository.updaterService.isWifiConnected(ctx)
+        _uiState.update { it.copy(isWifiConnected = isWifiNow) }
+        if (!forceWithoutWifi && !isWifiNow) {
+            _uiState.update {
+                it.copy(
+                    appUpdateState = AppUpdateState.UpdateAvailableWaitingWifi(release),
+                    updatePromptVisible = true
+                )
+            }
+            return
+        }
+
+        updateJob?.cancel()
+        updateJob = viewModelScope.launch {
+            startApkDownload(ctx, release)
+        }
+    }
+
+    private suspend fun startApkDownload(ctx: android.content.Context, release: GitHubReleaseInfo) {
+        _uiState.update {
+            it.copy(
+                appUpdateState = AppUpdateState.Downloading(
+                    release = release,
+                    progressPercent = 0,
+                    downloadedBytes = 0L,
+                    totalBytes = release.apkSizeBytes
+                ),
+                updatePromptVisible = true
+            )
+        }
+
+        val dlResult = repository.updaterService.downloadApk(
+            context = ctx,
+            release = release
+        ) { percent, downloaded, total ->
+            _uiState.update {
+                it.copy(
+                    appUpdateState = AppUpdateState.Downloading(
+                        release = release,
+                        progressPercent = percent,
+                        downloadedBytes = downloaded,
+                        totalBytes = total
+                    )
+                )
+            }
+        }
+
+        if (dlResult.isSuccess) {
+            val file = dlResult.getOrNull()!!
+            _uiState.update {
+                it.copy(
+                    appUpdateState = AppUpdateState.ReadyToInstall(
+                        release = release,
+                        apkFilePath = file.absolutePath
+                    ),
+                    updatePromptVisible = true
+                )
+            }
+        } else {
+            _uiState.update {
+                it.copy(
+                    appUpdateState = AppUpdateState.Error(
+                        dlResult.exceptionOrNull()?.localizedMessage ?: "Échec du téléchargement de la mise à jour"
+                    ),
+                    updatePromptVisible = true
+                )
+            }
+        }
+    }
+
+    fun dismissUpdatePrompt() {
+        _uiState.update { it.copy(updatePromptVisible = false) }
+    }
+
     override fun onCleared() {
         super.onCleared()
         tickerJob?.cancel()
         periodicSyncJob?.cancel()
+        updateJob?.cancel()
     }
 }
 

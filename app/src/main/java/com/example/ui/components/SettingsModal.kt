@@ -22,12 +22,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -35,6 +38,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -57,7 +61,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.BuildConfig
 import com.example.data.model.GtfsSyncReport
+import com.example.data.remote.AppUpdateState
 import com.example.ui.theme.SketchBlack
 import com.example.ui.theme.SketchRed
 import java.text.SimpleDateFormat
@@ -85,6 +91,11 @@ fun SettingsModal(
     githubRepo: String = "",
     githubTag: String = "",
     lastGtfsSyncTimestamp: Long = 0L,
+    appUpdateState: AppUpdateState = AppUpdateState.Idle,
+    isWifiConnected: Boolean = false,
+    onCheckForUpdate: () -> Unit = {},
+    onDownloadUpdate: (forceWithoutWifi: Boolean) -> Unit = {},
+    onInstallUpdate: (apkFilePath: String) -> Unit = {},
     onSaveAdvancedSettings: (webUrl: String, gtfsUrl: String, siriUrl: String, queryParam: String, githubRepo: String, githubTag: String) -> Unit = { _, _, _, _, _, _ -> },
     onResetAdvancedUrls: () -> Unit = {},
     onDismissRequest: () -> Unit,
@@ -491,15 +502,179 @@ fun SettingsModal(
                             ) {
                                 Row(
                                     modifier = Modifier.padding(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = "📦 App ID : fr.galaxie.bus • v1.0.0",
+                                        text = "📦 ${BuildConfig.APPLICATION_ID} • v${BuildConfig.VERSION_NAME}",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 11.5.sp,
-                                        color = Color(0xFF4338CA)
+                                        color = if (isDarkTheme) Color(0xFFA5B4FC) else Color(0xFF4338CA)
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Wifi,
+                                            contentDescription = null,
+                                            tint = if (isWifiConnected) Color(0xFF2E7D32) else Color.Gray,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (isWifiConnected) "Wi-Fi" else "Hors Wi-Fi",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isWifiConnected) Color(0xFF2E7D32) else Color.Gray
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Bouton vérifier les mises à jour sur GitHub
+                            Button(
+                                onClick = onCheckForUpdate,
+                                enabled = appUpdateState !is AppUpdateState.Checking && appUpdateState !is AppUpdateState.Downloading,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("check_github_update_button"),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF4F46E5),
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                if (appUpdateState is AppUpdateState.Checking) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = Color.White,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Vérification GitHub...", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                } else {
+                                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Vérifier les mises à jour", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            }
+
+                            // Affichage dynamique de l'état de mise à jour
+                            when (appUpdateState) {
+                                is AppUpdateState.UpToDate -> {
+                                    Text(
+                                        text = "✓ Application à jour (v${appUpdateState.currentVersion})",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = Color(0xFF2E7D32),
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     )
                                 }
+                                is AppUpdateState.UpdateAvailableWaitingWifi -> {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFFF59E0B).copy(alpha = 0.12f))
+                                            .padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "Nouvelle version disponible : ${appUpdateState.release.tagName}",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 12.5.sp,
+                                            color = contentColor
+                                        )
+                                        Text(
+                                            text = if (isWifiConnected) {
+                                                "Prête au téléchargement en Wi-Fi."
+                                            } else {
+                                                "En attente du Wi-Fi pour télécharger automatiquement l'APK."
+                                            },
+                                            fontSize = 11.sp,
+                                            color = Color.Gray
+                                        )
+                                        if (!appUpdateState.release.apkDownloadUrl.isNullOrBlank()) {
+                                            Button(
+                                                onClick = { onDownloadUpdate(true) },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = Color(0xFFD97706),
+                                                    contentColor = Color.White
+                                                ),
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Icon(imageVector = Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = if (isWifiConnected) "Télécharger (Wi-Fi)" else "Télécharger maintenant",
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                is AppUpdateState.Downloading -> {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF0288D1).copy(alpha = 0.12f))
+                                            .padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "Téléchargement ${appUpdateState.release.tagName} (${appUpdateState.progressPercent}%)",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = contentColor
+                                        )
+                                        LinearProgressIndicator(
+                                            progress = { (appUpdateState.progressPercent / 100f).coerceIn(0f, 1f) },
+                                            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                            color = Color(0xFF0288D1)
+                                        )
+                                    }
+                                }
+                                is AppUpdateState.ReadyToInstall -> {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF2E7D32).copy(alpha = 0.12f))
+                                            .padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "Mise à jour ${appUpdateState.release.tagName} téléchargée !",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 12.5.sp,
+                                            color = Color(0xFF2E7D32)
+                                        )
+                                        Button(
+                                            onClick = { onInstallUpdate(appUpdateState.apkFilePath) },
+                                            modifier = Modifier.fillMaxWidth().testTag("settings_install_apk_button"),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = Color(0xFF2E7D32),
+                                                contentColor = Color.White
+                                            ),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(imageVector = Icons.Default.InstallMobile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Installer la mise à jour", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                                is AppUpdateState.Error -> {
+                                    Text(
+                                        text = "⚠ ${appUpdateState.message}",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = SketchRed,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    )
+                                }
+                                AppUpdateState.Idle, AppUpdateState.Checking -> {}
                             }
 
                             Text(

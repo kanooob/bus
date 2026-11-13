@@ -1,8 +1,10 @@
 package com.example
 
+import com.example.data.remote.GitHubUpdaterService
 import com.example.data.remote.IdelisWebScraperService
 import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,6 +12,7 @@ import org.junit.Test
 class IdelisWebScraperTest {
 
     private val service = IdelisWebScraperService()
+    private val updater = GitHubUpdaterService()
 
     @Test
     fun testAutocompleteHtmlParsing() {
@@ -84,5 +87,85 @@ class IdelisWebScraperTest {
         assertTrue(timeBoxes[0].text().contains("6 min"))
         assertEquals("33 min", timeBoxes[1].text().trim())
         assertEquals("15:41", timeBoxes[2].text().trim())
+    }
+
+    @Test
+    fun testStopNotServedDetectionAndFiltering() {
+        val mixedHtml = """
+            <div class="alert alert-warning">Cet arrêt n'est pas desservi par la ligne T1 jusqu'à nouvel ordre.</div>
+            <div class="ligne-group">
+                <div class="row">
+                    <div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/T1.png" alt="Ligne T1" /></div>
+                </div>
+                <div class="row">
+                    <div class="col-12"><span class="text-black-50">Direction: PAU Cité Multimédia</span></div>
+                </div>
+                <div class="row">
+                    <div class="col-12"><div class="p-1 text-center border rounded">Cet arrêt n'est pas desservi</div></div>
+                </div>
+            </div>
+            <div class="ligne-group">
+                <div class="row">
+                    <div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" /></div>
+                </div>
+                <div class="row">
+                    <div class="col-12"><span class="text-black-50">Direction: PAU Gare de Pau - Arrêt: Bosquet</span></div>
+                </div>
+                <div class="row">
+                    <div class="col-3 pr-1">
+                        <div class="p-1 text-center border rounded text-white bg-primary">4 min</div>
+                    </div>
+                </div>
+            </div>
+        """.trimIndent()
+
+        val result = service.parseStopMonitoringHtml("Bosquet", mixedHtml)
+        assertTrue(result.isStopNotServed)
+        assertNotNull(result.notServedMessage)
+        assertEquals(1, result.departures.size)
+        assertEquals("F", result.departures[0].lineRef)
+        assertEquals("4 min", result.departures[0].timeText)
+    }
+
+    @Test
+    fun testInfosTraficHtmlParsing() {
+        val sampleHtml = """
+            <div class="alert-item">
+                <div class="alert-pictos">
+                    <img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" />
+                    <img class="picto-ligne" src="/fileadmin/user_upload/pictos/T1.png" alt="Ligne T1" />
+                </div>
+                <h4 class="alert-title">Travaux Rue Barthou</h4>
+                <p class="alert-description">Déviation mise en place du 12 au 20 novembre.</p>
+                <a href="/?type=778&tx_deviation=42" class="btn">Voir le plan de déviation</a>
+            </div>
+        """.trimIndent()
+
+        val alerts = service.parseInfosTraficHtml(sampleHtml)
+        assertEquals(1, alerts.size)
+        val alert = alerts[0]
+        assertEquals("Travaux Rue Barthou", alert.title)
+        assertEquals("Déviation mise en place du 12 au 20 novembre.", alert.description)
+        assertEquals(listOf("F", "T1"), alert.affectedLines)
+        assertEquals(
+            listOf(
+                "https://www.idelis.fr/fileadmin/user_upload/pictos/F.png",
+                "https://www.idelis.fr/fileadmin/user_upload/pictos/T1.png"
+            ),
+            alert.affectedLinePictos
+        )
+        assertEquals("https://www.idelis.fr/?type=778&tx_deviation=42", alert.deviationLink)
+    }
+
+    @Test
+    fun testGitHubUpdaterVersionAndRepoParsing() {
+        val (owner, repo) = updater.parseOwnerAndRepo("https://github.com/kanooob/bus")
+        assertEquals("kanooob", owner)
+        assertEquals("bus", repo)
+
+        assertTrue(updater.isNewerVersion("v1.0.1", "1.0"))
+        assertTrue(updater.isNewerVersion("v2.0", "1.9.9"))
+        assertFalse(updater.isNewerVersion("v1.0", "1.0"))
+        assertFalse(updater.isNewerVersion("0.9.5", "1.0"))
     }
 }

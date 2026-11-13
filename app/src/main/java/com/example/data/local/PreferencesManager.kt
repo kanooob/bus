@@ -43,8 +43,8 @@ class PreferencesManager(context: Context) {
         const val DEFAULT_GTFS_ZIP_URL = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
         const val DEFAULT_SIRI_URL = "https://api.idelis.fr/siri/2.0"
         const val DEFAULT_QUERY_TYPE = "777"
-        const val DEFAULT_GITHUB_REPO = "https://github.com/galaxie-bus/galaxie-bus"
-        const val DEFAULT_GITHUB_TAG = "v1.0"
+        const val DEFAULT_GITHUB_REPO = "https://github.com/kanooob/bus"
+        const val DEFAULT_GITHUB_TAG = "latest"
     }
 
     fun getLastSelectedStopId(): String? = prefs.getString(KEY_LAST_STOP_ID, null)
@@ -126,7 +126,14 @@ class PreferencesManager(context: Context) {
     }
 
     // Gestion GitHub
-    fun getGithubRepo(): String = prefs.getString(KEY_GITHUB_REPO, DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
+    fun getGithubRepo(): String {
+        val saved = prefs.getString(KEY_GITHUB_REPO, DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
+        return if (saved.contains("galaxie-bus/galaxie-bus", ignoreCase = true) || saved.isBlank()) {
+            DEFAULT_GITHUB_REPO
+        } else {
+            saved
+        }
+    }
 
     fun saveGithubRepo(repo: String) {
         prefs.edit().putString(KEY_GITHUB_REPO, repo.trim()).apply()

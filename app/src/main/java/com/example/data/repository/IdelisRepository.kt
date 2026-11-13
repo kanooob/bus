@@ -18,6 +18,7 @@ import com.example.data.model.IdelisWebMonitoringResult
 import com.example.data.model.IdelisWebStop
 import com.example.data.model.TrafficAlert
 import com.example.data.model.GtfsSyncReport
+import com.example.data.remote.GitHubUpdaterService
 import com.example.data.remote.GtfsDownloadService
 import com.example.data.remote.IdelisExploreService
 import com.example.data.remote.IdelisSiriService
@@ -39,7 +40,9 @@ data class DeparturesResult(
     val departures: List<DepartureComparison>,
     val isOfflineFallback: Boolean,
     val isSimulation: Boolean = false,
-    val statusMessage: String
+    val statusMessage: String,
+    val isStopNotServed: Boolean = false,
+    val notServedMessage: String? = null
 )
 
 /**
@@ -49,13 +52,14 @@ data class DeparturesResult(
  */
 class IdelisRepository(
     private val database: IdelisDatabase,
-    private val context: android.content.Context? = null,
+    val appContext: android.content.Context? = null,
     val preferencesManager: com.example.data.local.PreferencesManager? = null,
     val siriService: IdelisSiriService = IdelisSiriService(),
     val exploreService: IdelisExploreService = IdelisExploreService(),
     val gtfsDownloadService: GtfsDownloadService = GtfsDownloadService(database),
-    val routeStopsRepository: RouteStopsRepository = RouteStopsRepository(context),
-    val webScraperService: IdelisWebScraperService = IdelisWebScraperService()
+    val routeStopsRepository: RouteStopsRepository = RouteStopsRepository(appContext),
+    val webScraperService: IdelisWebScraperService = IdelisWebScraperService(),
+    val updaterService: GitHubUpdaterService = GitHubUpdaterService()
 ) {
 
     init {
@@ -412,11 +416,35 @@ class IdelisRepository(
             val webResult = webScraperService.getStopMonitoring(poleName)
             if (webResult.isSuccess) {
                 val monitoring = webResult.getOrNull()
-                if (monitoring != null && monitoring.departures.isNotEmpty()) {
-                    val comparisons = compareWebDeparturesWithTheoretical(
-                        webDepartures = monitoring.departures,
-                        theoreticalDepartures = theoreticalDepartures
-                    )
+                if (monitoring != null) {
+                    val cleanWebDeps = monitoring.departures.filterNot { dep ->
+                        webScraperService.containsNotServedText(dep.direction) ||
+                            webScraperService.containsNotServedText(dep.timeText) ||
+                            webScraperService.containsNotServedText(dep.lineName) ||
+                            webScraperService.containsNotServedText(dep.stopQuai)
+                    }
+
+                    val comparisons = if (cleanWebDeps.isNotEmpty()) {
+                        compareWebDeparturesWithTheoretical(
+                            webDepartures = cleanWebDeps,
+                            theoreticalDepartures = theoreticalDepartures
+                        )
+                    } else {
+                        emptyList()
+                    }
+
+                    if (monitoring.isStopNotServed) {
+                        Log.d(TAG, "Arrêt '$poleName' signalé non desservi (${comparisons.size} autres passages valides)")
+                        return@withContext DeparturesResult(
+                            departures = comparisons,
+                            isOfflineFallback = false,
+                            isSimulation = false,
+                            statusMessage = monitoring.notServedMessage ?: "Cet arrêt n'est pas desservi",
+                            isStopNotServed = true,
+                            notServedMessage = monitoring.notServedMessage
+                        )
+                    }
+
                     if (comparisons.isNotEmpty()) {
                         Log.d(TAG, "Flux idelis.fr direct actif pour '$poleName': ${comparisons.size} passages temps réel")
                         return@withContext DeparturesResult(
@@ -732,8 +760,14 @@ class IdelisRepository(
         val parisTz = TimeZone.getTimeZone("Europe/Paris")
         val nowCal = Calendar.getInstance(parisTz)
 
-        // Conformément à la consigne : n'afficher que les passages temps réel issus de la requête
-        val liveDepartures = webDepartures.filter { it.isRealTime }
+        // Conformément à la consigne : n'afficher que les passages temps réel issus de la requête,
+        // et exclure tout passage contenant "Cet arrêt n'est pas desservi"
+        val liveDepartures = webDepartures.filter { dep ->
+            dep.isRealTime &&
+                !webScraperService.containsNotServedText(dep.direction) &&
+                !webScraperService.containsNotServedText(dep.timeText) &&
+                !webScraperService.containsNotServedText(dep.lineName)
+        }
         if (liveDepartures.isEmpty()) return emptyList()
 
         return liveDepartures.mapIndexed { index, dep ->
@@ -1002,21 +1036,30 @@ class IdelisRepository(
 
     suspend fun getFleetVehicles(): List<BusVehicle> = exploreService.fetchFleetVehicles().getOrElse { emptyList() }
 
-    fun getTrafficAlerts(): List<TrafficAlert> {
-        val staticAlerts = exploreService.getTrafficAlerts()
-        if (globalWorksAlerts.isEmpty()) return staticAlerts
-
-        val dynamicAlerts = globalWorksAlerts.mapIndexed { idx, work ->
-            TrafficAlert(
-                id = "WORKS_GTFS_$idx",
-                title = "Travaux & Adaptations Idelis",
-                messageText = work,
-                affectedLines = emptyList(),
-                severity = "WARNING",
-                publishedDate = "Calendrier GTFS Idelis"
-            )
+    /**
+     * Récupère les alertes info trafic en direct depuis la requête POST https://www.idelis.fr/?type=777
+     * (requete=infostrafic&requete_val%5Blignesfav%5D=0), parsées avec Jsoup.
+     */
+    suspend fun fetchLiveTrafficAlerts(): Result<List<TrafficAlert>> = withContext(Dispatchers.IO) {
+        val result = webScraperService.getInfosTrafic()
+        result.map { webAlerts ->
+            webAlerts.map { item ->
+                TrafficAlert(
+                    id = item.id,
+                    title = item.title,
+                    messageText = item.description,
+                    affectedLines = item.affectedLines,
+                    severity = "WARNING",
+                    publishedDate = item.publishedDate.ifBlank { "En cours • idelis.fr" },
+                    affectedLinePictos = item.affectedLinePictos,
+                    deviationLink = item.deviationLink
+                )
+            }
         }
-        return dynamicAlerts + staticAlerts
+    }
+
+    fun getTrafficAlerts(): List<TrafficAlert> {
+        return emptyList()
     }
 
     private fun getRouteColors(lineRef: String): Pair<String, String> {

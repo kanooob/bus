@@ -456,12 +456,20 @@ fun StopPickerModal(
                         items(webSuggestions, key = { "web_${it.pole}_${it.name}" }) { webStop ->
                             val webStopId = cleanStopIdForWeb(webStop.pole)
                             val isFav = favoriteStopIds.contains(webStopId)
+                            val isSelected = selectedStop?.stopId == webStopId ||
+                                selectedStop?.parentStation.equals(webStop.pole, ignoreCase = true)
 
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isFav) Color(0xFFFFB300).copy(alpha = 0.12f) else SketchRed.copy(alpha = 0.10f))
+                                    .background(
+                                        when {
+                                            isSelected -> SketchRed.copy(alpha = 0.16f)
+                                            isFav -> Color(0xFFFFB300).copy(alpha = 0.12f)
+                                            else -> SketchRed.copy(alpha = 0.10f)
+                                        }
+                                    )
                                     .clickable {
                                         onWebStopSelected(webStop)
                                         onDismissRequest()
@@ -497,7 +505,7 @@ fun StopPickerModal(
                                             text = webStop.name,
                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                 fontWeight = FontWeight.Black,
-                                                color = contentColor
+                                                color = if (isSelected) SketchRed else contentColor
                                             ),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -516,20 +524,29 @@ fun StopPickerModal(
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "En direct",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            color = Color(0xFF2E7D32),
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 10.sp
-                                        ),
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(Color(0xFF2E7D32).copy(alpha = 0.12f))
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-
-                                    Spacer(modifier = Modifier.width(4.dp))
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = "Sélectionné",
+                                            tint = SketchRed,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    } else {
+                                        Text(
+                                            text = "En direct",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = Color(0xFF2E7D32),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 10.sp
+                                            ),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0xFF2E7D32).copy(alpha = 0.12f))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
 
                                     // Bouton étoile permettant de mettre en favori l'arrêt reçu par requête
                                     IconButton(

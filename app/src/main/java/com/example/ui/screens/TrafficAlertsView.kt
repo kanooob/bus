@@ -1,9 +1,13 @@
 package com.example.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,21 +22,26 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.data.model.TrafficAlert
 import com.example.ui.theme.IdelisGold
 import com.example.ui.theme.StatusDelayed
@@ -65,7 +74,7 @@ fun TrafficAlertsView(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Source : Flux SIRI SOAP GetGeneralMessage (api.idelis.fr/siri.svc)",
+                    text = "Source : Flux direct idelis.fr (?type=777 • infostrafic)",
                     style = MaterialTheme.typography.bodySmall.copy(color = TextMuted)
                 )
                 Spacer(modifier = Modifier.height(8.dp))
@@ -78,11 +87,13 @@ fun TrafficAlertsView(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TrafficAlertCard(
     alert: TrafficAlert,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val isWarning = alert.severity.equals("WARNING", ignoreCase = true)
     val accentColor = if (isWarning) StatusDelayed else StatusGreen
 
@@ -128,30 +139,71 @@ fun TrafficAlertCard(
                 )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            if (alert.messageText.isNotBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = alert.messageText,
+                    style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary, lineHeight = 20.sp)
+                )
+            }
 
-            Text(
-                text = alert.messageText,
-                style = MaterialTheme.typography.bodyMedium.copy(color = TextSecondary, lineHeight = 20.sp)
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                alert.affectedLines.forEach { line ->
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(IdelisGold.copy(alpha = 0.2f))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "Ligne $line",
-                            color = IdelisGold,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
+            if (alert.affectedLinePictos.isNotEmpty() || alert.affectedLines.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    alert.affectedLinePictos.forEach { pictoUrl ->
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(pictoUrl)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "Picto ligne impactée",
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(6.dp)),
+                            contentScale = ContentScale.Fit
                         )
                     }
+                    if (alert.affectedLinePictos.isEmpty()) {
+                        alert.affectedLines.forEach { line ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(IdelisGold.copy(alpha = 0.2f))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "Ligne $line",
+                                    color = IdelisGold,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!alert.deviationLink.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(alert.deviationLink)))
+                        } catch (_: Exception) {}
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        tint = IdelisGold,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Voir la déviation", color = IdelisGold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }

@@ -30,5 +30,20 @@ data class IdelisWebDeparture(
 data class IdelisWebMonitoringResult(
     val pole: String,
     val departures: List<IdelisWebDeparture>,
-    val alertMessage: String? = null
+    val alertMessage: String? = null,
+    val isStopNotServed: Boolean = false,
+    val notServedMessage: String? = null
+)
+
+/**
+ * Modèle d'alerte info trafic extrait de la requête POST requete=infostrafic sur idelis.fr (?type=777).
+ */
+data class IdelisWebTrafficAlert(
+    val id: String,
+    val title: String,
+    val description: String,
+    val affectedLines: List<String>,
+    val affectedLinePictos: List<String>,
+    val deviationLink: String?,
+    val publishedDate: String = ""
 )

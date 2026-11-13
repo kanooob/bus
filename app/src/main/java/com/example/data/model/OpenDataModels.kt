@@ -50,7 +50,9 @@ data class TrafficAlert(
     val messageText: String,
     val affectedLines: List<String>,
     val severity: String, // "INFO", "WARNING", "DISRUPTION"
-    val publishedDate: String
+    val publishedDate: String,
+    val affectedLinePictos: List<String> = emptyList(),
+    val deviationLink: String? = null
 )
 
 /**
