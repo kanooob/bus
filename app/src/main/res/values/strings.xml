@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Galaxie Bus</string>
+    <string name="widget_name">Prochains Bus Idelis</string>
+    <string name="widget_description">Horaires des prochains départs de bus Idelis pour un arrêt choisi</string>
+    <string name="widget_configure_title">Configurer le widget</string>
+    <string name="widget_select_stop">Sélectionner un arrêt</string>
+</resources>

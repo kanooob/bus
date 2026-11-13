@@ -1,0 +1,6 @@
+{
+  "name": "Galaxie Bus",
+  "description": "Application temps réel pour le réseau de transport Idelis (Pau Béarn Pyrénées) avec horaires directs, widget dynamique et itinéraires",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
