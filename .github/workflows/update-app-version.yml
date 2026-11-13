@@ -67,7 +67,7 @@ jobs:
           git add app/build.gradle.kts
           if ! git diff --cached --quiet; then
             git commit -m "chore(version): passer à ${{ steps.version.outputs.tag_name }} (build ${{ steps.version.outputs.new_version_code }})"
-            git push
+            git push origin "HEAD:${{ github.ref_name }}"
           else
             echo "Aucune modification de version à committer."
           fi
