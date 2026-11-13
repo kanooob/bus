@@ -393,6 +393,56 @@ class ExampleRobolectricTest {
         assertTrue("Aucun arrêt théorique ID_ ou GRP_ ne doit subsister sans être favori",
             allStops.all { it.stopId.startsWith("WEB_") })
     }
+
+    @Test
+    fun `settings hierarchy defaults and json backup export import round-trip`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        // Nettoyer les prefs pour tester les valeurs par défaut
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+
+        // Vérifier toutes les valeurs par défaut demandées
+        assertEquals(com.example.data.model.ThemeMode.SYSTEM, prefs.getThemeMode())
+        assertEquals(com.example.data.model.PrimaryColorMode.APP_DEFAULT, prefs.getPrimaryColorMode())
+        assertEquals(com.example.data.model.InAppRefreshFrequency.EVERY_1_MIN, prefs.getInAppRefreshFrequency())
+        assertEquals(com.example.data.model.WidgetRefreshFrequency.EVERY_15_MIN, prefs.getWidgetRefreshFrequency())
+        assertEquals(com.example.data.model.WidgetLocationFrequency.EVERY_15_MIN, prefs.getWidgetLocationFrequency())
+        assertEquals(com.example.data.model.GtfsSyncFrequency.DAILY_ON_OPEN, prefs.getGtfsSyncFrequency())
+        assertEquals(com.example.data.model.AppUpdateCheckFrequency.DAILY_ON_OPEN, prefs.getAppUpdateCheckFrequency())
+        assertEquals(com.example.data.model.UpdateNetworkMode.WIFI_AND_CELLULAR, prefs.getUpdateNetworkMode())
+
+        // Modifier tous les paramètres et favoris
+        prefs.saveFavoriteStopIds(setOf("WEB_Bosquet", "WEB_Universite"))
+        prefs.saveThemeMode(com.example.data.model.ThemeMode.DARK)
+        prefs.savePrimaryColorMode(com.example.data.model.PrimaryColorMode.DYNAMIC)
+        prefs.saveInAppRefreshFrequency(com.example.data.model.InAppRefreshFrequency.EVERY_2_MIN)
+        prefs.saveWidgetRefreshFrequency(com.example.data.model.WidgetRefreshFrequency.MANUAL_ONLY)
+        prefs.saveWidgetLocationFrequency(com.example.data.model.WidgetLocationFrequency.EVERY_10_MIN)
+        prefs.saveGtfsSyncFrequency(com.example.data.model.GtfsSyncFrequency.TWICE_A_DAY)
+        prefs.saveAppUpdateCheckFrequency(com.example.data.model.AppUpdateCheckFrequency.WEEKLY)
+        prefs.saveUpdateNetworkMode(com.example.data.model.UpdateNetworkMode.WIFI_ONLY)
+
+        // Exporter en JSON
+        val json = prefs.exportBackupJson()
+
+        // Réinitialiser les prefs
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        assertEquals(com.example.data.model.ThemeMode.SYSTEM, prefs.getThemeMode())
+
+        // Réimporter depuis JSON
+        val importRes = prefs.importBackupJson(json)
+        assertTrue(importRes.isSuccess)
+        assertEquals(2, importRes.getOrNull())
+        assertEquals(setOf("WEB_Bosquet", "WEB_Universite"), prefs.getFavoriteStopIds())
+        assertEquals(com.example.data.model.ThemeMode.DARK, prefs.getThemeMode())
+        assertEquals(com.example.data.model.PrimaryColorMode.DYNAMIC, prefs.getPrimaryColorMode())
+        assertEquals(com.example.data.model.InAppRefreshFrequency.EVERY_2_MIN, prefs.getInAppRefreshFrequency())
+        assertEquals(com.example.data.model.WidgetRefreshFrequency.MANUAL_ONLY, prefs.getWidgetRefreshFrequency())
+        assertEquals(com.example.data.model.WidgetLocationFrequency.EVERY_10_MIN, prefs.getWidgetLocationFrequency())
+        assertEquals(com.example.data.model.GtfsSyncFrequency.TWICE_A_DAY, prefs.getGtfsSyncFrequency())
+        assertEquals(com.example.data.model.AppUpdateCheckFrequency.WEEKLY, prefs.getAppUpdateCheckFrequency())
+        assertEquals(com.example.data.model.UpdateNetworkMode.WIFI_ONLY, prefs.getUpdateNetworkMode())
+    }
 }
 
 

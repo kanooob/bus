@@ -5,16 +5,25 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.local.PreferencesManager
+import com.example.data.model.AppUpdateCheckFrequency
 import com.example.data.model.BusVehicle
 import com.example.data.model.DepartureComparison
 import com.example.data.model.GtfsStop
+import com.example.data.model.GtfsSyncFrequency
 import com.example.data.model.IdeCycleStation
+import com.example.data.model.InAppRefreshFrequency
 import com.example.data.model.ParkAndRide
+import com.example.data.model.PrimaryColorMode
+import com.example.data.model.ThemeMode
 import com.example.data.model.TrafficAlert
+import com.example.data.model.UpdateNetworkMode
+import com.example.data.model.WidgetLocationFrequency
+import com.example.data.model.WidgetRefreshFrequency
 import com.example.data.remote.AppUpdateState
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.IdelisSiriService
 import com.example.data.repository.IdelisRepository
+import com.example.ui.widget.IdelisAppWidgetProvider
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,9 +60,19 @@ data class TransitBoardUiState(
     val requestorRef: String = IdelisSiriService.DEFAULT_REQUESTOR_REF,
     val statusMessage: String = "",
     val lastUpdatedFormatted: String = "",
-    val secondsUntilRefresh: Int = 60,
+    val secondsUntilRefresh: Int = InAppRefreshFrequency.EVERY_1_MIN.intervalSeconds,
     val isAutoRefreshPaused: Boolean = false,
     val isDarkTheme: Boolean = false,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val primaryColorMode: PrimaryColorMode = PrimaryColorMode.APP_DEFAULT,
+    val inAppRefreshFrequency: InAppRefreshFrequency = InAppRefreshFrequency.EVERY_1_MIN,
+    val widgetRefreshFrequency: WidgetRefreshFrequency = WidgetRefreshFrequency.EVERY_15_MIN,
+    val widgetLocationFrequency: WidgetLocationFrequency = WidgetLocationFrequency.EVERY_15_MIN,
+    val gtfsSyncFrequency: GtfsSyncFrequency = GtfsSyncFrequency.DAILY_ON_OPEN,
+    val appUpdateCheckFrequency: AppUpdateCheckFrequency = AppUpdateCheckFrequency.DAILY_ON_OPEN,
+    val updateNetworkMode: UpdateNetworkMode = UpdateNetworkMode.WIFI_AND_CELLULAR,
+    val backupRestoreMessage: String? = null,
+    val isBackupError: Boolean = false,
     val isDownloadingData: Boolean = false,
     val downloadStatus: String? = null,
     // Données complémentaires Explore v2.1, GTFS & SIRI
@@ -107,6 +126,15 @@ class TransitBoardViewModel(
     private val _uiState = MutableStateFlow(
         TransitBoardUiState(
             isDarkTheme = preferencesManager?.isDarkThemeEnabled() ?: false,
+            themeMode = preferencesManager?.getThemeMode() ?: ThemeMode.SYSTEM,
+            primaryColorMode = preferencesManager?.getPrimaryColorMode() ?: PrimaryColorMode.APP_DEFAULT,
+            inAppRefreshFrequency = preferencesManager?.getInAppRefreshFrequency() ?: InAppRefreshFrequency.EVERY_1_MIN,
+            widgetRefreshFrequency = preferencesManager?.getWidgetRefreshFrequency() ?: WidgetRefreshFrequency.EVERY_15_MIN,
+            widgetLocationFrequency = preferencesManager?.getWidgetLocationFrequency() ?: WidgetLocationFrequency.EVERY_15_MIN,
+            gtfsSyncFrequency = preferencesManager?.getGtfsSyncFrequency() ?: GtfsSyncFrequency.DAILY_ON_OPEN,
+            appUpdateCheckFrequency = preferencesManager?.getAppUpdateCheckFrequency() ?: AppUpdateCheckFrequency.DAILY_ON_OPEN,
+            updateNetworkMode = preferencesManager?.getUpdateNetworkMode() ?: UpdateNetworkMode.WIFI_AND_CELLULAR,
+            secondsUntilRefresh = (preferencesManager?.getInAppRefreshFrequency() ?: InAppRefreshFrequency.EVERY_1_MIN).intervalSeconds,
             isSimulationMode = preferencesManager?.isSimulationModeEnabled() ?: true,
             isAutoRefreshPaused = preferencesManager?.isAutoRefreshPaused() ?: false,
             isPeriodicSyncEnabled = preferencesManager?.isPeriodicSyncEnabled() ?: true,
@@ -126,7 +154,6 @@ class TransitBoardViewModel(
     private var periodicSyncJob: Job? = null
     private var webSearchJob: Job? = null
     private var updateJob: Job? = null
-    private val REFRESH_INTERVAL_SECONDS = 60
 
     init {
         loadStops()
@@ -134,7 +161,17 @@ class TransitBoardViewModel(
         loadComplementaryData()
         startAutoRefreshTicker()
         startPeriodicSyncJob()
-        checkForAppUpdate(autoDownloadOnWifi = true)
+        checkForAppUpdateOnLaunch()
+    }
+
+    private fun checkForAppUpdateOnLaunch() {
+        val freq = _uiState.value.appUpdateCheckFrequency
+        if (freq == AppUpdateCheckFrequency.NEVER) return
+        val lastCheck = preferencesManager?.getLastAppUpdateCheckTimestamp() ?: 0L
+        val now = System.currentTimeMillis()
+        if (now - lastCheck >= freq.intervalMs) {
+            checkForAppUpdate(autoDownloadAllowed = true, manualCheck = false)
+        }
     }
 
     private fun downloadDataOnLaunch() {
@@ -151,12 +188,13 @@ class TransitBoardViewModel(
             }
             refreshDepartures()
 
-            // CONSIGNES : Télécharger le référentiel GTFS ZIP Idelis au maximum une fois par jour à l'ouverture de l'application
-            val lastDownload = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L
-            val now = System.currentTimeMillis()
-            val oneDayMs = 24 * 60 * 60 * 1000L
-            if (now - lastDownload >= oneDayMs) {
-                triggerGtfsZipSync()
+            val gtfsFreq = _uiState.value.gtfsSyncFrequency
+            if (gtfsFreq != GtfsSyncFrequency.NEVER && gtfsFreq.intervalMs > 0L) {
+                val lastDownload = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L
+                val now = System.currentTimeMillis()
+                if (now - lastDownload >= gtfsFreq.intervalMs) {
+                    triggerGtfsZipSync()
+                }
             }
         }
     }
@@ -266,9 +304,135 @@ class TransitBoardViewModel(
     }
 
     fun toggleDarkTheme() {
-        val next = !_uiState.value.isDarkTheme
-        preferencesManager?.setDarkThemeEnabled(next)
-        _uiState.update { it.copy(isDarkTheme = next) }
+        val next = if (_uiState.value.themeMode == ThemeMode.DARK) ThemeMode.LIGHT else ThemeMode.DARK
+        setThemeMode(next)
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        preferencesManager?.saveThemeMode(mode)
+        _uiState.update { it.copy(themeMode = mode, isDarkTheme = mode == ThemeMode.DARK) }
+    }
+
+    fun setPrimaryColorMode(mode: PrimaryColorMode) {
+        preferencesManager?.savePrimaryColorMode(mode)
+        _uiState.update { it.copy(primaryColorMode = mode) }
+    }
+
+    fun setInAppRefreshFrequency(freq: InAppRefreshFrequency) {
+        preferencesManager?.saveInAppRefreshFrequency(freq)
+        _uiState.update {
+            it.copy(
+                inAppRefreshFrequency = freq,
+                isAutoRefreshPaused = freq == InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE,
+                secondsUntilRefresh = freq.intervalSeconds
+            )
+        }
+        startAutoRefreshTicker()
+    }
+
+    fun setWidgetRefreshFrequency(freq: WidgetRefreshFrequency) {
+        preferencesManager?.saveWidgetRefreshFrequency(freq)
+        _uiState.update { it.copy(widgetRefreshFrequency = freq) }
+        repository.appContext?.let { IdelisAppWidgetProvider.refreshAllWidgets(it) }
+    }
+
+    fun setWidgetLocationFrequency(freq: WidgetLocationFrequency) {
+        preferencesManager?.saveWidgetLocationFrequency(freq)
+        _uiState.update { it.copy(widgetLocationFrequency = freq) }
+        repository.appContext?.let { IdelisAppWidgetProvider.refreshAllWidgets(it) }
+    }
+
+    fun setGtfsSyncFrequency(freq: GtfsSyncFrequency) {
+        preferencesManager?.saveGtfsSyncFrequency(freq)
+        _uiState.update {
+            it.copy(
+                gtfsSyncFrequency = freq,
+                isPeriodicSyncEnabled = freq != GtfsSyncFrequency.NEVER
+            )
+        }
+        startPeriodicSyncJob()
+    }
+
+    fun setAppUpdateCheckFrequency(freq: AppUpdateCheckFrequency) {
+        preferencesManager?.saveAppUpdateCheckFrequency(freq)
+        _uiState.update { it.copy(appUpdateCheckFrequency = freq) }
+    }
+
+    fun setUpdateNetworkMode(mode: UpdateNetworkMode) {
+        preferencesManager?.saveUpdateNetworkMode(mode)
+        _uiState.update { it.copy(updateNetworkMode = mode) }
+    }
+
+    fun exportBackupJson(): String {
+        return preferencesManager?.exportBackupJson() ?: "{}"
+    }
+
+    fun importBackupJson(json: String) {
+        val pm = preferencesManager ?: return
+        val result = pm.importBackupJson(json)
+        if (result.isSuccess) {
+            val count = result.getOrDefault(0)
+            val theme = pm.getThemeMode()
+            val primaryColor = pm.getPrimaryColorMode()
+            val inAppFreq = pm.getInAppRefreshFrequency()
+            val widgetFreq = pm.getWidgetRefreshFrequency()
+            val widgetLocFreq = pm.getWidgetLocationFrequency()
+            val gtfsFreq = pm.getGtfsSyncFrequency()
+            val updateFreq = pm.getAppUpdateCheckFrequency()
+            val networkMode = pm.getUpdateNetworkMode()
+            val webUrl = pm.getWebMonitoringUrl()
+            val gtfsUrl = pm.getGtfsZipUrl()
+            val siriUrl = pm.getSiriSoapUrl()
+            val queryParam = pm.getQueryTypeParam()
+            val ghRepo = pm.getGithubRepo()
+            val ghTag = pm.getGithubTag()
+            val favs = pm.getFavoriteStopIds()
+
+            repository.webScraperService.customBaseUrl = webUrl
+            repository.webScraperService.customQueryParam = queryParam
+            repository.siriService.customEndpoint = siriUrl
+
+            _uiState.update {
+                it.copy(
+                    themeMode = theme,
+                    isDarkTheme = theme == ThemeMode.DARK,
+                    primaryColorMode = primaryColor,
+                    inAppRefreshFrequency = inAppFreq,
+                    isAutoRefreshPaused = inAppFreq == InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE,
+                    secondsUntilRefresh = inAppFreq.intervalSeconds,
+                    widgetRefreshFrequency = widgetFreq,
+                    widgetLocationFrequency = widgetLocFreq,
+                    gtfsSyncFrequency = gtfsFreq,
+                    isPeriodicSyncEnabled = gtfsFreq != GtfsSyncFrequency.NEVER,
+                    appUpdateCheckFrequency = updateFreq,
+                    updateNetworkMode = networkMode,
+                    webMonitoringUrl = webUrl,
+                    gtfsZipUrl = gtfsUrl,
+                    siriSoapUrl = siriUrl,
+                    queryTypeParam = queryParam,
+                    githubRepo = ghRepo,
+                    githubTag = ghTag,
+                    favoriteStopIds = favs,
+                    backupRestoreMessage = "Sauvegarde restaurée ($count favori(s), paramètres appliqués)",
+                    isBackupError = false
+                )
+            }
+            startAutoRefreshTicker()
+            startPeriodicSyncJob()
+            pm.getLastSelectedStopId()?.let { selectStopById(it) } ?: refreshDepartures()
+            repository.appContext?.let { IdelisAppWidgetProvider.refreshAllWidgets(it) }
+        } else {
+            _uiState.update {
+                it.copy(
+                    backupRestoreMessage = "Échec de l'import : ${result.exceptionOrNull()?.localizedMessage ?: "JSON invalide"}",
+                    isBackupError = true
+                )
+            }
+        }
+    }
+
+    fun clearBackupRestoreMessage() {
+        _uiState.update { it.copy(backupRestoreMessage = null, isBackupError = false) }
     }
 
     fun toggleFavoriteStop(stopId: String) {
@@ -303,7 +467,8 @@ class TransitBoardViewModel(
 
     fun selectStop(stop: GtfsStop) {
         preferencesManager?.saveLastSelectedStopId(stop.stopId)
-        _uiState.update { it.copy(selectedStop = stop, secondsUntilRefresh = REFRESH_INTERVAL_SECONDS) }
+        val interval = _uiState.value.inAppRefreshFrequency.intervalSeconds
+        _uiState.update { it.copy(selectedStop = stop, secondsUntilRefresh = interval) }
         refreshDepartures()
     }
 
@@ -551,6 +716,7 @@ class TransitBoardViewModel(
 
             val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
             val updatedStr = timeFormat.format(Date())
+            val nextInterval = _uiState.value.inAppRefreshFrequency.intervalSeconds
 
             _uiState.update { current ->
                 current.copy(
@@ -561,7 +727,7 @@ class TransitBoardViewModel(
                     isOfflineFallback = result.isOfflineFallback,
                     statusMessage = result.statusMessage,
                     lastUpdatedFormatted = updatedStr,
-                    secondsUntilRefresh = REFRESH_INTERVAL_SECONDS,
+                    secondsUntilRefresh = nextInterval,
                     isStopNotServed = result.isStopNotServed,
                     notServedMessage = result.notServedMessage
                 )
@@ -571,14 +737,21 @@ class TransitBoardViewModel(
 
     private fun startAutoRefreshTicker() {
         tickerJob?.cancel()
+        val freq = _uiState.value.inAppRefreshFrequency
+        if (freq == InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE || freq.intervalSeconds <= 0) {
+            return
+        }
         tickerJob = viewModelScope.launch {
             while (isActive) {
                 delay(1000L)
-                val isPaused = _uiState.value.isAutoRefreshPaused
+                val currentFreq = _uiState.value.inAppRefreshFrequency
+                val isPaused = _uiState.value.isAutoRefreshPaused ||
+                    currentFreq == InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE ||
+                    currentFreq.intervalSeconds <= 0
                 if (!isPaused) {
                     val remaining = _uiState.value.secondsUntilRefresh - 1
                     if (remaining <= 0) {
-                        _uiState.update { it.copy(secondsUntilRefresh = REFRESH_INTERVAL_SECONDS) }
+                        _uiState.update { it.copy(secondsUntilRefresh = currentFreq.intervalSeconds) }
                         refreshDepartures()
                     } else {
                         _uiState.update { it.copy(secondsUntilRefresh = remaining) }
@@ -716,12 +889,16 @@ class TransitBoardViewModel(
 
     private fun startPeriodicSyncJob() {
         periodicSyncJob?.cancel()
+        val gtfsFreq = _uiState.value.gtfsSyncFrequency
+        if (!gtfsFreq.isPeriodic || gtfsFreq.intervalMs <= 0L) {
+            return
+        }
         periodicSyncJob = viewModelScope.launch {
             while (isActive) {
-                // Intervalle périodique configuré (ex: 2 heures = 120 minutes)
-                val intervalMs = _uiState.value.periodicSyncIntervalMinutes * 60 * 1000L
+                val intervalMs = _uiState.value.gtfsSyncFrequency.intervalMs
+                if (intervalMs <= 0L) break
                 delay(intervalMs)
-                if (_uiState.value.isPeriodicSyncEnabled) {
+                if (_uiState.value.gtfsSyncFrequency.isPeriodic) {
                     triggerGtfsZipSync()
                 }
             }
@@ -736,9 +913,9 @@ class TransitBoardViewModel(
 
     /**
      * Vérifie s'il existe une nouvelle version sur GitHub (https://github.com/kanooob/bus).
-     * Si une mise à jour avec APK est disponible et que l'appareil est en Wi-Fi, lance le téléchargement automatiquement.
+     * Respecte le mode réseau autorisé (Wi-Fi uniquement vs Wi-Fi et données mobiles).
      */
-    fun checkForAppUpdate(autoDownloadOnWifi: Boolean = true, manualCheck: Boolean = false) {
+    fun checkForAppUpdate(autoDownloadAllowed: Boolean = true, manualCheck: Boolean = false) {
         val ctx = repository.appContext
         val wifiConnected = ctx?.let { repository.updaterService.isWifiConnected(it) } ?: false
         _uiState.update {
@@ -758,6 +935,7 @@ class TransitBoardViewModel(
                 repoUrl = repoUrl,
                 currentVersion = currentVersion
             )
+            preferencesManager?.saveLastAppUpdateCheckTimestamp(System.currentTimeMillis())
 
             if (checkRes.isFailure) {
                 val errMsg = checkRes.exceptionOrNull()?.localizedMessage
@@ -782,9 +960,10 @@ class TransitBoardViewModel(
             }
 
             val isWifiNow = ctx?.let { repository.updaterService.isWifiConnected(it) } ?: false
+            val networkAllowed = _uiState.value.updateNetworkMode == UpdateNetworkMode.WIFI_AND_CELLULAR || isWifiNow
             _uiState.update { it.copy(isWifiConnected = isWifiNow, updatePromptVisible = true) }
 
-            if (autoDownloadOnWifi && isWifiNow && ctx != null && !release.apkDownloadUrl.isNullOrBlank()) {
+            if (autoDownloadAllowed && networkAllowed && ctx != null && !release.apkDownloadUrl.isNullOrBlank()) {
                 startApkDownload(ctx, release)
             } else {
                 _uiState.update {
@@ -798,7 +977,7 @@ class TransitBoardViewModel(
     }
 
     /**
-     * Télécharge l'APK de la release détectée (en vérifiant le Wi-Fi sauf si l'utilisateur force le téléchargement).
+     * Télécharge l'APK de la release détectée (en vérifiant le réseau autorisé sauf si l'utilisateur force le téléchargement).
      */
     fun downloadPendingUpdate(forceWithoutWifi: Boolean = false) {
         val ctx = repository.appContext ?: return
@@ -811,8 +990,9 @@ class TransitBoardViewModel(
         }
 
         val isWifiNow = repository.updaterService.isWifiConnected(ctx)
+        val networkAllowed = _uiState.value.updateNetworkMode == UpdateNetworkMode.WIFI_AND_CELLULAR || isWifiNow
         _uiState.update { it.copy(isWifiConnected = isWifiNow) }
-        if (!forceWithoutWifi && !isWifiNow) {
+        if (!forceWithoutWifi && !networkAllowed) {
             _uiState.update {
                 it.copy(
                     appUpdateState = AppUpdateState.UpdateAvailableWaitingWifi(release),

@@ -124,8 +124,21 @@ class IdelisWidgetConfigureActivity : ComponentActivity() {
         }
         setResult(Activity.RESULT_OK, defaultResult)
 
+        val prefs = com.example.data.local.PreferencesManager(this)
+        val themeMode = prefs.getThemeMode()
+        val primaryColorMode = prefs.getPrimaryColorMode()
+
         setContent {
-            MyApplicationTheme {
+            val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val effectiveDark = when (themeMode) {
+                com.example.data.model.ThemeMode.LIGHT -> false
+                com.example.data.model.ThemeMode.DARK -> true
+                com.example.data.model.ThemeMode.SYSTEM -> systemDark
+            }
+            MyApplicationTheme(
+                darkTheme = effectiveDark,
+                dynamicColor = primaryColorMode == com.example.data.model.PrimaryColorMode.DYNAMIC
+            ) {
                 WidgetConfigureScreen(
                     appWidgetId = appWidgetId,
                     onStopConfigured = { selectedStop, isDynamicNearest ->

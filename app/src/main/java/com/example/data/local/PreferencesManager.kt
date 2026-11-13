@@ -2,18 +2,23 @@ package com.example.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.example.data.model.AppUpdateCheckFrequency
+import com.example.data.model.GtfsSyncFrequency
+import com.example.data.model.InAppRefreshFrequency
+import com.example.data.model.PrimaryColorMode
+import com.example.data.model.ThemeMode
+import com.example.data.model.UpdateNetworkMode
+import com.example.data.model.WidgetLocationFrequency
+import com.example.data.model.WidgetRefreshFrequency
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Gestionnaire de persistance des préférences utilisateur :
- * - Dernier arrêt sélectionné (stopId)
- * - Mode sombre (activé/désactivé)
- * - Mode simulation des retards (activé/désactivé)
- * - Auto-actualisation en pause (activé/désactivé)
- * - Synchronisation périodique du GTFS (activé/désactivé)
- * - Arrêts favoris
- * - URLs et requêtes personnalisées (Paramètres > Avancé)
- * - Horodatage du dernier téléchargement GTFS (limité à 1 fois par jour)
- * - Configuration GitHub (versions et dépôts)
+ * - Apparence : Thème (Clair / Sombre / Système), Couleur principale (Material You / Couleur de l'application)
+ * - Données et actualisation : Fréquence app, Fréquence widgets, Géolocalisation widget « Arrêt proche », GTFS
+ * - Mises à jour de l'application : Vérification automatique, Réseau autorisé
+ * - Avancé : Sauvegarde/restauration JSON, Configuration réseau / API (SIRI / GTFS), GitHub
  */
 class PreferencesManager(context: Context) {
 
@@ -28,6 +33,17 @@ class PreferencesManager(context: Context) {
         private const val KEY_PERIODIC_SYNC = "periodic_sync_enabled"
         private const val KEY_FAVORITE_STOP_IDS = "favorite_stop_ids"
         private const val KEY_LAST_GTFS_SYNC_TIME = "last_gtfs_sync_timestamp"
+        private const val KEY_LAST_APP_UPDATE_CHECK_TIME = "last_app_update_check_timestamp"
+
+        // Hiérarchie des paramètres
+        private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_PRIMARY_COLOR_MODE = "primary_color_mode"
+        private const val KEY_IN_APP_REFRESH_FREQ = "in_app_refresh_frequency"
+        private const val KEY_WIDGET_REFRESH_FREQ = "widget_refresh_frequency"
+        private const val KEY_WIDGET_LOCATION_FREQ = "widget_location_frequency"
+        private const val KEY_GTFS_SYNC_FREQ = "gtfs_sync_frequency"
+        private const val KEY_APP_UPDATE_CHECK_FREQ = "app_update_check_frequency"
+        private const val KEY_UPDATE_NETWORK_MODE = "update_network_mode"
 
         // URLs & Requêtes configurables (Paramètres > Avancé)
         private const val KEY_URL_WEB_MONITORING = "url_web_monitoring"
@@ -47,6 +63,94 @@ class PreferencesManager(context: Context) {
         const val DEFAULT_GITHUB_TAG = "latest"
     }
 
+    private inline fun <reified T : Enum<T>> getEnum(key: String, default: T): T {
+        val raw = prefs.getString(key, null) ?: return default
+        return enumValues<T>().firstOrNull { it.name == raw } ?: default
+    }
+
+    // 1. Apparence
+    fun getThemeMode(): ThemeMode {
+        val raw = prefs.getString(KEY_THEME_MODE, null)
+        if (raw != null) {
+            return enumValues<ThemeMode>().firstOrNull { it.name == raw } ?: ThemeMode.SYSTEM
+        }
+        return if (prefs.contains(KEY_DARK_THEME)) {
+            if (prefs.getBoolean(KEY_DARK_THEME, false)) ThemeMode.DARK else ThemeMode.LIGHT
+        } else {
+            ThemeMode.SYSTEM
+        }
+    }
+
+    fun saveThemeMode(mode: ThemeMode) {
+        prefs.edit()
+            .putString(KEY_THEME_MODE, mode.name)
+            .putBoolean(KEY_DARK_THEME, mode == ThemeMode.DARK)
+            .apply()
+    }
+
+    fun getPrimaryColorMode(): PrimaryColorMode = getEnum(KEY_PRIMARY_COLOR_MODE, PrimaryColorMode.APP_DEFAULT)
+
+    fun savePrimaryColorMode(mode: PrimaryColorMode) {
+        prefs.edit().putString(KEY_PRIMARY_COLOR_MODE, mode.name).apply()
+    }
+
+    // 2. Données et actualisation
+    fun getInAppRefreshFrequency(): InAppRefreshFrequency =
+        getEnum(KEY_IN_APP_REFRESH_FREQ, InAppRefreshFrequency.EVERY_1_MIN)
+
+    fun saveInAppRefreshFrequency(freq: InAppRefreshFrequency) {
+        prefs.edit()
+            .putString(KEY_IN_APP_REFRESH_FREQ, freq.name)
+            .putBoolean(KEY_AUTO_REFRESH_PAUSED, freq == InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE)
+            .apply()
+    }
+
+    fun getWidgetRefreshFrequency(): WidgetRefreshFrequency =
+        getEnum(KEY_WIDGET_REFRESH_FREQ, WidgetRefreshFrequency.EVERY_15_MIN)
+
+    fun saveWidgetRefreshFrequency(freq: WidgetRefreshFrequency) {
+        prefs.edit().putString(KEY_WIDGET_REFRESH_FREQ, freq.name).apply()
+    }
+
+    fun getWidgetLocationFrequency(): WidgetLocationFrequency =
+        getEnum(KEY_WIDGET_LOCATION_FREQ, WidgetLocationFrequency.EVERY_15_MIN)
+
+    fun saveWidgetLocationFrequency(freq: WidgetLocationFrequency) {
+        prefs.edit().putString(KEY_WIDGET_LOCATION_FREQ, freq.name).apply()
+    }
+
+    fun getGtfsSyncFrequency(): GtfsSyncFrequency =
+        getEnum(KEY_GTFS_SYNC_FREQ, GtfsSyncFrequency.DAILY_ON_OPEN)
+
+    fun saveGtfsSyncFrequency(freq: GtfsSyncFrequency) {
+        prefs.edit()
+            .putString(KEY_GTFS_SYNC_FREQ, freq.name)
+            .putBoolean(KEY_PERIODIC_SYNC, freq != GtfsSyncFrequency.NEVER)
+            .apply()
+    }
+
+    // 3. Mises à jour de l'application
+    fun getAppUpdateCheckFrequency(): AppUpdateCheckFrequency =
+        getEnum(KEY_APP_UPDATE_CHECK_FREQ, AppUpdateCheckFrequency.DAILY_ON_OPEN)
+
+    fun saveAppUpdateCheckFrequency(freq: AppUpdateCheckFrequency) {
+        prefs.edit().putString(KEY_APP_UPDATE_CHECK_FREQ, freq.name).apply()
+    }
+
+    fun getUpdateNetworkMode(): UpdateNetworkMode =
+        getEnum(KEY_UPDATE_NETWORK_MODE, UpdateNetworkMode.WIFI_AND_CELLULAR)
+
+    fun saveUpdateNetworkMode(mode: UpdateNetworkMode) {
+        prefs.edit().putString(KEY_UPDATE_NETWORK_MODE, mode.name).apply()
+    }
+
+    fun getLastAppUpdateCheckTimestamp(): Long = prefs.getLong(KEY_LAST_APP_UPDATE_CHECK_TIME, 0L)
+
+    fun saveLastAppUpdateCheckTimestamp(timestamp: Long) {
+        prefs.edit().putLong(KEY_LAST_APP_UPDATE_CHECK_TIME, timestamp).apply()
+    }
+
+    // Favoris et dernier arrêt
     fun getLastSelectedStopId(): String? = prefs.getString(KEY_LAST_STOP_ID, null)
 
     fun saveLastSelectedStopId(stopId: String) {
@@ -61,10 +165,10 @@ class PreferencesManager(context: Context) {
         prefs.edit().putStringSet(KEY_FAVORITE_STOP_IDS, ids).apply()
     }
 
-    fun isDarkThemeEnabled(): Boolean = prefs.getBoolean(KEY_DARK_THEME, false)
+    fun isDarkThemeEnabled(): Boolean = getThemeMode() == ThemeMode.DARK
 
     fun setDarkThemeEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_DARK_THEME, enabled).apply()
+        saveThemeMode(if (enabled) ThemeMode.DARK else ThemeMode.LIGHT)
     }
 
     fun isSimulationModeEnabled(): Boolean = prefs.getBoolean(KEY_SIMULATION_MODE, true)
@@ -73,16 +177,18 @@ class PreferencesManager(context: Context) {
         prefs.edit().putBoolean(KEY_SIMULATION_MODE, enabled).apply()
     }
 
-    fun isAutoRefreshPaused(): Boolean = prefs.getBoolean(KEY_AUTO_REFRESH_PAUSED, false)
+    fun isAutoRefreshPaused(): Boolean =
+        getInAppRefreshFrequency() == InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE ||
+            prefs.getBoolean(KEY_AUTO_REFRESH_PAUSED, false)
 
     fun setAutoRefreshPaused(paused: Boolean) {
         prefs.edit().putBoolean(KEY_AUTO_REFRESH_PAUSED, paused).apply()
     }
 
-    fun isPeriodicSyncEnabled(): Boolean = prefs.getBoolean(KEY_PERIODIC_SYNC, true)
+    fun isPeriodicSyncEnabled(): Boolean = getGtfsSyncFrequency() != GtfsSyncFrequency.NEVER
 
     fun setPeriodicSyncEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_PERIODIC_SYNC, enabled).apply()
+        saveGtfsSyncFrequency(if (enabled) GtfsSyncFrequency.DAILY_ON_OPEN else GtfsSyncFrequency.NEVER)
     }
 
     fun getLastGtfsSyncTimestamp(): Long = prefs.getLong(KEY_LAST_GTFS_SYNC_TIME, 0L)
@@ -143,5 +249,101 @@ class PreferencesManager(context: Context) {
 
     fun saveGithubTag(tag: String) {
         prefs.edit().putString(KEY_GITHUB_TAG, tag.trim()).apply()
+    }
+
+    // 4. Avancé : Sauvegarde et restauration JSON
+    fun exportBackupJson(): String {
+        val favArray = JSONArray()
+        getFavoriteStopIds().sorted().forEach { favArray.put(it) }
+
+        val settingsObj = JSONObject().apply {
+            put("themeMode", getThemeMode().name)
+            put("primaryColorMode", getPrimaryColorMode().name)
+            put("inAppRefreshFrequency", getInAppRefreshFrequency().name)
+            put("widgetRefreshFrequency", getWidgetRefreshFrequency().name)
+            put("widgetLocationFrequency", getWidgetLocationFrequency().name)
+            put("gtfsSyncFrequency", getGtfsSyncFrequency().name)
+            put("appUpdateCheckFrequency", getAppUpdateCheckFrequency().name)
+            put("updateNetworkMode", getUpdateNetworkMode().name)
+            put("webMonitoringUrl", getWebMonitoringUrl())
+            put("gtfsZipUrl", getGtfsZipUrl())
+            put("siriSoapUrl", getSiriSoapUrl())
+            put("queryTypeParam", getQueryTypeParam())
+            put("githubRepo", getGithubRepo())
+            put("githubTag", getGithubTag())
+        }
+
+        val root = JSONObject().apply {
+            put("version", 1)
+            put("exportedAt", System.currentTimeMillis())
+            put("lastSelectedStopId", getLastSelectedStopId() ?: "")
+            put("favoriteStopIds", favArray)
+            put("settings", settingsObj)
+        }
+        return root.toString(2)
+    }
+
+    fun importBackupJson(jsonString: String): Result<Int> {
+        return try {
+            val root = JSONObject(jsonString)
+            if (!root.has("settings") && !root.has("favoriteStopIds")) {
+                return Result.failure(IllegalArgumentException("Fichier JSON invalide : champs manquants"))
+            }
+
+            var favoritesCount = 0
+            if (root.has("favoriteStopIds")) {
+                val favArray = root.getJSONArray("favoriteStopIds")
+                val restoredFavs = mutableSetOf<String>()
+                for (i in 0 until favArray.length()) {
+                    val id = favArray.optString(i, "").trim()
+                    if (id.isNotBlank()) restoredFavs.add(id)
+                }
+                saveFavoriteStopIds(restoredFavs)
+                favoritesCount = restoredFavs.size
+            }
+
+            val lastStop = root.optString("lastSelectedStopId", "").trim()
+            if (lastStop.isNotBlank()) {
+                saveLastSelectedStopId(lastStop)
+            }
+
+            val settingsObj = root.optJSONObject("settings")
+            if (settingsObj != null) {
+                settingsObj.optString("themeMode").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<ThemeMode>().firstOrNull { it.name == raw }?.let { saveThemeMode(it) }
+                }
+                settingsObj.optString("primaryColorMode").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<PrimaryColorMode>().firstOrNull { it.name == raw }?.let { savePrimaryColorMode(it) }
+                }
+                settingsObj.optString("inAppRefreshFrequency").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<InAppRefreshFrequency>().firstOrNull { it.name == raw }?.let { saveInAppRefreshFrequency(it) }
+                }
+                settingsObj.optString("widgetRefreshFrequency").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<WidgetRefreshFrequency>().firstOrNull { it.name == raw }?.let { saveWidgetRefreshFrequency(it) }
+                }
+                settingsObj.optString("widgetLocationFrequency").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<WidgetLocationFrequency>().firstOrNull { it.name == raw }?.let { saveWidgetLocationFrequency(it) }
+                }
+                settingsObj.optString("gtfsSyncFrequency").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<GtfsSyncFrequency>().firstOrNull { it.name == raw }?.let { saveGtfsSyncFrequency(it) }
+                }
+                settingsObj.optString("appUpdateCheckFrequency").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<AppUpdateCheckFrequency>().firstOrNull { it.name == raw }?.let { saveAppUpdateCheckFrequency(it) }
+                }
+                settingsObj.optString("updateNetworkMode").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<UpdateNetworkMode>().firstOrNull { it.name == raw }?.let { saveUpdateNetworkMode(it) }
+                }
+                settingsObj.optString("webMonitoringUrl").takeIf { it.isNotBlank() }?.let { saveWebMonitoringUrl(it) }
+                settingsObj.optString("gtfsZipUrl").takeIf { it.isNotBlank() }?.let { saveGtfsZipUrl(it) }
+                settingsObj.optString("siriSoapUrl").takeIf { it.isNotBlank() }?.let { saveSiriSoapUrl(it) }
+                settingsObj.optString("queryTypeParam").takeIf { it.isNotBlank() }?.let { saveQueryTypeParam(it) }
+                settingsObj.optString("githubRepo").takeIf { it.isNotBlank() }?.let { saveGithubRepo(it) }
+                settingsObj.optString("githubTag").takeIf { it.isNotBlank() }?.let { saveGithubTag(it) }
+            }
+
+            Result.success(favoritesCount)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 }

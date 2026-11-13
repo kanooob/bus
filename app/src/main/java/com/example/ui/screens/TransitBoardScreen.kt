@@ -85,10 +85,12 @@ import java.io.File
 @Composable
 fun TransitBoardScreen(
     viewModel: TransitBoardViewModel,
+    effectiveDarkTheme: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val isDark = effectiveDarkTheme || uiState.isDarkTheme && uiState.themeMode == com.example.data.model.ThemeMode.DARK
 
     var isStopPickerOpen by remember { mutableStateOf(false) }
     var isTrafficInfoOpen by remember { mutableStateOf(false) }
@@ -127,8 +129,9 @@ fun TransitBoardScreen(
         }
     }
 
-    val backgroundColor = if (uiState.isDarkTheme) TransitDarkBg else SketchWhite
-    val contentTextColor = if (uiState.isDarkTheme) Color.White else SketchBlack
+    val backgroundColor = MaterialTheme.colorScheme.background
+    val contentTextColor = MaterialTheme.colorScheme.onBackground
+    val primaryAccent = MaterialTheme.colorScheme.primary
 
     Scaffold(
         modifier = modifier
@@ -155,7 +158,7 @@ fun TransitBoardScreen(
                     viewModel.refreshWifiStatus()
                     isSettingsOpen = true
                 },
-                isDarkTheme = uiState.isDarkTheme
+                isDarkTheme = effectiveDarkTheme
             )
 
             // Indicateur de téléchargement initial en tâche de fond au lancement de l'application
@@ -164,17 +167,17 @@ fun TransitBoardScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(3.dp),
-                    color = SketchRed,
-                    trackColor = SketchRed.copy(alpha = 0.2f)
+                    color = primaryAccent,
+                    trackColor = primaryAccent.copy(alpha = 0.2f)
                 )
             }
 
-            // Bandeau de mise à jour GitHub (téléchargement Wi-Fi + installation APK in-app)
+            // Bandeau de mise à jour GitHub (téléchargement + installation APK in-app)
             if (uiState.updatePromptVisible) {
                 AppUpdateBanner(
                     updateState = uiState.appUpdateState,
                     isWifiConnected = uiState.isWifiConnected,
-                    isDarkTheme = uiState.isDarkTheme,
+                    isDarkTheme = effectiveDarkTheme,
                     canInstallUnknownApps = updaterHelper.canInstallUnknownApps(context),
                     onDownloadNow = { viewModel.downloadPendingUpdate(forceWithoutWifi = true) },
                     onInstallNow = { apkPath -> triggerApkInstall(apkPath) },
@@ -200,7 +203,7 @@ fun TransitBoardScreen(
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator(
-                                color = if (uiState.isDarkTheme) Color.White else Color(0xFF111111),
+                                color = if (effectiveDarkTheme) Color.White else Color(0xFF111111),
                                 strokeWidth = 3.dp
                             )
                             Spacer(modifier = Modifier.height(14.dp))
@@ -224,7 +227,7 @@ fun TransitBoardScreen(
                     ) {
                         StopNotServedCard(
                             message = uiState.notServedMessage,
-                            isDarkTheme = uiState.isDarkTheme,
+                            isDarkTheme = effectiveDarkTheme,
                             isFullScreen = true
                         )
                     }
@@ -274,7 +277,7 @@ fun TransitBoardScreen(
                                 Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                                     StopNotServedCard(
                                         message = uiState.notServedMessage,
-                                        isDarkTheme = uiState.isDarkTheme,
+                                        isDarkTheme = effectiveDarkTheme,
                                         isFullScreen = false
                                     )
                                 }
@@ -287,7 +290,7 @@ fun TransitBoardScreen(
                         ) { departure ->
                             IdelisDepartureRow(
                                 departure = departure,
-                                isDarkTheme = uiState.isDarkTheme,
+                                isDarkTheme = effectiveDarkTheme,
                                 onClick = {
                                     viewModel.selectDepartureForRouteDetail(departure)
                                 }
@@ -307,7 +310,7 @@ fun TransitBoardScreen(
                 onToggleOrder = { viewModel.toggleRouteDetailOrder() },
                 onStopSelected = { stopName -> viewModel.selectStopFromRouteDetail(stopName) },
                 onDismissRequest = { viewModel.clearSelectedRouteDetail() },
-                isDarkTheme = uiState.isDarkTheme
+                isDarkTheme = effectiveDarkTheme
             )
         }
 
@@ -329,7 +332,7 @@ fun TransitBoardScreen(
                 onDismissRequest = {
                     isStopPickerOpen = false
                 },
-                isDarkTheme = uiState.isDarkTheme
+                isDarkTheme = effectiveDarkTheme
             )
         }
 
@@ -342,37 +345,50 @@ fun TransitBoardScreen(
                 errorMessage = uiState.trafficErrorMessage,
                 onRefresh = { viewModel.refreshTrafficAlerts() },
                 onDismissRequest = { isTrafficInfoOpen = false },
-                isDarkTheme = uiState.isDarkTheme
+                isDarkTheme = effectiveDarkTheme
             )
         }
 
         // Modale de paramètres (ouverte par 'paramètres')
         if (isSettingsOpen) {
             SettingsModal(
-                isDarkTheme = uiState.isDarkTheme,
-                onToggleDarkTheme = { viewModel.toggleDarkTheme() },
-                isSimulationMode = uiState.isSimulationMode,
-                onToggleSimulationMode = { viewModel.toggleSimulationMode() },
-                isAutoRefreshPaused = uiState.isAutoRefreshPaused,
-                onToggleAutoRefresh = { viewModel.toggleAutoRefresh() },
+                isDarkTheme = effectiveDarkTheme,
+                themeMode = uiState.themeMode,
+                onSelectThemeMode = { viewModel.setThemeMode(it) },
+                primaryColorMode = uiState.primaryColorMode,
+                onSelectPrimaryColorMode = { viewModel.setPrimaryColorMode(it) },
+                inAppRefreshFrequency = uiState.inAppRefreshFrequency,
+                onSelectInAppRefreshFrequency = { viewModel.setInAppRefreshFrequency(it) },
+                widgetRefreshFrequency = uiState.widgetRefreshFrequency,
+                onSelectWidgetRefreshFrequency = { viewModel.setWidgetRefreshFrequency(it) },
+                widgetLocationFrequency = uiState.widgetLocationFrequency,
+                onSelectWidgetLocationFrequency = { viewModel.setWidgetLocationFrequency(it) },
+                gtfsSyncFrequency = uiState.gtfsSyncFrequency,
+                onSelectGtfsSyncFrequency = { viewModel.setGtfsSyncFrequency(it) },
                 isGtfsSyncing = uiState.isGtfsSyncing,
                 gtfsReport = uiState.gtfsSyncReport,
                 onDownloadGtfsClick = { viewModel.triggerGtfsZipSync() },
-                isPeriodicSyncEnabled = uiState.isPeriodicSyncEnabled,
-                onTogglePeriodicSync = { viewModel.togglePeriodicSync(it) },
-                onDownloadSupplementaryFilesClick = { viewModel.triggerSupplementaryFilesDownload() },
+                lastGtfsSyncTimestamp = uiState.lastGtfsSyncTimestamp,
+                appUpdateCheckFrequency = uiState.appUpdateCheckFrequency,
+                onSelectAppUpdateCheckFrequency = { viewModel.setAppUpdateCheckFrequency(it) },
+                updateNetworkMode = uiState.updateNetworkMode,
+                onSelectUpdateNetworkMode = { viewModel.setUpdateNetworkMode(it) },
+                appUpdateState = uiState.appUpdateState,
+                isWifiConnected = uiState.isWifiConnected,
+                onCheckForUpdate = { viewModel.checkForAppUpdate(autoDownloadAllowed = true, manualCheck = true) },
+                onDownloadUpdate = { force -> viewModel.downloadPendingUpdate(forceWithoutWifi = force) },
+                onInstallUpdate = { apkPath -> triggerApkInstall(apkPath) },
+                onExportBackupJson = { viewModel.exportBackupJson() },
+                onImportBackupJson = { json -> viewModel.importBackupJson(json) },
+                backupRestoreMessage = uiState.backupRestoreMessage,
+                isBackupError = uiState.isBackupError,
+                onClearBackupMessage = { viewModel.clearBackupRestoreMessage() },
                 webMonitoringUrl = uiState.webMonitoringUrl,
                 gtfsZipUrl = uiState.gtfsZipUrl,
                 siriSoapUrl = uiState.siriSoapUrl,
                 queryTypeParam = uiState.queryTypeParam,
                 githubRepo = uiState.githubRepo,
                 githubTag = uiState.githubTag,
-                lastGtfsSyncTimestamp = uiState.lastGtfsSyncTimestamp,
-                appUpdateState = uiState.appUpdateState,
-                isWifiConnected = uiState.isWifiConnected,
-                onCheckForUpdate = { viewModel.checkForAppUpdate(autoDownloadOnWifi = true, manualCheck = true) },
-                onDownloadUpdate = { force -> viewModel.downloadPendingUpdate(forceWithoutWifi = force) },
-                onInstallUpdate = { apkPath -> triggerApkInstall(apkPath) },
                 onSaveAdvancedSettings = { webUrl, gtfsUrl, siriUrl, queryParam, githubRepo, githubTag ->
                     viewModel.saveAdvancedSettings(webUrl, gtfsUrl, siriUrl, queryParam, githubRepo, githubTag)
                 },

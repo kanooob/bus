@@ -200,9 +200,18 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
 
                     appWidgetManager.updateAppWidget(appWidgetId, views)
 
-                    // Actualise les prochains bus plus rapidement quand on est en mouvement (toutes les 20s)
-                    if (isMoving || isDynamicNearest) {
-                        scheduleFastRefresh(context, appWidgetId, if (isMoving) 20_000L else 45_000L)
+                    // Planifier le prochain rafraîchissement selon les réglages utilisateur
+                    val intervalMs = if (isDynamicNearest) {
+                        val locFreq = prefs.getWidgetLocationFrequency()
+                        if (locFreq.intervalMinutes > 0) locFreq.intervalMinutes * 60_000L else 0L
+                    } else {
+                        val widgetFreq = prefs.getWidgetRefreshFrequency()
+                        if (widgetFreq.intervalMinutes > 0) widgetFreq.intervalMinutes * 60_000L else 0L
+                    }
+                    if (intervalMs > 0L) {
+                        scheduleFastRefresh(context, appWidgetId, intervalMs)
+                    } else {
+                        cancelScheduledRefresh(context, appWidgetId)
                     }
                 } catch (e: Exception) {
                     views.setViewVisibility(R.id.widget_empty_view, View.VISIBLE)
@@ -210,6 +219,19 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                     appWidgetManager.updateAppWidget(appWidgetId, views)
                 }
             }
+        }
+
+        fun refreshAllWidgets(context: Context) {
+            try {
+                val appWidgetManager = AppWidgetManager.getInstance(context)
+                val componentName = android.content.ComponentName(context, IdelisAppWidgetProvider::class.java)
+                val ids = appWidgetManager.getAppWidgetIds(componentName)
+                if (ids.isNotEmpty()) {
+                    for (id in ids) {
+                        updateAppWidget(context, appWidgetManager, id)
+                    }
+                }
+            } catch (_: Exception) {}
         }
 
         private fun scheduleFastRefresh(context: Context, appWidgetId: Int, delayMs: Long) {
@@ -230,6 +252,25 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                     SystemClock.elapsedRealtime() + delayMs,
                     pendingIntent
                 )
+            } catch (_: Exception) {}
+        }
+
+        private fun cancelScheduledRefresh(context: Context, appWidgetId: Int) {
+            try {
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+                val intent = Intent(context, IdelisAppWidgetProvider::class.java).apply {
+                    action = ACTION_REFRESH_WIDGET
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                }
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context,
+                    appWidgetId * 10 + 2,
+                    intent,
+                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+                )
+                if (pendingIntent != null) {
+                    alarmManager.cancel(pendingIntent)
+                }
             } catch (_: Exception) {}
         }
     }
