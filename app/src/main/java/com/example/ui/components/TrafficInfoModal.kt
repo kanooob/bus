@@ -379,33 +379,13 @@ fun TrafficInfoModal(
                                     Spacer(modifier = Modifier.height(8.dp))
                                 }
 
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .clip(CircleShape)
-                                            .background(StatusDelayed.copy(alpha = 0.18f)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Warning,
-                                            contentDescription = null,
-                                            tint = StatusDelayed,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = alert.title,
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            fontWeight = FontWeight.Black,
-                                            color = contentColor
-                                        )
+                                Text(
+                                    text = alert.title,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Black,
+                                        color = contentColor
                                     )
-                                }
+                                )
 
                                 if (alert.messageText.isNotBlank()) {
                                     Spacer(modifier = Modifier.height(6.dp))

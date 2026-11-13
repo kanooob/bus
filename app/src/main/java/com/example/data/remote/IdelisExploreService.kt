@@ -63,7 +63,7 @@ class IdelisExploreService {
         const val DATASET_STOPS_BY_LINE = "liste-des-arrets-par-ligne-et-par-sens-du-reseau-idelis"
         const val DATASET_LINE_ICONS = "liste-des-icones-des-lignes"
 
-        const val URL_GTFS_ZIP = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
+        const val URL_GTFS_ZIP = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
 
         const val URL_EXPORTS_ROUTES = "$BASE_EXPLORE_URL/$DATASET_ROUTES_GTFS/exports/json"
         const val URL_EXPORTS_STOPS = "$BASE_EXPLORE_URL/$DATASET_STOPS_BY_LINE/exports/json"
@@ -74,6 +74,12 @@ class IdelisExploreService {
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
+
+    private fun JSONObject.optNullableString(key: String): String? {
+        if (isNull(key)) return null
+        val value = optString(key, "").trim()
+        return value.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+    }
 
     /**
      * Télécharge les lignes du réseau avec descriptifs officiels, terminus et couleurs :
@@ -88,12 +94,12 @@ class IdelisExploreService {
 
         try {
             Log.d(TAG, "Téléchargement lignes GTFS : $URL_EXPORTS_ROUTES")
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+            val jsonString = okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+                }
+                response.body?.string().orEmpty()
             }
-
-            val jsonString = response.body?.string().orEmpty()
             if (jsonString.isBlank()) {
                 return@withContext Result.failure(Exception("Réponse JSON vide"))
             }
@@ -108,11 +114,11 @@ class IdelisExploreService {
                     list.add(
                         OfficialRouteGtfs(
                             lineCode = lineCode,
-                            descriptif = obj.optString("descriptif", "Ligne $lineCode"),
-                            descriptifParSens = obj.optString("descriptif_par_sens", null),
-                            terminus1 = obj.optString("terminus_1", null),
-                            terminus2 = obj.optString("terminus_2", null),
-                            colorHex = obj.optString("couleur_hexa", "#E50914"),
+                            descriptif = obj.optNullableString("descriptif") ?: "Ligne $lineCode",
+                            descriptifParSens = obj.optNullableString("descriptif_par_sens"),
+                            terminus1 = obj.optNullableString("terminus_1"),
+                            terminus2 = obj.optNullableString("terminus_2"),
+                            colorHex = obj.optNullableString("couleur_hexa") ?: "#E50914",
                             sens = obj.optInt("sens", 1)
                         )
                     )
@@ -140,12 +146,12 @@ class IdelisExploreService {
 
         try {
             Log.d(TAG, "Téléchargement arrêts et sens : $URL_EXPORTS_STOPS")
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+            val jsonString = okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+                }
+                response.body?.string().orEmpty()
             }
-
-            val jsonString = response.body?.string().orEmpty()
             if (jsonString.isBlank()) {
                 return@withContext Result.failure(Exception("Réponse JSON vide"))
             }
@@ -164,11 +170,11 @@ class IdelisExploreService {
                         StopServing(
                             timeo = obj.optInt("timeo", i + 1000),
                             stopName = stopName,
-                            pole = obj.optString("pole", null)?.trim(),
+                            pole = obj.optNullableString("pole"),
                             lineRef = lineRef,
                             direction = if (direction.isNotBlank()) direction else "Destination Idelis",
                             sens = obj.optInt("sens", 1),
-                            commune = obj.optString("communes", null)?.trim(),
+                            commune = obj.optNullableString("communes"),
                             lat = obj.optDouble("latitude", 43.3000),
                             lon = obj.optDouble("longitude", -0.3700)
                         )
@@ -197,12 +203,12 @@ class IdelisExploreService {
 
         try {
             Log.d(TAG, "Téléchargement icônes : $URL_EXPORTS_ICONS")
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+            val jsonString = okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
+                }
+                response.body?.string().orEmpty()
             }
-
-            val jsonString = response.body?.string().orEmpty()
             if (jsonString.isBlank()) {
                 return@withContext Result.failure(Exception("Réponse JSON vide"))
             }
@@ -214,7 +220,7 @@ class IdelisExploreService {
                 val obj = jsonArray.getJSONObject(i)
                 val lineCode = obj.optString("ligne", "").trim()
                 val fileObj = obj.optJSONObject("fichier_png")
-                val iconUrl = fileObj?.optString("url", null)
+                val iconUrl = fileObj?.optNullableString("url")
                 if (lineCode.isNotBlank() && !iconUrl.isNullOrBlank()) {
                     iconsMap[lineCode.uppercase()] = iconUrl
                 }
@@ -295,7 +301,7 @@ class IdelisExploreService {
     }
 
     /**
-     * Télécharge le GTFS complet (https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip)
+     * Télécharge le GTFS complet (https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/)
      * et analyse calendar.txt et calendar_dates.txt pour déterminer la période actuelle
      * (Bleue, Orange, Verte, Grise) ainsi que les travaux ou perturbations du jour.
      */
@@ -323,11 +329,11 @@ class IdelisExploreService {
                 .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                val bytes = response.body?.bytes()
-                if (bytes != null && bytes.isNotEmpty()) {
-                    val zipStream = ZipInputStream(ByteArrayInputStream(bytes))
+            val bytes = okHttpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) response.body?.bytes() else null
+            }
+            if (bytes != null && bytes.isNotEmpty()) {
+                val zipStream = ZipInputStream(ByteArrayInputStream(bytes))
                     var entry = zipStream.nextEntry
                     var calendarContent: String? = null
                     var calendarDatesContent: String? = null
@@ -371,7 +377,6 @@ class IdelisExploreService {
                                     worksNotes.add("Alerte travaux / déviation : service $serviceId adapté")
                                 }
                             }
-                        }
                     }
                 }
             }

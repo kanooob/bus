@@ -1,5 +1,9 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -14,6 +18,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -25,10 +30,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DirectionsBus
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.InstallMobile
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -43,9 +51,11 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,8 +71,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.model.UpdateNetworkMode
+import com.example.data.remote.AppUpdateNotifier
 import com.example.data.remote.AppUpdateState
+import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.GitHubUpdaterService
+import com.example.data.remote.formatReleaseNotesForDisplay
 import com.example.ui.components.IdelisDepartureRow
 import com.example.ui.components.IdelisSketchTopBar
 import com.example.ui.components.SettingsModal
@@ -99,6 +113,30 @@ fun TransitBoardScreen(
     val updaterHelper = remember { GitHubUpdaterService() }
     var pendingInstallApkPath by remember { mutableStateOf<String?>(null) }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) {
+        viewModel.markNotificationPermissionAsked()
+    }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !AppUpdateNotifier.hasNotificationPermission(context) &&
+            !viewModel.hasAskedNotificationPermission()
+        ) {
+            viewModel.markNotificationPermissionAsked()
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    LaunchedEffect(uiState.trafficInfoPromptVisible) {
+        if (uiState.trafficInfoPromptVisible) {
+            isTrafficInfoOpen = true
+            viewModel.refreshTrafficAlerts(notifyIfNew = false)
+            viewModel.consumeTrafficInfoPrompt()
+        }
+    }
+
     val unknownSourcesLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) {
@@ -108,7 +146,13 @@ fun TransitBoardScreen(
             if (file.exists()) {
                 try {
                     context.startActivity(updaterHelper.buildInstallApkIntent(context, file))
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    viewModel.reportUpdateError(
+                        "Impossible de lancer l'installation : ${e.localizedMessage ?: "erreur"}"
+                    )
+                }
+            } else {
+                viewModel.reportUpdateError("Fichier APK introuvable, veuillez retélécharger la mise à jour.")
             }
             pendingInstallApkPath = null
         }
@@ -116,16 +160,27 @@ fun TransitBoardScreen(
 
     fun triggerApkInstall(apkFilePath: String) {
         val file = File(apkFilePath)
-        if (!file.exists()) return
+        if (!file.exists()) {
+            viewModel.reportUpdateError("Fichier APK introuvable, veuillez retélécharger la mise à jour.")
+            return
+        }
         if (updaterHelper.canInstallUnknownApps(context)) {
             try {
                 context.startActivity(updaterHelper.buildInstallApkIntent(context, file))
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                viewModel.reportUpdateError(
+                    "Impossible de lancer l'installation : ${e.localizedMessage ?: "erreur"}"
+                )
+            }
         } else {
             pendingInstallApkPath = apkFilePath
             try {
                 unknownSourcesLauncher.launch(updaterHelper.buildInstallUnknownAppsIntent(context))
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                viewModel.reportUpdateError(
+                    "Impossible d'ouvrir les paramètres d'installation : ${e.localizedMessage ?: "erreur"}"
+                )
+            }
         }
     }
 
@@ -152,7 +207,7 @@ fun TransitBoardScreen(
                 onStopClick = { isStopPickerOpen = true },
                 onTrafficInfoClick = {
                     isTrafficInfoOpen = true
-                    viewModel.refreshTrafficAlerts()
+                    viewModel.refreshTrafficAlerts(notifyIfNew = false)
                 },
                 onSettingsClick = {
                     viewModel.refreshWifiStatus()
@@ -176,19 +231,22 @@ fun TransitBoardScreen(
             if (uiState.updatePromptVisible) {
                 AppUpdateBanner(
                     updateState = uiState.appUpdateState,
+                    networkMode = uiState.updateNetworkMode,
                     isWifiConnected = uiState.isWifiConnected,
                     isDarkTheme = effectiveDarkTheme,
                     canInstallUnknownApps = updaterHelper.canInstallUnknownApps(context),
                     onDownloadNow = { viewModel.downloadPendingUpdate(forceWithoutWifi = true) },
+                    onRetryCheck = { viewModel.checkForAppUpdate(autoDownloadAllowed = true, manualCheck = true) },
                     onInstallNow = { apkPath -> triggerApkInstall(apkPath) },
                     onDismiss = { viewModel.dismissUpdatePrompt() }
                 )
             }
 
             // 2. Liste épurée des passages prochains avec support du geste "Tirer de haut en bas pour actualiser" (Pull to refresh)
+            // L'actualisation automatique périodique reste discrète (isManualRefreshing = false : pas de flèche ronde).
             PullToRefreshBox(
-                isRefreshing = uiState.isLoading,
-                onRefresh = { viewModel.refreshDepartures() },
+                isRefreshing = uiState.isManualRefreshing,
+                onRefresh = { viewModel.refreshDepartures(isManual = true) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -343,7 +401,7 @@ fun TransitBoardScreen(
                 activePeriod = uiState.activePeriod,
                 isLoading = uiState.isTrafficLoading,
                 errorMessage = uiState.trafficErrorMessage,
-                onRefresh = { viewModel.refreshTrafficAlerts() },
+                onRefresh = { viewModel.refreshTrafficAlerts(notifyIfNew = false) },
                 onDismissRequest = { isTrafficInfoOpen = false },
                 isDarkTheme = effectiveDarkTheme
             )
@@ -369,6 +427,11 @@ fun TransitBoardScreen(
                 gtfsReport = uiState.gtfsSyncReport,
                 onDownloadGtfsClick = { viewModel.triggerGtfsZipSync() },
                 lastGtfsSyncTimestamp = uiState.lastGtfsSyncTimestamp,
+                trafficRefreshFrequency = uiState.trafficRefreshFrequency,
+                onSelectTrafficRefreshFrequency = { viewModel.setTrafficRefreshFrequency(it) },
+                trafficNotificationsEnabled = uiState.trafficNotificationsEnabled,
+                onToggleTrafficNotifications = { viewModel.setTrafficNotificationsEnabled(it) },
+                lastTrafficRefreshTimestamp = uiState.lastTrafficRefreshTimestamp,
                 appUpdateCheckFrequency = uiState.appUpdateCheckFrequency,
                 onSelectAppUpdateCheckFrequency = { viewModel.setAppUpdateCheckFrequency(it) },
                 updateNetworkMode = uiState.updateNetworkMode,
@@ -461,151 +524,284 @@ private fun StopNotServedCard(
 @Composable
 private fun AppUpdateBanner(
     updateState: AppUpdateState,
+    networkMode: UpdateNetworkMode,
     isWifiConnected: Boolean,
     isDarkTheme: Boolean,
     canInstallUnknownApps: Boolean,
     onDownloadNow: () -> Unit,
+    onRetryCheck: () -> Unit,
     onInstallNow: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val bgColor = if (isDarkTheme) Color(0xFF1A2438) else Color(0xFFEEF2FF)
-    val textColor = if (isDarkTheme) Color.White else Color(0xFF1E1B4B)
-    val accent = Color(0xFF4F46E5)
+    val context = LocalContext.current
+    val isError = updateState is AppUpdateState.Error
+    val bgColor = when {
+        isError -> if (isDarkTheme) Color(0xFF33181C) else Color(0xFFFFEBEE)
+        isDarkTheme -> Color(0xFF1A2438)
+        else -> Color(0xFFEEF2FF)
+    }
+    val textColor = when {
+        isError -> if (isDarkTheme) Color(0xFFFFCDD2) else Color(0xFF7F1D1D)
+        isDarkTheme -> Color.White
+        else -> Color(0xFF1E1B4B)
+    }
+    val accent = if (isError) SketchRed else Color(0xFF4F46E5)
 
-    when (updateState) {
-        is AppUpdateState.UpdateAvailableWaitingWifi,
-        is AppUpdateState.Downloading,
-        is AppUpdateState.ReadyToInstall -> {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .testTag("app_update_banner"),
-                colors = CardDefaults.cardColors(containerColor = bgColor),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+    val release: GitHubReleaseInfo? = when (updateState) {
+        is AppUpdateState.UpdateAvailableWaitingWifi -> updateState.release
+        is AppUpdateState.Downloading -> updateState.release
+        is AppUpdateState.ReadyToInstall -> updateState.release
+        is AppUpdateState.Error -> updateState.release
+        else -> null
+    }
+
+    if (updateState is AppUpdateState.UpdateAvailableWaitingWifi ||
+        updateState is AppUpdateState.Downloading ||
+        updateState is AppUpdateState.ReadyToInstall ||
+        updateState is AppUpdateState.Error
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .testTag("app_update_banner"),
+            colors = CardDefaults.cardColors(containerColor = bgColor),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.SystemUpdate,
-                                contentDescription = null,
-                                tint = accent,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            val headerText = when (updateState) {
-                                is AppUpdateState.UpdateAvailableWaitingWifi ->
-                                    "Mise à jour ${updateState.release.tagName} disponible"
-                                is AppUpdateState.Downloading ->
-                                    "Téléchargement Wi-Fi ${updateState.release.tagName} (${updateState.progressPercent}%)"
-                                is AppUpdateState.ReadyToInstall ->
-                                    "Mise à jour ${updateState.release.tagName} prête !"
-                                else -> ""
-                            }
-                            Text(
-                                text = headerText,
-                                color = textColor,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
+                        Icon(
+                            imageVector = if (isError) Icons.Default.ErrorOutline else Icons.Default.SystemUpdate,
+                            contentDescription = null,
+                            tint = accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        val headerText = when (updateState) {
+                            is AppUpdateState.UpdateAvailableWaitingWifi ->
+                                "Mise à jour ${updateState.release.tagName} disponible"
+                            is AppUpdateState.Downloading ->
+                                "Téléchargement ${updateState.release.tagName} (${updateState.progressPercent}%)"
+                            is AppUpdateState.ReadyToInstall ->
+                                "Mise à jour ${updateState.release.tagName} prête !"
+                            is AppUpdateState.Error ->
+                                updateState.release?.let { "Échec mise à jour ${it.tagName}" }
+                                    ?: "Erreur de mise à jour"
+                            else -> ""
                         }
-
-                        IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Masquer",
-                                tint = textColor,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
+                        Text(
+                            text = headerText,
+                            color = textColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.5.sp
+                        )
                     }
 
-                    when (updateState) {
-                        is AppUpdateState.UpdateAvailableWaitingWifi -> {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (isWifiConnected) {
-                                    "Connexion Wi-Fi détectée — prêt à télécharger l'APK."
-                                } else {
-                                    "En attente d'une connexion Wi-Fi pour télécharger automatiquement."
-                                },
-                                color = textColor.copy(alpha = 0.78f),
-                                fontSize = 11.5.sp
-                            )
-                            if (!updateState.release.apkDownloadUrl.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                OutlinedButton(
-                                    onClick = onDownloadNow,
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CloudDownload,
-                                        contentDescription = null,
-                                        tint = accent,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Masquer",
+                            tint = textColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                // Titre + description de la release GitHub
+                if (release != null) {
+                    val formattedNotes = remember(release.releaseNotes) {
+                        formatReleaseNotesForDisplay(release.releaseNotes)
+                    }
+                    val showReleaseName = release.releaseName.isNotBlank() &&
+                        !release.releaseName.equals(release.tagName, ignoreCase = true)
+
+                    if (showReleaseName || formattedNotes.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            color = if (isDarkTheme) Color.Black.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("update_release_notes")
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 140.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                            ) {
+                                if (showReleaseName) {
                                     Text(
-                                        text = if (isWifiConnected) "Télécharger maintenant" else "Télécharger sans Wi-Fi",
-                                        color = accent,
+                                        text = release.releaseName,
+                                        color = textColor,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp
+                                    )
+                                    if (formattedNotes.isNotBlank()) {
+                                        Spacer(modifier = Modifier.height(3.dp))
+                                    }
+                                }
+                                if (formattedNotes.isNotBlank()) {
+                                    Text(
+                                        text = formattedNotes,
+                                        color = textColor.copy(alpha = 0.88f),
+                                        fontSize = 11.5.sp,
+                                        lineHeight = 16.sp
                                     )
                                 }
                             }
                         }
-                        is AppUpdateState.Downloading -> {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            LinearProgressIndicator(
-                                progress = { (updateState.progressPercent / 100f).coerceIn(0f, 1f) },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp)),
-                                color = accent
-                            )
+                    }
+                }
+
+                when (updateState) {
+                    is AppUpdateState.UpdateAvailableWaitingWifi -> {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        val hasApk = !updateState.release.apkDownloadUrl.isNullOrBlank()
+                        val subtitleText = when {
+                            !hasApk -> "Aucun fichier APK joint à cette version sur GitHub."
+                            isWifiConnected -> "Connexion Wi-Fi détectée — prêt à télécharger l'APK."
+                            networkMode == UpdateNetworkMode.WIFI_ONLY ->
+                                "En attente d'une connexion Wi-Fi pour télécharger automatiquement."
+                            else -> "Prêt à télécharger l'APK."
                         }
-                        is AppUpdateState.ReadyToInstall -> {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = { onInstallNow(updateState.apkFilePath) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF2E7D32),
-                                    contentColor = Color.White
-                                ),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth().testTag("install_update_button")
+                        Text(
+                            text = subtitleText,
+                            color = textColor.copy(alpha = 0.78f),
+                            fontSize = 11.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        if (hasApk) {
+                            OutlinedButton(
+                                onClick = onDownloadNow,
+                                shape = RoundedCornerShape(8.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.InstallMobile,
+                                    imageVector = Icons.Default.CloudDownload,
                                     contentDescription = null,
+                                    tint = accent,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (canInstallUnknownApps) {
-                                        "Installer la mise à jour"
-                                    } else {
-                                        "Autoriser et installer la mise à jour"
-                                    },
+                                    text = if (isWifiConnected) "Télécharger maintenant" else "Télécharger sans Wi-Fi",
+                                    color = accent,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    try {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, Uri.parse(updateState.release.htmlUrl))
+                                        )
+                                    } catch (_: Exception) {}
+                                },
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Ouvrir sur GitHub",
+                                    color = accent,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.sp
                                 )
                             }
                         }
-                        else -> {}
                     }
+                    is AppUpdateState.Downloading -> {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { (updateState.progressPercent / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = accent
+                        )
+                    }
+                    is AppUpdateState.ReadyToInstall -> {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = { onInstallNow(updateState.apkFilePath) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF2E7D32),
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("install_update_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.InstallMobile,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (canInstallUnknownApps) {
+                                    "Installer la mise à jour"
+                                } else {
+                                    "Autoriser et installer la mise à jour"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    is AppUpdateState.Error -> {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = updateState.message,
+                            color = textColor.copy(alpha = 0.85f),
+                            fontSize = 11.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                if (updateState.release != null && !updateState.release.apkDownloadUrl.isNullOrBlank()) {
+                                    onDownloadNow()
+                                } else {
+                                    onRetryCheck()
+                                }
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("retry_update_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = accent,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Réessayer",
+                                color = accent,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    else -> {}
                 }
             }
         }
-        else -> {}
     }
 }

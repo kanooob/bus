@@ -99,12 +99,12 @@ class IdelisWebScraperService(
                 .header("Accept", "text/html, */*; q=0.01")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
+            val html = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
+                }
+                response.body?.string().orEmpty()
             }
-
-            val html = response.body?.string().orEmpty()
             if (html.isBlank() || html.trim() == "ajax only") {
                 return@withContext Result.success(emptyList())
             }
@@ -183,12 +183,12 @@ class IdelisWebScraperService(
                 .header("Accept", "text/html, */*; q=0.01")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
+            val html = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
+                }
+                response.body?.string().orEmpty()
             }
-
-            val html = response.body?.string().orEmpty()
             if (html.isBlank() || html.trim() == "ajax only") {
                 return@withContext Result.success(
                     IdelisWebMonitoringResult(
@@ -364,12 +364,12 @@ class IdelisWebScraperService(
                 .header("Accept", "text/html, */*; q=0.01")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
+            val html = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
+                }
+                response.body?.string().orEmpty()
             }
-
-            val html = response.body?.string().orEmpty()
             if (html.isBlank() || html.trim() == "ajax only") {
                 return@withContext Result.success(emptyList())
             }

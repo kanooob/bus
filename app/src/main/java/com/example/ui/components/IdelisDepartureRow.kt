@@ -157,7 +157,7 @@ fun IdelisDepartureRow(
                     .background(routeColor),
                 contentAlignment = Alignment.Center
             ) {
-                var isImageLoaded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                var isImageLoaded by remember(departure.iconUrl) { mutableStateOf(false) }
 
                 if (!departure.iconUrl.isNullOrBlank()) {
                     AsyncImage(

@@ -7,6 +7,7 @@ import com.example.data.model.GtfsSyncFrequency
 import com.example.data.model.InAppRefreshFrequency
 import com.example.data.model.PrimaryColorMode
 import com.example.data.model.ThemeMode
+import com.example.data.model.TrafficRefreshFrequency
 import com.example.data.model.UpdateNetworkMode
 import com.example.data.model.WidgetLocationFrequency
 import com.example.data.model.WidgetRefreshFrequency
@@ -34,6 +35,8 @@ class PreferencesManager(context: Context) {
         private const val KEY_FAVORITE_STOP_IDS = "favorite_stop_ids"
         private const val KEY_LAST_GTFS_SYNC_TIME = "last_gtfs_sync_timestamp"
         private const val KEY_LAST_APP_UPDATE_CHECK_TIME = "last_app_update_check_timestamp"
+        private const val KEY_LAST_NOTIFIED_UPDATE_TAG = "last_notified_update_tag"
+        private const val KEY_NOTIFICATION_PERMISSION_ASKED = "notification_permission_asked"
 
         // Hiérarchie des paramètres
         private const val KEY_THEME_MODE = "theme_mode"
@@ -42,6 +45,11 @@ class PreferencesManager(context: Context) {
         private const val KEY_WIDGET_REFRESH_FREQ = "widget_refresh_frequency"
         private const val KEY_WIDGET_LOCATION_FREQ = "widget_location_frequency"
         private const val KEY_GTFS_SYNC_FREQ = "gtfs_sync_frequency"
+        private const val KEY_TRAFFIC_REFRESH_FREQ = "traffic_refresh_frequency"
+        private const val KEY_TRAFFIC_NOTIFICATIONS_ENABLED = "traffic_notifications_enabled"
+        private const val KEY_LAST_TRAFFIC_REFRESH_TIME = "last_traffic_refresh_timestamp"
+        private const val KEY_KNOWN_TRAFFIC_ALERT_KEYS = "known_traffic_alert_keys"
+        private const val KEY_TRAFFIC_BASELINE_INITIALIZED = "traffic_baseline_initialized"
         private const val KEY_APP_UPDATE_CHECK_FREQ = "app_update_check_frequency"
         private const val KEY_UPDATE_NETWORK_MODE = "update_network_mode"
 
@@ -56,7 +64,8 @@ class PreferencesManager(context: Context) {
         private const val KEY_GITHUB_TAG = "github_tag_target"
 
         const val DEFAULT_WEB_URL = "https://www.idelis.fr/?type=777"
-        const val DEFAULT_GTFS_ZIP_URL = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
+        private const val LEGACY_GTFS_ZIP_URL = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
+        const val DEFAULT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
         const val DEFAULT_SIRI_URL = "https://api.idelis.fr/siri/2.0"
         const val DEFAULT_QUERY_TYPE = "777"
         const val DEFAULT_GITHUB_REPO = "https://github.com/kanooob/bus"
@@ -129,6 +138,41 @@ class PreferencesManager(context: Context) {
             .apply()
     }
 
+    fun getTrafficRefreshFrequency(): TrafficRefreshFrequency =
+        getEnum(KEY_TRAFFIC_REFRESH_FREQ, TrafficRefreshFrequency.EVERY_2_HOURS)
+
+    fun saveTrafficRefreshFrequency(freq: TrafficRefreshFrequency) {
+        prefs.edit().putString(KEY_TRAFFIC_REFRESH_FREQ, freq.name).apply()
+    }
+
+    fun isTrafficNotificationsEnabled(): Boolean =
+        prefs.getBoolean(KEY_TRAFFIC_NOTIFICATIONS_ENABLED, false)
+
+    fun setTrafficNotificationsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_TRAFFIC_NOTIFICATIONS_ENABLED, enabled).apply()
+    }
+
+    fun getLastTrafficRefreshTimestamp(): Long =
+        prefs.getLong(KEY_LAST_TRAFFIC_REFRESH_TIME, 0L)
+
+    fun saveLastTrafficRefreshTimestamp(timestamp: Long) {
+        prefs.edit().putLong(KEY_LAST_TRAFFIC_REFRESH_TIME, timestamp).apply()
+    }
+
+    fun getKnownTrafficAlertKeys(): Set<String> =
+        prefs.getStringSet(KEY_KNOWN_TRAFFIC_ALERT_KEYS, emptySet()) ?: emptySet()
+
+    fun saveKnownTrafficAlertKeys(keys: Set<String>) {
+        prefs.edit().putStringSet(KEY_KNOWN_TRAFFIC_ALERT_KEYS, keys).apply()
+    }
+
+    fun hasTrafficBaselineInitialized(): Boolean =
+        prefs.getBoolean(KEY_TRAFFIC_BASELINE_INITIALIZED, false)
+
+    fun setTrafficBaselineInitialized(initialized: Boolean) {
+        prefs.edit().putBoolean(KEY_TRAFFIC_BASELINE_INITIALIZED, initialized).apply()
+    }
+
     // 3. Mises à jour de l'application
     fun getAppUpdateCheckFrequency(): AppUpdateCheckFrequency =
         getEnum(KEY_APP_UPDATE_CHECK_FREQ, AppUpdateCheckFrequency.DAILY_ON_OPEN)
@@ -148,6 +192,19 @@ class PreferencesManager(context: Context) {
 
     fun saveLastAppUpdateCheckTimestamp(timestamp: Long) {
         prefs.edit().putLong(KEY_LAST_APP_UPDATE_CHECK_TIME, timestamp).apply()
+    }
+
+    fun getLastNotifiedUpdateTag(): String? = prefs.getString(KEY_LAST_NOTIFIED_UPDATE_TAG, null)
+
+    fun saveLastNotifiedUpdateTag(tag: String) {
+        prefs.edit().putString(KEY_LAST_NOTIFIED_UPDATE_TAG, tag).apply()
+    }
+
+    fun hasAskedNotificationPermission(): Boolean =
+        prefs.getBoolean(KEY_NOTIFICATION_PERMISSION_ASKED, false)
+
+    fun setNotificationPermissionAsked() {
+        prefs.edit().putBoolean(KEY_NOTIFICATION_PERMISSION_ASKED, true).apply()
     }
 
     // Favoris et dernier arrêt
@@ -204,7 +261,14 @@ class PreferencesManager(context: Context) {
         prefs.edit().putString(KEY_URL_WEB_MONITORING, url.trim()).apply()
     }
 
-    fun getGtfsZipUrl(): String = prefs.getString(KEY_URL_GTFS_ZIP, DEFAULT_GTFS_ZIP_URL) ?: DEFAULT_GTFS_ZIP_URL
+    fun getGtfsZipUrl(): String {
+        val saved = prefs.getString(KEY_URL_GTFS_ZIP, DEFAULT_GTFS_ZIP_URL) ?: DEFAULT_GTFS_ZIP_URL
+        return if (saved.isBlank() || saved == LEGACY_GTFS_ZIP_URL) {
+            DEFAULT_GTFS_ZIP_URL
+        } else {
+            saved
+        }
+    }
 
     fun saveGtfsZipUrl(url: String) {
         prefs.edit().putString(KEY_URL_GTFS_ZIP, url.trim()).apply()
@@ -263,6 +327,8 @@ class PreferencesManager(context: Context) {
             put("widgetRefreshFrequency", getWidgetRefreshFrequency().name)
             put("widgetLocationFrequency", getWidgetLocationFrequency().name)
             put("gtfsSyncFrequency", getGtfsSyncFrequency().name)
+            put("trafficRefreshFrequency", getTrafficRefreshFrequency().name)
+            put("trafficNotificationsEnabled", isTrafficNotificationsEnabled())
             put("appUpdateCheckFrequency", getAppUpdateCheckFrequency().name)
             put("updateNetworkMode", getUpdateNetworkMode().name)
             put("webMonitoringUrl", getWebMonitoringUrl())
@@ -326,6 +392,12 @@ class PreferencesManager(context: Context) {
                 }
                 settingsObj.optString("gtfsSyncFrequency").takeIf { it.isNotBlank() }?.let { raw ->
                     enumValues<GtfsSyncFrequency>().firstOrNull { it.name == raw }?.let { saveGtfsSyncFrequency(it) }
+                }
+                settingsObj.optString("trafficRefreshFrequency").takeIf { it.isNotBlank() }?.let { raw ->
+                    enumValues<TrafficRefreshFrequency>().firstOrNull { it.name == raw }?.let { saveTrafficRefreshFrequency(it) }
+                }
+                if (settingsObj.has("trafficNotificationsEnabled")) {
+                    setTrafficNotificationsEnabled(settingsObj.optBoolean("trafficNotificationsEnabled", false))
                 }
                 settingsObj.optString("appUpdateCheckFrequency").takeIf { it.isNotBlank() }?.let { raw ->
                     enumValues<AppUpdateCheckFrequency>().firstOrNull { it.name == raw }?.let { saveAppUpdateCheckFrequency(it) }

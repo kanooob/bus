@@ -303,7 +303,7 @@ fun ApiConsoleView(
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = "Téléchargement direct du fichier GTFS théorique d'Idelis :\n" +
-                               "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip\n" +
+                               "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/\n" +
                                "Validité jusqu'en 2027 (stops.txt, routes.txt, trips.txt, stop_times.txt).",
                         style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
                     )

@@ -12,6 +12,7 @@ enum class PrimaryColorMode(val label: String) {
 }
 
 enum class InAppRefreshFrequency(val label: String, val intervalSeconds: Int) {
+    EVERY_45_SEC("Toutes les 45 secondes", 45),
     EVERY_1_MIN("Toutes les minutes", 60),
     EVERY_2_MIN("Toutes les 2 min", 120),
     EVERY_3_MIN("Toutes les 3 min", 180),
@@ -52,6 +53,16 @@ enum class GtfsSyncFrequency(
     DAILY_ON_OPEN("Quotidienne à l'ouverture", 24L * 3_600_000L, false),
     WEEKLY("Hebdomadaire", 7L * 24L * 3_600_000L, true),
     NEVER("Jamais", 0L, false)
+}
+
+enum class TrafficRefreshFrequency(val label: String, val intervalMs: Long) {
+    EVERY_30_MIN("Toutes les 30 min", 30L * 60_000L),
+    EVERY_1_HOUR("Toutes les heures", 1L * 3_600_000L),
+    EVERY_2_HOURS("Toutes les 2 heures", 2L * 3_600_000L),
+    EVERY_5_HOURS("Toutes les 5 heures", 5L * 3_600_000L),
+    EVERY_12_HOURS("Toutes les 12 heures", 12L * 3_600_000L),
+    DAILY("Tous les jours", 24L * 3_600_000L),
+    NEVER("Jamais", 0L)
 }
 
 enum class AppUpdateCheckFrequency(val label: String, val intervalMs: Long) {

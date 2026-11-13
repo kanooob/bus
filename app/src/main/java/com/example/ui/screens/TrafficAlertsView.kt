@@ -19,12 +19,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -44,8 +41,6 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.TrafficAlert
 import com.example.ui.theme.IdelisGold
-import com.example.ui.theme.StatusDelayed
-import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -94,8 +89,6 @@ fun TrafficAlertCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val isWarning = alert.severity.equals("WARNING", ignoreCase = true)
-    val accentColor = if (isWarning) StatusDelayed else StatusGreen
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -109,29 +102,11 @@ fun TrafficAlertCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = if (isWarning) Icons.Default.Warning else Icons.Default.Info,
-                            contentDescription = null,
-                            tint = accentColor
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = alert.title,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextPrimary)
-                    )
-                }
+                Text(
+                    text = alert.title,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = TextPrimary),
+                    modifier = Modifier.weight(1f).padding(end = 8.dp)
+                )
 
                 Text(
                     text = alert.publishedDate,

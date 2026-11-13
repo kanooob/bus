@@ -165,7 +165,16 @@ class IdelisWebScraperTest {
 
         assertTrue(updater.isNewerVersion("v1.0.1", "1.0"))
         assertTrue(updater.isNewerVersion("v2.0", "1.9.9"))
+        assertTrue(updater.isNewerVersion("release-2.2.0", "2.1.0"))
+        assertTrue(updater.isNewerVersion("v2.2.0-beta1", "2.1.0"))
         assertFalse(updater.isNewerVersion("v1.0", "1.0"))
         assertFalse(updater.isNewerVersion("0.9.5", "1.0"))
+    }
+
+    @Test
+    fun testReleaseNotesFormatting() {
+        val raw = "## Nouveautés\r\n- **Mode 45s** ajouté\r\n* `Fix` réseau"
+        val formatted = com.example.data.remote.formatReleaseNotesForDisplay(raw)
+        assertEquals("Nouveautés\n• Mode 45s ajouté\n• Fix réseau", formatted)
     }
 }

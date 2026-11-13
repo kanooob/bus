@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.remote.SiriXmlParser
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -408,6 +409,8 @@ class ExampleRobolectricTest {
         assertEquals(com.example.data.model.WidgetRefreshFrequency.EVERY_15_MIN, prefs.getWidgetRefreshFrequency())
         assertEquals(com.example.data.model.WidgetLocationFrequency.EVERY_15_MIN, prefs.getWidgetLocationFrequency())
         assertEquals(com.example.data.model.GtfsSyncFrequency.DAILY_ON_OPEN, prefs.getGtfsSyncFrequency())
+        assertEquals(com.example.data.model.TrafficRefreshFrequency.EVERY_2_HOURS, prefs.getTrafficRefreshFrequency())
+        assertFalse(prefs.isTrafficNotificationsEnabled())
         assertEquals(com.example.data.model.AppUpdateCheckFrequency.DAILY_ON_OPEN, prefs.getAppUpdateCheckFrequency())
         assertEquals(com.example.data.model.UpdateNetworkMode.WIFI_AND_CELLULAR, prefs.getUpdateNetworkMode())
 
@@ -419,6 +422,8 @@ class ExampleRobolectricTest {
         prefs.saveWidgetRefreshFrequency(com.example.data.model.WidgetRefreshFrequency.MANUAL_ONLY)
         prefs.saveWidgetLocationFrequency(com.example.data.model.WidgetLocationFrequency.EVERY_10_MIN)
         prefs.saveGtfsSyncFrequency(com.example.data.model.GtfsSyncFrequency.TWICE_A_DAY)
+        prefs.saveTrafficRefreshFrequency(com.example.data.model.TrafficRefreshFrequency.EVERY_30_MIN)
+        prefs.setTrafficNotificationsEnabled(true)
         prefs.saveAppUpdateCheckFrequency(com.example.data.model.AppUpdateCheckFrequency.WEEKLY)
         prefs.saveUpdateNetworkMode(com.example.data.model.UpdateNetworkMode.WIFI_ONLY)
 
@@ -440,9 +445,142 @@ class ExampleRobolectricTest {
         assertEquals(com.example.data.model.WidgetRefreshFrequency.MANUAL_ONLY, prefs.getWidgetRefreshFrequency())
         assertEquals(com.example.data.model.WidgetLocationFrequency.EVERY_10_MIN, prefs.getWidgetLocationFrequency())
         assertEquals(com.example.data.model.GtfsSyncFrequency.TWICE_A_DAY, prefs.getGtfsSyncFrequency())
+        assertEquals(com.example.data.model.TrafficRefreshFrequency.EVERY_30_MIN, prefs.getTrafficRefreshFrequency())
+        assertTrue(prefs.isTrafficNotificationsEnabled())
         assertEquals(com.example.data.model.AppUpdateCheckFrequency.WEEKLY, prefs.getAppUpdateCheckFrequency())
         assertEquals(com.example.data.model.UpdateNetworkMode.WIFI_ONLY, prefs.getUpdateNetworkMode())
     }
+
+    @Test
+    fun `in app 45 second refresh frequency persists and restores via json backup`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+
+        assertEquals(45, com.example.data.model.InAppRefreshFrequency.EVERY_45_SEC.intervalSeconds)
+        assertEquals("Toutes les 45 secondes", com.example.data.model.InAppRefreshFrequency.EVERY_45_SEC.label)
+
+        prefs.saveInAppRefreshFrequency(com.example.data.model.InAppRefreshFrequency.EVERY_45_SEC)
+        assertEquals(com.example.data.model.InAppRefreshFrequency.EVERY_45_SEC, prefs.getInAppRefreshFrequency())
+
+        val json = prefs.exportBackupJson()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val importRes = prefs.importBackupJson(json)
+        assertTrue(importRes.isSuccess)
+        assertEquals(com.example.data.model.InAppRefreshFrequency.EVERY_45_SEC, prefs.getInAppRefreshFrequency())
+    }
+
+    @Test
+    fun `app update notifier posts notification with release description`() {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val shadowApp = org.robolectric.Shadows.shadowOf(context)
+        val shadowNotificationManager = org.robolectric.Shadows.shadowOf(
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        )
+        val release = com.example.data.remote.GitHubReleaseInfo(
+            tagName = "v2.2.0",
+            versionName = "2.2.0",
+            releaseName = "Galaxie Bus v2.2.0",
+            releaseNotes = "## Nouveautés\n- **Actualisation discrète** toutes les 45s\n- Corrections de bugs",
+            htmlUrl = "https://github.com/kanooob/bus/releases/tag/v2.2.0",
+            apkDownloadUrl = "https://github.com/kanooob/bus/releases/download/v2.2.0/app-release.apk",
+            apkFileName = "app-release.apk",
+            apkSizeBytes = 1024L,
+            isNewerThanCurrent = true
+        )
+
+        // Sans permission sur Android 13+ (SDK 34), la notification est ignorée proprement
+        assertFalse(com.example.data.remote.AppUpdateNotifier.notifyUpdateAvailable(context, release))
+
+        // Avec la permission POST_NOTIFICATIONS accordée, la notification est envoyée avec les notes de release
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val posted = com.example.data.remote.AppUpdateNotifier.notifyUpdateAvailable(context, release)
+        assertTrue(posted)
+        assertEquals(1, shadowNotificationManager.allNotifications.size)
+        val notification = shadowNotificationManager.allNotifications.first()
+        val extras = notification.extras
+        assertTrue(extras.getString(android.app.Notification.EXTRA_TITLE).orEmpty().contains("v2.2.0"))
+        assertTrue(extras.getCharSequence(android.app.Notification.EXTRA_BIG_TEXT).toString().contains("Actualisation discrète"))
+    }
+
+    @Test
+    fun `discreet auto refresh does not trigger manual refreshing indicator`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        val prefs = com.example.data.local.PreferencesManager(context)
+        val repo = com.example.data.repository.IdelisRepository(db, context, prefs)
+        val viewModel = com.example.ui.viewmodel.TransitBoardViewModel(repo, prefs)
+
+        viewModel.setInAppRefreshFrequency(com.example.data.model.InAppRefreshFrequency.EVERY_45_SEC)
+        assertEquals(45, viewModel.uiState.value.secondsUntilRefresh)
+        assertEquals(false, viewModel.uiState.value.isManualRefreshing)
+
+        viewModel.refreshDepartures(isManual = false)
+        assertEquals(false, viewModel.uiState.value.isManualRefreshing)
+    }
+
+    @Test
+    fun `traffic alert notifier detects new alerts and respects notification preference`() {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+        val shadowApp = org.robolectric.Shadows.shadowOf(context)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val shadowNotificationManager = org.robolectric.Shadows.shadowOf(
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        )
+
+        val alert1 = com.example.data.model.TrafficAlert(
+            id = "a1",
+            title = "Travaux rue Carnot",
+            messageText = "Déviation ligne T1",
+            affectedLines = listOf("T1"),
+            severity = "WARNING",
+            publishedDate = "Aujourd'hui"
+        )
+        val alert2 = com.example.data.model.TrafficAlert(
+            id = "a2",
+            title = "Manifestation centre-ville",
+            messageText = "Arrêt Bosquet non desservi",
+            affectedLines = listOf("F", "A"),
+            severity = "WARNING",
+            publishedDate = "Aujourd'hui"
+        )
+
+        prefs.setTrafficNotificationsEnabled(true)
+
+        // 1. Première vérification : établit la baseline sans notifier
+        val firstNew = com.example.data.remote.TrafficAlertNotifier.processAlerts(
+            context = context,
+            prefs = prefs,
+            alerts = listOf(alert1),
+            allowNotification = true
+        )
+        assertTrue(firstNew.isEmpty())
+        assertEquals(0, shadowNotificationManager.allNotifications.size)
+
+        // 2. Même alerte : aucune notification
+        val sameNew = com.example.data.remote.TrafficAlertNotifier.processAlerts(
+            context = context,
+            prefs = prefs,
+            alerts = listOf(alert1),
+            allowNotification = true
+        )
+        assertTrue(sameNew.isEmpty())
+        assertEquals(0, shadowNotificationManager.allNotifications.size)
+
+        // 3. Nouvelle alerte ajoutée : notification postée
+        val secondNew = com.example.data.remote.TrafficAlertNotifier.processAlerts(
+            context = context,
+            prefs = prefs,
+            alerts = listOf(alert1, alert2),
+            allowNotification = true
+        )
+        assertEquals(1, secondNew.size)
+        assertEquals("Manifestation centre-ville", secondNew.first().title)
+        assertEquals(1, shadowNotificationManager.allNotifications.size)
+        val notifTitle = shadowNotificationManager.allNotifications.first().extras
+            .getString(android.app.Notification.EXTRA_TITLE).orEmpty()
+        assertTrue(notifTitle.contains("Manifestation centre-ville"))
+    }
 }
-
-

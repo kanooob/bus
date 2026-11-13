@@ -13,6 +13,8 @@ import com.example.data.local.IdelisDatabase
 import com.example.data.local.PreferencesManager
 import com.example.data.model.PrimaryColorMode
 import com.example.data.model.ThemeMode
+import com.example.data.remote.AppUpdateNotifier
+import com.example.data.remote.TrafficAlertNotifier
 import com.example.data.repository.IdelisRepository
 import com.example.ui.screens.TransitBoardScreen
 import com.example.ui.theme.MyApplicationTheme
@@ -32,7 +34,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIntentStop(intent)
+        handleIntentExtras(intent)
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
             val systemDark = isSystemInDarkTheme()
@@ -64,11 +66,19 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntentStop(intent)
+        handleIntentExtras(intent)
     }
 
-    private fun handleIntentStop(intent: Intent?) {
-        val targetStopId = intent?.getStringExtra("EXTRA_STOP_ID") ?: return
-        viewModel.selectStopById(targetStopId)
+    private fun handleIntentExtras(intent: Intent?) {
+        val targetStopId = intent?.getStringExtra("EXTRA_STOP_ID")
+        if (!targetStopId.isNullOrBlank()) {
+            viewModel.selectStopById(targetStopId)
+        }
+        if (intent?.getBooleanExtra(AppUpdateNotifier.EXTRA_OPEN_UPDATE, false) == true) {
+            viewModel.openUpdatePrompt()
+        }
+        if (intent?.getBooleanExtra(TrafficAlertNotifier.EXTRA_OPEN_TRAFFIC_INFO, false) == true) {
+            viewModel.openTrafficInfoFromNotification()
+        }
     }
 }

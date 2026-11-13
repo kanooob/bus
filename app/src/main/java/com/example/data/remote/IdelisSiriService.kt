@@ -84,15 +84,14 @@ class IdelisSiriService(
 
         try {
             Log.d(TAG, "Appel SIRI SOAP vers $effectiveEndpoint (GetStopMonitoring) pour l'arrêt $stopId")
-            val response = okHttpClient.newCall(request).execute()
-
-            if (!response.isSuccessful) {
-                val errorMsg = "HTTP ${response.code}: ${response.message}"
-                Log.w(TAG, "Échec appel SOAP GetStopMonitoring: $errorMsg")
-                return@withContext Result.failure(Exception(errorMsg))
+            val responseXml = okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val errorMsg = "HTTP ${response.code}: ${response.message}"
+                    Log.w(TAG, "Échec appel SOAP GetStopMonitoring: $errorMsg")
+                    return@withContext Result.failure(Exception(errorMsg))
+                }
+                response.body?.string().orEmpty()
             }
-
-            val responseXml = response.body?.string().orEmpty()
             if (responseXml.isBlank()) {
                 return@withContext Result.failure(Exception("Réponse SOAP XML vide"))
             }

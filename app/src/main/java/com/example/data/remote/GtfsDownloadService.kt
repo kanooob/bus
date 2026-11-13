@@ -23,7 +23,7 @@ import java.util.zip.ZipInputStream
 
 /**
  * Service dédié au téléchargement et à l'analyse complète du fichier ZIP GTFS d'Idelis
- * (https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip ou URL alternative)
+ * (https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/)
  * et des autres jeux de données complémentaires OpenDataSoft (liste des PR, vélos, véhicules, grilles).
  *
  * Extrait et parse en mémoire/streaming :
@@ -44,7 +44,7 @@ class GtfsDownloadService(
 
     companion object {
         private const val TAG = "GtfsDownloadService"
-        const val DEFAULT_GTFS_ZIP_URL = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
+        const val DEFAULT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
         
         // URLs directes des autres fichiers utiles du réseau Idelis
         const val URL_PR_EXPORT = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-pr/exports/json"
@@ -78,16 +78,16 @@ class GtfsDownloadService(
                 .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "Échec téléchargement HTTP ${response.code}")
-                return@withContext GtfsSyncReport(
-                    success = false,
-                    errorMessage = "Erreur HTTP ${response.code} lors du téléchargement du GTFS"
-                )
+            val bytes = okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Échec téléchargement HTTP ${response.code}")
+                    return@withContext GtfsSyncReport(
+                        success = false,
+                        errorMessage = "Erreur HTTP ${response.code} lors du téléchargement du GTFS"
+                    )
+                }
+                response.body?.bytes()
             }
-
-            val bytes = response.body?.bytes()
             if (bytes == null || bytes.isEmpty()) {
                 return@withContext GtfsSyncReport(
                     success = false,
@@ -242,12 +242,13 @@ class GtfsDownloadService(
         for ((label, url) in endpoints) {
             try {
                 val req = Request.Builder().url(url).addHeader("Accept", "application/json").build()
-                val res = okHttpClient.newCall(req).execute()
-                if (res.isSuccessful) {
-                    val body = res.body?.string().orEmpty()
-                    results.add("$label : ${body.length} octets téléchargés")
-                } else {
-                    results.add("$label : HTTP ${res.code}")
+                okHttpClient.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string().orEmpty()
+                        results.add("$label : ${body.length} octets téléchargés")
+                    } else {
+                        results.add("$label : HTTP ${res.code}")
+                    }
                 }
             } catch (e: Exception) {
                 results.add("$label : Erreur (${e.message})")

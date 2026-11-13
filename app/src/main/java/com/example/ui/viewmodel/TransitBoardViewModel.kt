@@ -16,12 +16,16 @@ import com.example.data.model.ParkAndRide
 import com.example.data.model.PrimaryColorMode
 import com.example.data.model.ThemeMode
 import com.example.data.model.TrafficAlert
+import com.example.data.model.TrafficRefreshFrequency
 import com.example.data.model.UpdateNetworkMode
 import com.example.data.model.WidgetLocationFrequency
 import com.example.data.model.WidgetRefreshFrequency
+import com.example.data.remote.AppUpdateNotifier
 import com.example.data.remote.AppUpdateState
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.IdelisSiriService
+import com.example.data.remote.TrafficAlertNotifier
+import com.example.data.remote.TrafficAlertSyncReceiver
 import com.example.data.repository.IdelisRepository
 import com.example.ui.widget.IdelisAppWidgetProvider
 import kotlinx.coroutines.Job
@@ -55,6 +59,7 @@ data class TransitBoardUiState(
     val allStops: List<GtfsStop> = emptyList(),
     val searchQuery: String = "",
     val isLoading: Boolean = false,
+    val isManualRefreshing: Boolean = false,
     val isOfflineFallback: Boolean = false,
     val isSimulationMode: Boolean = false, // Retards simulés désactivés, seuls les passages issus des requêtes réelles sont affichés
     val requestorRef: String = IdelisSiriService.DEFAULT_REQUESTOR_REF,
@@ -69,6 +74,9 @@ data class TransitBoardUiState(
     val widgetRefreshFrequency: WidgetRefreshFrequency = WidgetRefreshFrequency.EVERY_15_MIN,
     val widgetLocationFrequency: WidgetLocationFrequency = WidgetLocationFrequency.EVERY_15_MIN,
     val gtfsSyncFrequency: GtfsSyncFrequency = GtfsSyncFrequency.DAILY_ON_OPEN,
+    val trafficRefreshFrequency: TrafficRefreshFrequency = TrafficRefreshFrequency.EVERY_2_HOURS,
+    val trafficNotificationsEnabled: Boolean = false,
+    val lastTrafficRefreshTimestamp: Long = 0L,
     val appUpdateCheckFrequency: AppUpdateCheckFrequency = AppUpdateCheckFrequency.DAILY_ON_OPEN,
     val updateNetworkMode: UpdateNetworkMode = UpdateNetworkMode.WIFI_AND_CELLULAR,
     val backupRestoreMessage: String? = null,
@@ -112,6 +120,7 @@ data class TransitBoardUiState(
     // Info Trafic en direct (?type=777 requete=infostrafic)
     val isTrafficLoading: Boolean = false,
     val trafficErrorMessage: String? = null,
+    val trafficInfoPromptVisible: Boolean = false,
     // Mise à jour automatique GitHub (vérification + téléchargement Wi-Fi + installation APK)
     val appUpdateState: AppUpdateState = AppUpdateState.Idle,
     val updatePromptVisible: Boolean = false,
@@ -132,6 +141,9 @@ class TransitBoardViewModel(
             widgetRefreshFrequency = preferencesManager?.getWidgetRefreshFrequency() ?: WidgetRefreshFrequency.EVERY_15_MIN,
             widgetLocationFrequency = preferencesManager?.getWidgetLocationFrequency() ?: WidgetLocationFrequency.EVERY_15_MIN,
             gtfsSyncFrequency = preferencesManager?.getGtfsSyncFrequency() ?: GtfsSyncFrequency.DAILY_ON_OPEN,
+            trafficRefreshFrequency = preferencesManager?.getTrafficRefreshFrequency() ?: TrafficRefreshFrequency.EVERY_2_HOURS,
+            trafficNotificationsEnabled = preferencesManager?.isTrafficNotificationsEnabled() ?: false,
+            lastTrafficRefreshTimestamp = preferencesManager?.getLastTrafficRefreshTimestamp() ?: 0L,
             appUpdateCheckFrequency = preferencesManager?.getAppUpdateCheckFrequency() ?: AppUpdateCheckFrequency.DAILY_ON_OPEN,
             updateNetworkMode = preferencesManager?.getUpdateNetworkMode() ?: UpdateNetworkMode.WIFI_AND_CELLULAR,
             secondsUntilRefresh = (preferencesManager?.getInAppRefreshFrequency() ?: InAppRefreshFrequency.EVERY_1_MIN).intervalSeconds,
@@ -152,8 +164,10 @@ class TransitBoardViewModel(
 
     private var tickerJob: Job? = null
     private var periodicSyncJob: Job? = null
+    private var trafficRefreshJob: Job? = null
     private var webSearchJob: Job? = null
     private var updateJob: Job? = null
+    private var refreshJob: Job? = null
 
     init {
         loadStops()
@@ -161,6 +175,8 @@ class TransitBoardViewModel(
         loadComplementaryData()
         startAutoRefreshTicker()
         startPeriodicSyncJob()
+        startTrafficRefreshJob()
+        syncTrafficBackgroundSchedule()
         checkForAppUpdateOnLaunch()
     }
 
@@ -220,7 +236,7 @@ class TransitBoardViewModel(
                         activePeriod = repository.getCurrentPeriod()
                     )
                 }
-                if (_uiState.value.departures.isEmpty() && _uiState.value.selectedStop != null) {
+                if (_uiState.value.departures.isEmpty() && _uiState.value.selectedStop != null && refreshJob?.isActive != true) {
                     refreshDepartures()
                 }
             }
@@ -243,23 +259,40 @@ class TransitBoardViewModel(
                 )
             }
         }
-        refreshTrafficAlerts()
+        val trafficFreq = _uiState.value.trafficRefreshFrequency
+        if (trafficFreq != TrafficRefreshFrequency.NEVER && trafficFreq.intervalMs > 0L) {
+            val lastCheck = preferencesManager?.getLastTrafficRefreshTimestamp() ?: 0L
+            val now = System.currentTimeMillis()
+            if (now - lastCheck >= trafficFreq.intervalMs) {
+                refreshTrafficAlerts(notifyIfNew = true)
+            }
+        }
     }
 
     /**
      * Exécute la requête POST https://www.idelis.fr/?type=777 (requete=infostrafic&requete_val[lignesfav]=0)
      * et remplace le contenu de la catégorie info par les alertes parsées.
      */
-    fun refreshTrafficAlerts() {
+    fun refreshTrafficAlerts(notifyIfNew: Boolean = false) {
         viewModelScope.launch {
             _uiState.update { it.copy(isTrafficLoading = true, trafficErrorMessage = null) }
             val result = repository.fetchLiveTrafficAlerts()
             if (result.isSuccess) {
+                val alerts = result.getOrNull().orEmpty()
+                val now = System.currentTimeMillis()
+                preferencesManager?.saveLastTrafficRefreshTimestamp(now)
+                TrafficAlertNotifier.processAlerts(
+                    context = repository.appContext,
+                    prefs = preferencesManager,
+                    alerts = alerts,
+                    allowNotification = notifyIfNew
+                )
                 _uiState.update {
                     it.copy(
-                        trafficAlerts = result.getOrNull().orEmpty(),
+                        trafficAlerts = alerts,
                         isTrafficLoading = false,
-                        trafficErrorMessage = null
+                        trafficErrorMessage = null,
+                        lastTrafficRefreshTimestamp = now
                     )
                 }
             } else {
@@ -353,6 +386,60 @@ class TransitBoardViewModel(
         startPeriodicSyncJob()
     }
 
+    fun setTrafficRefreshFrequency(freq: TrafficRefreshFrequency) {
+        preferencesManager?.saveTrafficRefreshFrequency(freq)
+        _uiState.update { it.copy(trafficRefreshFrequency = freq) }
+        startTrafficRefreshJob()
+        syncTrafficBackgroundSchedule()
+    }
+
+    fun setTrafficNotificationsEnabled(enabled: Boolean) {
+        preferencesManager?.setTrafficNotificationsEnabled(enabled)
+        if (enabled && preferencesManager != null && !preferencesManager.hasTrafficBaselineInitialized()) {
+            val currentAlerts = _uiState.value.trafficAlerts
+            if (currentAlerts.isNotEmpty()) {
+                preferencesManager.saveKnownTrafficAlertKeys(
+                    currentAlerts.map { TrafficAlertNotifier.alertFingerprint(it) }.toSet()
+                )
+                preferencesManager.setTrafficBaselineInitialized(true)
+            }
+        }
+        _uiState.update { it.copy(trafficNotificationsEnabled = enabled) }
+        syncTrafficBackgroundSchedule()
+    }
+
+    fun openTrafficInfoFromNotification() {
+        _uiState.update { it.copy(trafficInfoPromptVisible = true) }
+    }
+
+    fun consumeTrafficInfoPrompt() {
+        _uiState.update { it.copy(trafficInfoPromptVisible = false) }
+    }
+
+    private fun syncTrafficBackgroundSchedule() {
+        val ctx = repository.appContext ?: return
+        val prefs = preferencesManager ?: return
+        TrafficAlertSyncReceiver.scheduleOrCancel(ctx, prefs)
+    }
+
+    private fun startTrafficRefreshJob() {
+        trafficRefreshJob?.cancel()
+        val freq = _uiState.value.trafficRefreshFrequency
+        if (freq == TrafficRefreshFrequency.NEVER || freq.intervalMs <= 0L) {
+            return
+        }
+        trafficRefreshJob = viewModelScope.launch {
+            while (isActive) {
+                val intervalMs = _uiState.value.trafficRefreshFrequency.intervalMs
+                if (intervalMs <= 0L) break
+                delay(intervalMs)
+                if (_uiState.value.trafficRefreshFrequency != TrafficRefreshFrequency.NEVER) {
+                    refreshTrafficAlerts(notifyIfNew = true)
+                }
+            }
+        }
+    }
+
     fun setAppUpdateCheckFrequency(freq: AppUpdateCheckFrequency) {
         preferencesManager?.saveAppUpdateCheckFrequency(freq)
         _uiState.update { it.copy(appUpdateCheckFrequency = freq) }
@@ -378,6 +465,8 @@ class TransitBoardViewModel(
             val widgetFreq = pm.getWidgetRefreshFrequency()
             val widgetLocFreq = pm.getWidgetLocationFrequency()
             val gtfsFreq = pm.getGtfsSyncFrequency()
+            val trafficFreq = pm.getTrafficRefreshFrequency()
+            val trafficNotifEnabled = pm.isTrafficNotificationsEnabled()
             val updateFreq = pm.getAppUpdateCheckFrequency()
             val networkMode = pm.getUpdateNetworkMode()
             val webUrl = pm.getWebMonitoringUrl()
@@ -404,6 +493,8 @@ class TransitBoardViewModel(
                     widgetLocationFrequency = widgetLocFreq,
                     gtfsSyncFrequency = gtfsFreq,
                     isPeriodicSyncEnabled = gtfsFreq != GtfsSyncFrequency.NEVER,
+                    trafficRefreshFrequency = trafficFreq,
+                    trafficNotificationsEnabled = trafficNotifEnabled,
                     appUpdateCheckFrequency = updateFreq,
                     updateNetworkMode = networkMode,
                     webMonitoringUrl = webUrl,
@@ -419,6 +510,8 @@ class TransitBoardViewModel(
             }
             startAutoRefreshTicker()
             startPeriodicSyncJob()
+            startTrafficRefreshJob()
+            syncTrafficBackgroundSchedule()
             pm.getLastSelectedStopId()?.let { selectStopById(it) } ?: refreshDepartures()
             repository.appContext?.let { IdelisAppWidgetProvider.refreshAllWidgets(it) }
         } else {
@@ -696,10 +789,16 @@ class TransitBoardViewModel(
         _uiState.update { it.copy(isAutoRefreshPaused = next) }
     }
 
-    fun refreshDepartures() {
+    fun refreshDepartures(isManual: Boolean = false) {
         val stop = _uiState.value.selectedStop ?: return
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            _uiState.update { current ->
+                current.copy(
+                    isLoading = current.departures.isEmpty(),
+                    isManualRefreshing = isManual
+                )
+            }
             val result = repository.getDeparturesForStop(
                 stopId = stop.stopId,
                 useSimulationMode = false,
@@ -707,9 +806,15 @@ class TransitBoardViewModel(
                 requestorRef = _uiState.value.requestorRef
             )
 
+            if (_uiState.value.selectedStop?.stopId != stop.stopId) {
+                _uiState.update { it.copy(isLoading = false, isManualRefreshing = false) }
+                return@launch
+            }
+
             val lines = result.departures.map { it.lineRef }.distinct()
-            val filtered = if (_uiState.value.selectedLineFilter != null) {
-                result.departures.filter { it.lineRef.equals(_uiState.value.selectedLineFilter, ignoreCase = true) }
+            val currentFilter = _uiState.value.selectedLineFilter
+            val filtered = if (currentFilter != null) {
+                result.departures.filter { it.lineRef.equals(currentFilter, ignoreCase = true) }
             } else {
                 result.departures
             }
@@ -724,6 +829,7 @@ class TransitBoardViewModel(
                     filteredDepartures = filtered,
                     availableLines = lines,
                     isLoading = false,
+                    isManualRefreshing = false,
                     isOfflineFallback = result.isOfflineFallback,
                     statusMessage = result.statusMessage,
                     lastUpdatedFormatted = updatedStr,
@@ -752,7 +858,7 @@ class TransitBoardViewModel(
                     val remaining = _uiState.value.secondsUntilRefresh - 1
                     if (remaining <= 0) {
                         _uiState.update { it.copy(secondsUntilRefresh = currentFreq.intervalSeconds) }
-                        refreshDepartures()
+                        refreshDepartures(isManual = false)
                     } else {
                         _uiState.update { it.copy(secondsUntilRefresh = remaining) }
                     }
@@ -930,10 +1036,14 @@ class TransitBoardViewModel(
             val repoUrl = _uiState.value.githubRepo.ifBlank {
                 com.example.data.local.PreferencesManager.DEFAULT_GITHUB_REPO
             }
+            val targetTag = _uiState.value.githubTag.ifBlank {
+                com.example.data.local.PreferencesManager.DEFAULT_GITHUB_TAG
+            }
             val currentVersion = BuildConfig.VERSION_NAME
             val checkRes = repository.updaterService.checkLatestRelease(
                 repoUrl = repoUrl,
-                currentVersion = currentVersion
+                currentVersion = currentVersion,
+                targetTag = targetTag
             )
             preferencesManager?.saveLastAppUpdateCheckTimestamp(System.currentTimeMillis())
 
@@ -957,6 +1067,14 @@ class TransitBoardViewModel(
                     )
                 }
                 return@launch
+            }
+
+            if (ctx != null) {
+                val lastNotifiedTag = preferencesManager?.getLastNotifiedUpdateTag()
+                if (manualCheck || lastNotifiedTag != release.tagName) {
+                    AppUpdateNotifier.notifyUpdateAvailable(ctx, release)
+                    preferencesManager?.saveLastNotifiedUpdateTag(release.tagName)
+                }
             }
 
             val isWifiNow = ctx?.let { repository.updaterService.isWifiConnected(it) } ?: false
@@ -983,7 +1101,10 @@ class TransitBoardViewModel(
         val ctx = repository.appContext ?: return
         val release: GitHubReleaseInfo = when (val st = _uiState.value.appUpdateState) {
             is AppUpdateState.UpdateAvailableWaitingWifi -> st.release
-            is AppUpdateState.Error -> return
+            is AppUpdateState.Error -> st.release ?: run {
+                checkForAppUpdate(autoDownloadAllowed = true, manualCheck = true)
+                return
+            }
             is AppUpdateState.ReadyToInstall -> return
             is AppUpdateState.Downloading -> return
             else -> return
@@ -1039,6 +1160,7 @@ class TransitBoardViewModel(
 
         if (dlResult.isSuccess) {
             val file = dlResult.getOrNull()!!
+            AppUpdateNotifier.notifyUpdateReadyToInstall(ctx, release)
             _uiState.update {
                 it.copy(
                     appUpdateState = AppUpdateState.ReadyToInstall(
@@ -1052,12 +1174,49 @@ class TransitBoardViewModel(
             _uiState.update {
                 it.copy(
                     appUpdateState = AppUpdateState.Error(
-                        dlResult.exceptionOrNull()?.localizedMessage ?: "Échec du téléchargement de la mise à jour"
+                        message = dlResult.exceptionOrNull()?.localizedMessage ?: "Échec du téléchargement de la mise à jour",
+                        release = release
                     ),
                     updatePromptVisible = true
                 )
             }
         }
+    }
+
+    fun openUpdatePrompt() {
+        val state = _uiState.value.appUpdateState
+        if (state is AppUpdateState.UpdateAvailableWaitingWifi ||
+            state is AppUpdateState.Downloading ||
+            state is AppUpdateState.ReadyToInstall ||
+            state is AppUpdateState.Error
+        ) {
+            _uiState.update { it.copy(updatePromptVisible = true) }
+        } else {
+            checkForAppUpdate(autoDownloadAllowed = true, manualCheck = true)
+        }
+    }
+
+    fun reportUpdateError(message: String) {
+        val existingRelease = when (val st = _uiState.value.appUpdateState) {
+            is AppUpdateState.UpdateAvailableWaitingWifi -> st.release
+            is AppUpdateState.Downloading -> st.release
+            is AppUpdateState.ReadyToInstall -> st.release
+            is AppUpdateState.Error -> st.release
+            else -> null
+        }
+        _uiState.update {
+            it.copy(
+                appUpdateState = AppUpdateState.Error(message = message, release = existingRelease),
+                updatePromptVisible = true
+            )
+        }
+    }
+
+    fun hasAskedNotificationPermission(): Boolean =
+        preferencesManager?.hasAskedNotificationPermission() ?: false
+
+    fun markNotificationPermissionAsked() {
+        preferencesManager?.setNotificationPermissionAsked()
     }
 
     fun dismissUpdatePrompt() {
@@ -1068,7 +1227,9 @@ class TransitBoardViewModel(
         super.onCleared()
         tickerJob?.cancel()
         periodicSyncJob?.cancel()
+        trafficRefreshJob?.cancel()
         updateJob?.cancel()
+        refreshJob?.cancel()
     }
 }
 

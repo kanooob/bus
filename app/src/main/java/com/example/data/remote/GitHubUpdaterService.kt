@@ -46,7 +46,37 @@ sealed class AppUpdateState {
         val release: GitHubReleaseInfo,
         val apkFilePath: String
     ) : AppUpdateState()
-    data class Error(val message: String) : AppUpdateState()
+    data class Error(
+        val message: String,
+        val release: GitHubReleaseInfo? = null
+    ) : AppUpdateState()
+}
+
+/**
+ * Nettoie le Markdown d'une description de release GitHub pour un affichage lisible dans l'UI et les notifications.
+ */
+fun formatReleaseNotesForDisplay(rawNotes: String?): String {
+    if (rawNotes.isNullOrBlank()) return ""
+    return rawNotes
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .lineSequence()
+        .map { line ->
+            val trimmed = line.trimEnd()
+            val withoutHeaders = trimmed.replace(Regex("^#{1,6}\\s*"), "")
+            val withoutBold = withoutHeaders
+                .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
+                .replace(Regex("__(.+?)__"), "$1")
+                .replace(Regex("`([^`]+)`"), "$1")
+            if (withoutBold.startsWith("- ") || withoutBold.startsWith("* ")) {
+                "• " + withoutBold.substring(2).trimStart()
+            } else {
+                withoutBold
+            }
+        }
+        .joinToString("\n")
+        .replace(Regex("\n{3,}"), "\n\n")
+        .trim()
 }
 
 /**
@@ -99,9 +129,10 @@ class GitHubUpdaterService(
     }
 
     private fun normalizeVersionParts(version: String): List<Int> {
-        val cleaned = version.trim()
-            .removePrefix("v")
-            .removePrefix("V")
+        val trimmed = version.trim()
+        val firstDigitIdx = trimmed.indexOfFirst { it.isDigit() }
+        if (firstDigitIdx < 0) return emptyList()
+        val cleaned = trimmed.substring(firstDigitIdx)
             .substringBefore("-")
             .substringBefore("+")
         return cleaned.split(".")
@@ -125,46 +156,58 @@ class GitHubUpdaterService(
     }
 
     /**
-     * Interroge l'API GitHub Releases pour récupérer la dernière version et son éventuel APK.
+     * Interroge l'API GitHub Releases pour récupérer la dernière version (ou un tag spécifique) et son éventuel APK.
      */
     suspend fun checkLatestRelease(
         repoUrl: String = DEFAULT_REPO_URL,
-        currentVersion: String
+        currentVersion: String,
+        targetTag: String = "latest"
     ): Result<GitHubReleaseInfo> = withContext(Dispatchers.IO) {
         try {
             val (owner, repo) = parseOwnerAndRepo(repoUrl)
-            val latestUrl = "https://api.github.com/repos/$owner/$repo/releases/latest"
+            val cleanTag = targetTag.trim()
+            val primaryUrl = if (cleanTag.isNotBlank() && !cleanTag.equals("latest", ignoreCase = true)) {
+                "https://api.github.com/repos/$owner/$repo/releases/tags/$cleanTag"
+            } else {
+                "https://api.github.com/repos/$owner/$repo/releases/latest"
+            }
 
             val latestReq = Request.Builder()
-                .url(latestUrl)
+                .url(primaryUrl)
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "GalaxieBus-Android/$currentVersion")
                 .build()
 
-            val response = client.newCall(latestReq).execute()
-            val releaseJson: JSONObject? = if (response.isSuccessful) {
-                val body = response.body?.string().orEmpty()
-                if (body.isNotBlank()) JSONObject(body) else null
-            } else if (response.code == 404) {
-                // Repli vers la liste complète des releases (si seule une pre-release existe)
-                val listReq = Request.Builder()
-                    .url("https://api.github.com/repos/$owner/$repo/releases?per_page=1")
-                    .header("Accept", "application/vnd.github+json")
-                    .header("User-Agent", "GalaxieBus-Android/$currentVersion")
-                    .build()
-                val listResp = client.newCall(listReq).execute()
-                if (!listResp.isSuccessful) {
-                    return@withContext Result.failure(
-                        Exception("Aucune release publiée trouvée sur GitHub ($owner/$repo, HTTP ${listResp.code})")
-                    )
+            val releaseJson: JSONObject? = client.newCall(latestReq).execute().use { response ->
+                when {
+                    response.isSuccessful -> {
+                        val body = response.body?.string().orEmpty()
+                        if (body.isNotBlank()) JSONObject(body) else null
+                    }
+                    response.code == 404 && (cleanTag.isBlank() || cleanTag.equals("latest", ignoreCase = true)) -> {
+                        // Repli vers la liste complète des releases (si seule une pre-release existe)
+                        val listReq = Request.Builder()
+                            .url("https://api.github.com/repos/$owner/$repo/releases?per_page=1")
+                            .header("Accept", "application/vnd.github+json")
+                            .header("User-Agent", "GalaxieBus-Android/$currentVersion")
+                            .build()
+                        client.newCall(listReq).execute().use { listResp ->
+                            if (!listResp.isSuccessful) {
+                                return@withContext Result.failure(
+                                    Exception("Aucune release publiée trouvée sur GitHub ($owner/$repo, HTTP ${listResp.code})")
+                                )
+                            }
+                            val arrStr = listResp.body?.string().orEmpty()
+                            val arr = JSONArray(arrStr)
+                            if (arr.length() > 0) arr.getJSONObject(0) else null
+                        }
+                    }
+                    else -> {
+                        return@withContext Result.failure(
+                            Exception("Erreur API GitHub HTTP ${response.code}: ${response.message}")
+                        )
+                    }
                 }
-                val arrStr = listResp.body?.string().orEmpty()
-                val arr = JSONArray(arrStr)
-                if (arr.length() > 0) arr.getJSONObject(0) else null
-            } else {
-                return@withContext Result.failure(
-                    Exception("Erreur API GitHub HTTP ${response.code}: ${response.message}")
-                )
             }
 
             if (releaseJson == null) {
@@ -176,7 +219,9 @@ class GitHubUpdaterService(
             val tagName = releaseJson.optString("tag_name", "").trim()
             val versionName = tagName.removePrefix("v").removePrefix("V").ifBlank { tagName }
             val releaseName = releaseJson.optString("name", tagName).ifBlank { tagName }
-            val releaseNotes = releaseJson.optString("body", "").trim()
+            val releaseNotes = releaseJson.optString("body", "").let {
+                if (it == "null") "" else it.trim()
+            }
             val htmlUrl = releaseJson.optString("html_url", "https://github.com/$owner/$repo/releases")
 
             var apkDownloadUrl: String? = null
@@ -189,7 +234,7 @@ class GitHubUpdaterService(
                     val asset = assets.getJSONObject(i)
                     val name = asset.optString("name", "")
                     if (name.endsWith(".apk", ignoreCase = true)) {
-                        apkDownloadUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() }
+                        apkDownloadUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() && it != "null" }
                         apkFileName = name
                         apkSizeBytes = asset.optLong("size", 0L)
                         break
@@ -256,36 +301,37 @@ class GitHubUpdaterService(
                 .header("User-Agent", "GalaxieBus-Android")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Échec téléchargement APK HTTP ${response.code}"))
-            }
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("Échec téléchargement APK HTTP ${response.code}"))
+                }
 
-            val body = response.body ?: return@withContext Result.failure(Exception("Corps APK vide"))
-            val totalBytes = body.contentLength().let { len ->
-                if (len > 0) len else release.apkSizeBytes
-            }
+                val body = response.body ?: return@withContext Result.failure(Exception("Corps APK vide"))
+                val totalBytes = body.contentLength().let { len ->
+                    if (len > 0) len else release.apkSizeBytes
+                }
 
-            body.byteStream().use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    val buffer = ByteArray(16 * 1024)
-                    var downloaded = 0L
-                    var lastReportedPercent = -1
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        val percent = if (totalBytes > 0) {
-                            ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
-                        } else {
-                            0
+                body.byteStream().use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(16 * 1024)
+                        var downloaded = 0L
+                        var lastReportedPercent = -1
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            val percent = if (totalBytes > 0) {
+                                ((downloaded * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                            } else {
+                                0
+                            }
+                            if (percent != lastReportedPercent) {
+                                lastReportedPercent = percent
+                                onProgress(percent, downloaded, totalBytes)
+                            }
                         }
-                        if (percent != lastReportedPercent) {
-                            lastReportedPercent = percent
-                            onProgress(percent, downloaded, totalBytes)
-                        }
+                        output.flush()
                     }
-                    output.flush()
                 }
             }
 

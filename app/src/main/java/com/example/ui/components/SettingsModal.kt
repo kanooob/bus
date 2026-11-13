@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -46,6 +47,8 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
@@ -53,6 +56,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Traffic
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.Widgets
@@ -74,6 +78,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -103,10 +109,14 @@ import com.example.data.model.GtfsSyncReport
 import com.example.data.model.InAppRefreshFrequency
 import com.example.data.model.PrimaryColorMode
 import com.example.data.model.ThemeMode
+import com.example.data.model.TrafficRefreshFrequency
 import com.example.data.model.UpdateNetworkMode
 import com.example.data.model.WidgetLocationFrequency
 import com.example.data.model.WidgetRefreshFrequency
+import com.example.data.remote.AppUpdateNotifier
 import com.example.data.remote.AppUpdateState
+import com.example.data.remote.GitHubReleaseInfo
+import com.example.data.remote.formatReleaseNotesForDisplay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -118,6 +128,7 @@ private enum class ActiveSettingsDialog {
     WIDGET_REFRESH,
     WIDGET_LOCATION,
     GTFS_SYNC,
+    TRAFFIC_REFRESH,
     UPDATE_CHECK_FREQ,
     UPDATE_NETWORK,
     ABOUT,
@@ -150,6 +161,11 @@ fun SettingsModal(
     gtfsReport: GtfsSyncReport? = null,
     onDownloadGtfsClick: () -> Unit = {},
     lastGtfsSyncTimestamp: Long = 0L,
+    trafficRefreshFrequency: TrafficRefreshFrequency = TrafficRefreshFrequency.EVERY_2_HOURS,
+    onSelectTrafficRefreshFrequency: (TrafficRefreshFrequency) -> Unit = {},
+    trafficNotificationsEnabled: Boolean = false,
+    onToggleTrafficNotifications: (Boolean) -> Unit = {},
+    lastTrafficRefreshTimestamp: Long = 0L,
     appUpdateCheckFrequency: AppUpdateCheckFrequency,
     onSelectAppUpdateCheckFrequency: (AppUpdateCheckFrequency) -> Unit,
     updateNetworkMode: UpdateNetworkMode,
@@ -193,6 +209,23 @@ fun SettingsModal(
         } else {
             "Jamais téléchargé"
         }
+    }
+
+    val lastTrafficFormatted = remember(lastTrafficRefreshTimestamp) {
+        if (lastTrafficRefreshTimestamp > 0L) {
+            SimpleDateFormat("dd/MM/yyyy à HH:mm", Locale.FRANCE).format(Date(lastTrafficRefreshTimestamp))
+        } else {
+            "Jamais vérifiée"
+        }
+    }
+
+    var hasNotifPermission by remember {
+        mutableStateOf(AppUpdateNotifier.hasNotificationPermission(context))
+    }
+    val trafficNotifPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotifPermission = granted || AppUpdateNotifier.hasNotificationPermission(context)
     }
 
     val exportJsonLauncher = rememberLauncherForActivityResult(
@@ -455,6 +488,57 @@ fun SettingsModal(
                                         }
                                     }
                                 }
+
+                                SectionDivider()
+
+                                SettingsOptionRow(
+                                    icon = Icons.Default.Traffic,
+                                    title = "Actualisation de l'info trafic",
+                                    currentValue = formatValueWithDefault(
+                                        trafficRefreshFrequency.label,
+                                        trafficRefreshFrequency == TrafficRefreshFrequency.EVERY_2_HOURS
+                                    ),
+                                    supportingNote = "Dernière vérification : $lastTrafficFormatted",
+                                    onClick = { activeDialog = ActiveSettingsDialog.TRAFFIC_REFRESH },
+                                    testTag = "setting_traffic_refresh_row"
+                                )
+
+                                SectionDivider()
+
+                                SettingsSwitchRow(
+                                    icon = if (trafficNotificationsEnabled) {
+                                        Icons.Default.NotificationsActive
+                                    } else {
+                                        Icons.Default.Notifications
+                                    },
+                                    title = "Notifications info trafic",
+                                    subtitle = if (trafficNotificationsEnabled) {
+                                        "Activées — notification lors d'une nouvelle info trafic"
+                                    } else {
+                                        "Recevoir une notification lors d'une nouvelle info trafic"
+                                    },
+                                    supportingNote = when {
+                                        trafficNotificationsEnabled && !hasNotifPermission ->
+                                            "Permission de notification requise (appuyez pour autoriser)"
+                                        trafficNotificationsEnabled && trafficRefreshFrequency == TrafficRefreshFrequency.NEVER ->
+                                            "Activez une fréquence d'actualisation ci-dessus pour recevoir des alertes."
+                                        else -> null
+                                    },
+                                    isWarningNote = trafficNotificationsEnabled &&
+                                        (!hasNotifPermission || trafficRefreshFrequency == TrafficRefreshFrequency.NEVER),
+                                    checked = trafficNotificationsEnabled,
+                                    onCheckedChange = { enabled ->
+                                        if (enabled &&
+                                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                            !AppUpdateNotifier.hasNotificationPermission(context)
+                                        ) {
+                                            trafficNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        }
+                                        onToggleTrafficNotifications(enabled)
+                                    },
+                                    testTag = "setting_traffic_notifications_row",
+                                    switchTestTag = "setting_traffic_notifications_switch"
+                                )
                             }
                         }
 
@@ -556,6 +640,58 @@ fun SettingsModal(
                                         }
                                     }
 
+                                    // Description de la release GitHub lorsqu'une mise à jour est présente
+                                    val updateRelease: GitHubReleaseInfo? = when (appUpdateState) {
+                                        is AppUpdateState.UpdateAvailableWaitingWifi -> appUpdateState.release
+                                        is AppUpdateState.Downloading -> appUpdateState.release
+                                        is AppUpdateState.ReadyToInstall -> appUpdateState.release
+                                        is AppUpdateState.Error -> appUpdateState.release
+                                        else -> null
+                                    }
+                                    if (updateRelease != null) {
+                                        val notesText = remember(updateRelease.releaseNotes) {
+                                            formatReleaseNotesForDisplay(updateRelease.releaseNotes)
+                                        }
+                                        val showTitle = updateRelease.releaseName.isNotBlank() &&
+                                            !updateRelease.releaseName.equals(updateRelease.tagName, ignoreCase = true)
+                                        if (showTitle || notesText.isNotBlank()) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                                                shape = RoundedCornerShape(10.dp),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(start = 56.dp, end = 16.dp, bottom = 10.dp)
+                                                    .testTag("settings_update_release_notes")
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .heightIn(max = 140.dp)
+                                                        .verticalScroll(rememberScrollState())
+                                                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                                                ) {
+                                                    Text(
+                                                        text = if (showTitle) updateRelease.releaseName else "Notes de version (${updateRelease.tagName})",
+                                                        style = MaterialTheme.typography.labelMedium.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = contentColor
+                                                        )
+                                                    )
+                                                    if (notesText.isNotBlank()) {
+                                                        Spacer(modifier = Modifier.height(4.dp))
+                                                        Text(
+                                                            text = notesText,
+                                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                                color = mutedColor,
+                                                                lineHeight = 16.sp
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     // Contrôles contextuels de téléchargement / installation
                                     when (appUpdateState) {
                                         is AppUpdateState.UpdateAvailableWaitingWifi -> {
@@ -579,6 +715,28 @@ fun SettingsModal(
                                                         fontWeight = FontWeight.Bold,
                                                         fontSize = 12.5.sp
                                                     )
+                                                }
+                                            } else {
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        try {
+                                                            context.startActivity(
+                                                                Intent(Intent.ACTION_VIEW, Uri.parse(appUpdateState.release.htmlUrl))
+                                                            )
+                                                        } catch (_: Exception) {}
+                                                    },
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
+                                                    shape = RoundedCornerShape(10.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Ouvrir la release sur GitHub", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                                                 }
                                             }
                                         }
@@ -613,6 +771,31 @@ fun SettingsModal(
                                                 )
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 Text("Installer la mise à jour", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                                            }
+                                        }
+                                        is AppUpdateState.Error -> {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    if (appUpdateState.release != null &&
+                                                        !appUpdateState.release.apkDownloadUrl.isNullOrBlank()
+                                                    ) {
+                                                        onDownloadUpdate(true)
+                                                    } else {
+                                                        onCheckForUpdate()
+                                                    }
+                                                },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Refresh,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Réessayer", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                                             }
                                         }
                                         else -> {}
@@ -854,6 +1037,21 @@ fun SettingsModal(
                 },
                 onSelect = {
                     onSelectGtfsSyncFrequency(it)
+                    activeDialog = null
+                },
+                onDismiss = { activeDialog = null }
+            )
+        }
+
+        ActiveSettingsDialog.TRAFFIC_REFRESH -> {
+            SingleChoiceSettingsDialog(
+                title = "Actualisation de l'info trafic",
+                options = TrafficRefreshFrequency.entries,
+                selectedOption = trafficRefreshFrequency,
+                defaultOption = TrafficRefreshFrequency.EVERY_2_HOURS,
+                labelProvider = { it.label },
+                onSelect = {
+                    onSelectTrafficRefreshFrequency(it)
                     activeDialog = null
                 },
                 onDismiss = { activeDialog = null }
@@ -1313,6 +1511,72 @@ private fun SettingsOptionRow(
                 modifier = Modifier.padding(start = 50.dp)
             )
         }
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    supportingNote: String? = null,
+    isWarningNote: Boolean = false,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    testTag: String,
+    switchTestTag: String
+) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val contentColor = MaterialTheme.colorScheme.onSurface
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .testTag(testTag),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        SettingsLeadingIcon(icon = icon, tint = primaryColor)
+        Spacer(modifier = Modifier.width(14.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor
+                )
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = if (checked) primaryColor else mutedColor,
+                    fontWeight = if (checked) FontWeight.SemiBold else FontWeight.Normal
+                )
+            )
+            if (!supportingNote.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    text = supportingNote,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = if (isWarningNote) Color(0xFFD97706) else mutedColor,
+                        fontWeight = if (isWarningNote) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = primaryColor
+            ),
+            modifier = Modifier.testTag(switchTestTag)
+        )
     }
 }
 
