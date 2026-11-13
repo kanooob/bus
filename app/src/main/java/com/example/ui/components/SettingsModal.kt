@@ -506,7 +506,7 @@ fun SettingsModal(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = "📦 ${BuildConfig.APPLICATION_ID} • v${BuildConfig.VERSION_NAME}",
+                                        text = "📦 ${BuildConfig.APPLICATION_ID} • v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 11.5.sp,
                                         color = if (isDarkTheme) Color(0xFFA5B4FC) else Color(0xFF4338CA)

@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import android.util.Log
+import com.example.BuildConfig
 import com.example.data.local.IdelisDatabase
 import com.example.data.model.GtfsRoute
 import com.example.data.model.GtfsStop
@@ -74,7 +75,7 @@ class GtfsDownloadService(
             Log.d(TAG, "Téléchargement du ZIP GTFS Idelis depuis : $url")
             val request = Request.Builder()
                 .url(url)
-                .addHeader("User-Agent", "IdelisPauInfo-Android/1.0")
+                .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
                 .build()
 
             val response = okHttpClient.newCall(request).execute()

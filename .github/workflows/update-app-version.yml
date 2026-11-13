@@ -1,0 +1,188 @@
+name: Changer la version de l'application
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Type de mise à jour de version"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      version_name:
+        description: "Nouvelle version (ex: 1.2.0) — requis si custom, sinon optionnel"
+        required: false
+        default: ""
+        type: string
+      version_code:
+        description: "Nouveau versionCode entier (laisser vide pour auto-incrémenter +1)"
+        required: false
+        default: ""
+        type: string
+      create_git_tag:
+        description: "Créer et pousser le tag Git (ex: v1.0.1)"
+        required: false
+        default: true
+        type: boolean
+      build_and_release:
+        description: "Compiler l'APK et publier une GitHub Release"
+        required: false
+        default: true
+        type: boolean
+      release_notes:
+        description: "Notes de version pour la GitHub Release (optionnel)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-app-version
+  cancel-in-progress: false
+
+jobs:
+  update-version:
+    name: Mettre à jour la version et publier
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Calculer et appliquer la nouvelle version
+        id: version
+        run: |
+          python3 .github/scripts/update_version.py \
+            --bump-type "${{ inputs.bump_type }}" \
+            --version-name "${{ inputs.version_name }}" \
+            --version-code "${{ inputs.version_code }}"
+
+      - name: Configurer Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Accepter les licences Android SDK
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -x "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          fi
+
+      - name: Configurer Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Préparer debug.keystore pour la compilation
+        run: |
+          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+
+      - name: Exécuter les tests unitaires
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Enregistrer et pousser le changement de version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(version): passer à ${{ steps.version.outputs.tag_name }} (build ${{ steps.version.outputs.new_version_code }})"
+            git push
+          else
+            echo "Aucune modification de version à committer."
+          fi
+
+      - name: Créer et pousser le tag Git
+        if: inputs.create_git_tag
+        run: |
+          TAG="${{ steps.version.outputs.tag_name }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Le tag $TAG existe déjà, impossible de le recréer."
+            exit 1
+          fi
+          git tag -a "$TAG" -m "Release Galaxie Bus $TAG (build ${{ steps.version.outputs.new_version_code }})"
+          git push origin "$TAG"
+
+      - name: Compiler l'APK de l'application
+        id: build_apk
+        if: inputs.build_and_release
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          mkdir -p dist
+          TAG="${{ steps.version.outputs.tag_name }}"
+          OUT_APK="dist/galaxie-bus-${TAG}.apk"
+
+          if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${STORE_PASSWORD:-}" ] && [ -n "${KEY_PASSWORD:-}" ]; then
+            echo "Keystore de release détecté — compilation de l'APK Release..."
+            echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
+            export KEYSTORE_PATH="${{ github.workspace }}/my-upload-key.jks"
+            gradle :app:assembleRelease --no-daemon
+            BUILT_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+            rm -f my-upload-key.jks
+          else
+            echo "Aucun keystore de release configuré — compilation de l'APK Debug signé..."
+            gradle :app:assembleDebug --no-daemon
+            BUILT_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          fi
+
+          if [ -z "$BUILT_APK" ] || [ ! -f "$BUILT_APK" ]; then
+            echo "Erreur : aucun APK généré."
+            exit 1
+          fi
+
+          cp "$BUILT_APK" "$OUT_APK"
+          echo "apk_path=$OUT_APK" >> "$GITHUB_OUTPUT"
+
+      - name: Archiver l'APK en artefact GitHub Actions
+        if: inputs.build_and_release && steps.build_apk.outputs.apk_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: galaxie-bus-${{ steps.version.outputs.tag_name }}
+          path: ${{ steps.build_apk.outputs.apk_path }}
+
+      - name: Publier la GitHub Release
+        if: inputs.build_and_release && inputs.create_git_tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: Galaxie Bus ${{ steps.version.outputs.tag_name }}
+          body: ${{ inputs.release_notes != '' && inputs.release_notes || format('Mise à jour de l application Galaxie Bus vers la version {0} (versionCode {1}).', steps.version.outputs.tag_name, steps.version.outputs.new_version_code) }}
+          files: ${{ steps.build_apk.outputs.apk_path }}
+          generate_release_notes: true
+
+      - name: Nettoyer les keystores temporaires
+        if: always()
+        run: |
+          rm -f my-upload-key.jks
+
+      - name: Résumé de l'opération
+        if: always()
+        run: |
+          {
+            echo "### Mise à jour de version Galaxie Bus"
+            echo ""
+            echo "| Champ | Avant | Après |"
+            echo "|---|---|---|"
+            echo "| \`versionName\` | \`${{ steps.version.outputs.old_version_name }}\` | \`${{ steps.version.outputs.new_version_name }}\` |"
+            echo "| \`versionCode\` | \`${{ steps.version.outputs.old_version_code }}\` | \`${{ steps.version.outputs.new_version_code }}\` |"
+            echo "| Tag Git | - | \`${{ steps.version.outputs.tag_name }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import android.util.Log
+import com.example.BuildConfig
 import com.example.data.model.BusVehicle
 import com.example.data.model.GtfsStop
 import com.example.data.model.IdeCycleStation
@@ -82,7 +83,7 @@ class IdelisExploreService {
         val request = Request.Builder()
             .url(URL_EXPORTS_ROUTES)
             .addHeader("Accept", "application/json")
-            .addHeader("User-Agent", "IdelisPauInfo-Android/1.0")
+            .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
             .build()
 
         try {
@@ -134,7 +135,7 @@ class IdelisExploreService {
         val request = Request.Builder()
             .url(URL_EXPORTS_STOPS)
             .addHeader("Accept", "application/json")
-            .addHeader("User-Agent", "IdelisPauInfo-Android/1.0")
+            .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
             .build()
 
         try {
@@ -191,7 +192,7 @@ class IdelisExploreService {
         val request = Request.Builder()
             .url(URL_EXPORTS_ICONS)
             .addHeader("Accept", "application/json")
-            .addHeader("User-Agent", "IdelisPauInfo-Android/1.0")
+            .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
             .build()
 
         try {
@@ -319,7 +320,7 @@ class IdelisExploreService {
         try {
             val request = Request.Builder()
                 .url(URL_GTFS_ZIP)
-                .addHeader("User-Agent", "IdelisPauInfo-Android/1.0")
+                .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
                 .build()
 
             val response = okHttpClient.newCall(request).execute()
