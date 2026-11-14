@@ -28,8 +28,6 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.BottomSheetDefaults
@@ -42,7 +40,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -50,7 +47,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,7 +67,6 @@ import com.example.data.model.IdelisPeriod
 import com.example.data.model.TrafficAlert
 import com.example.ui.theme.StatusDelayed
 import com.example.ui.theme.StatusGreen
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -145,10 +140,7 @@ fun TrafficInfoModal(
         }
     }
 
-    val coroutineScope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
-    val isSheetExpanded = sheetState.targetValue == SheetValue.Expanded ||
-        sheetState.currentValue == SheetValue.Expanded
 
     ModalBottomSheet(
         onDismissRequest = {
@@ -246,29 +238,6 @@ fun TrafficInfoModal(
                             contentDescription = "Klaxon bus",
                             tint = if (isHornPressed) onPrimaryColor else onSecondaryContainerColor,
                             modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                if (isSheetExpanded) {
-                                    sheetState.partialExpand()
-                                } else {
-                                    sheetState.expand()
-                                }
-                            }
-                        },
-                        modifier = Modifier.testTag("traffic_expand_toggle_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isSheetExpanded) {
-                                Icons.Default.KeyboardArrowDown
-                            } else {
-                                Icons.Default.KeyboardArrowUp
-                            },
-                            contentDescription = if (isSheetExpanded) "Réduire" else "Agrandir vers le haut",
-                            tint = mutedColor
                         )
                     }
 

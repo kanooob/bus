@@ -39,8 +39,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -56,7 +54,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.SheetValue
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
@@ -319,8 +316,6 @@ fun StopPickerModal(
 
     val isSearching = searchQuery.trim().isNotBlank()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
-    val isSheetExpanded = sheetState.targetValue == SheetValue.Expanded ||
-        sheetState.currentValue == SheetValue.Expanded
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
@@ -364,33 +359,8 @@ fun StopPickerModal(
                     )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                if (isSheetExpanded) {
-                                    sheetState.partialExpand()
-                                } else {
-                                    sheetState.expand()
-                                }
-                            }
-                        },
-                        modifier = Modifier.testTag("stop_picker_expand_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isSheetExpanded) {
-                                Icons.Default.KeyboardArrowDown
-                            } else {
-                                Icons.Default.KeyboardArrowUp
-                            },
-                            contentDescription = if (isSheetExpanded) "Réduire" else "Agrandir vers le haut",
-                            tint = mutedColor
-                        )
-                    }
-
-                    IconButton(onClick = onDismissRequest) {
-                        Icon(imageVector = Icons.Default.Close, contentDescription = "Fermer", tint = contentColor)
-                    }
+                IconButton(onClick = onDismissRequest) {
+                    Icon(imageVector = Icons.Default.Close, contentDescription = "Fermer", tint = contentColor)
                 }
             }
 
