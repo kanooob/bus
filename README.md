@@ -1,22 +1,33 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+  <img src="app/src/main/res/drawable/galaxie_bus_logo.png" width="140" height="140" alt="Logo Galaxie Bus" />
+  <h1>Galaxie Bus</h1>
+  <p>
+    Application Android temps réel pour le réseau de transport <strong>Idelis</strong> (Pau Béarn Pyrénées) :
+    prochains départs en direct, widget dynamique sur l'écran d'accueil, infos trafic et horaires hors-ligne.
+  </p>
 </div>
 
-# Run and deploy your AI Studio app
+---
 
-This contains everything you need to run your app locally.
+## Fonctionnalités
 
-View your app in AI Studio: https://ai.studio/apps/803156c9-aac9-4c1d-98a6-0e707f09fd78
+- **Prochains passages en temps réel (SIRI / Web Idelis)** : affichage direct des lignes, directions, temps d'attente et retards ou avances.
+- **Arrêts favoris & géolocalisation** : sélection rapide d'arrêt, tri des favoris et détection de l'arrêt le plus proche.
+- **Widget écran d'accueil configurable** : suivi des prochains bus pour un arrêt choisi ou automatique selon la position, avec actualisation manuelle ou périodique.
+- **Info trafic & notifications** : consultation des perturbations et alertes réseau, avec alertes en arrière-plan configurables.
+- **Base GTFS locale** : fallback hors-ligne et synchronisation des données GTFS du réseau Idelis.
+- **Mises à jour intégrées** : vérification et téléchargement des nouvelles versions depuis les releases GitHub.
+- **Sauvegarde & personnalisation** : thèmes clair/sombre/système, choix de la couleur principale, et export/import des préférences en JSON.
 
-## Run Locally
+## Compiler et exécuter localement
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+**Prérequis :** [Android Studio](https://developer.android.com/studio) (JDK 11+, Android SDK 36)
 
-
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
-7. If you have already published your app in AI Studio, please [request upload key reset](https://support.google.com/googleplay/android-developer/answer/9842756#zippy=%2Crequest-an-upload-key-reset) in Google Play Console.
+1. Cloner le dépôt :
+   ```bash
+   git clone https://github.com/kanooob/bus.git
+   ```
+2. Ouvrir le dossier du projet dans **Android Studio**.
+3. Laisser Gradle synchroniser les dépendances.
+4. *(Optionnel)* Si vous compilez en local en dehors de l'environnement AI Studio, vérifier la configuration de signature dans `app/build.gradle.kts` (`debugConfig` / `release`).
+5. Lancer l'application sur un émulateur ou un appareil Android (`minSdk 24`).

@@ -7,6 +7,7 @@ import com.example.data.model.IdelisWebDeparture
 import com.example.data.model.IdelisWebMonitoringResult
 import com.example.data.model.IdelisWebStop
 import com.example.data.model.IdelisWebTrafficAlert
+import com.example.data.model.NotServedEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -214,7 +215,7 @@ class IdelisWebScraperService(
     /**
      * Parse le HTML retourné par stop_monitoring.
      * Détecte si la réponse contient "Cet arrêt n'est pas desservi..." et exclut toute entrée concernée
-     * afin de n'afficher que les prochains bus valides.
+     * des départs normaux, tout en extrayant la ligne, la direction et les horaires concernés (sans le texte répété).
      */
     fun parseStopMonitoringHtml(poleName: String, html: String): IdelisWebMonitoringResult {
         val doc = Jsoup.parse(html)
@@ -223,17 +224,9 @@ class IdelisWebScraperService(
 
         val fullDocText = doc.text()
         val isStopNotServed = containsNotServedText(fullDocText)
-        val notServedMessage = if (isStopNotServed) {
-            doc.select(".alert, .alert-info, .alert-warning, .alert-danger, p, span, div")
-                .map { it.ownText().ifBlank { it.text() }.trim() }
-                .firstOrNull { containsNotServedText(it) && it.length <= 220 }
-                ?: alertMessage?.takeIf { containsNotServedText(it) }
-                ?: "Cet arrêt n'est pas desservi actuellement."
-        } else {
-            null
-        }
 
         val departures = mutableListOf<IdelisWebDeparture>()
+        val rawNotServedEntries = mutableListOf<NotServedEntry>()
         val ligneGroups = doc.select(".ligne-group")
 
         for (group in ligneGroups) {
@@ -250,43 +243,66 @@ class IdelisWebScraperService(
                 lineRef.startsWith("Ligne", ignoreCase = true) -> lineRef
                 else -> "Ligne $lineRef"
             }
+            val lineColorHex = getLineColorHex(lineRef)
 
             // 2. Extraction des directions et des temps de passage
             var currentDirection = ""
             var currentQuai: String? = null
             var isCurrentDirectionNotServed = false
+            var hasNotServedInCurrentDirection = false
+            val notServedTimesForCurrentDirection = mutableListOf<String>()
+
+            fun flushCurrentNotServedDirection() {
+                if (hasNotServedInCurrentDirection || notServedTimesForCurrentDirection.isNotEmpty()) {
+                    val cleanDir = cleanNotServedTextFromLabel(currentDirection)
+                        .ifBlank { "Direction non précisée" }
+                    val cleanQuai = currentQuai?.let { cleanNotServedTextFromLabel(it) }?.takeIf { it.isNotBlank() }
+                    val dirWithQuai = if (cleanQuai != null) "$cleanDir ($cleanQuai)" else cleanDir
+                    rawNotServedEntries.add(
+                        NotServedEntry(
+                            lineRef = lineRef,
+                            lineName = lineName,
+                            linePictoUrl = pictoSrc,
+                            lineColorHex = lineColorHex,
+                            direction = dirWithQuai,
+                            times = notServedTimesForCurrentDirection.distinct()
+                        )
+                    )
+                }
+                hasNotServedInCurrentDirection = false
+                notServedTimesForCurrentDirection.clear()
+            }
 
             val rows = group.children().flatMap { if (it.hasClass("row")) listOf(it) else it.select(".row") }
 
             for (row in rows) {
                 val directionSpan = row.selectFirst("span.text-black-50")
                 if (directionSpan != null) {
+                    flushCurrentNotServedDirection()
                     val text = directionSpan.text()
                     isCurrentDirectionNotServed = containsNotServedText(text) || containsNotServedText(row.text())
+                    if (isCurrentDirectionNotServed) {
+                        hasNotServedInCurrentDirection = true
+                        notServedTimesForCurrentDirection.addAll(extractTimesFromNotServedText(row.text()))
+                    }
                     val parsed = parseDirectionAndQuai(text)
-                    currentDirection = parsed.first
-                    currentQuai = parsed.second
-                    continue
-                }
-
-                // Si la ligne entière indique que l'arrêt n'est pas desservi, ne pas extraire de passages
-                if (containsNotServedText(row.text())) {
-                    isCurrentDirectionNotServed = true
-                    continue
-                }
-
-                if (isCurrentDirectionNotServed) {
+                    currentDirection = cleanNotServedTextFromLabel(parsed.first)
+                    currentQuai = parsed.second?.let { cleanNotServedTextFromLabel(it) }?.takeIf { it.isNotBlank() }
                     continue
                 }
 
                 // Recherche des cases horaires
                 val timeBoxes = row.select(".p-1.text-center.border, .border.rounded")
-                if (timeBoxes.isNotEmpty() && currentDirection.isNotBlank()) {
+                if (timeBoxes.isNotEmpty()) {
                     for (box in timeBoxes) {
                         val boxText = box.text().trim()
-                        if (containsNotServedText(boxText)) {
+                        if (containsNotServedText(boxText) || isCurrentDirectionNotServed) {
+                            hasNotServedInCurrentDirection = true
+                            notServedTimesForCurrentDirection.addAll(extractTimesFromNotServedText(boxText))
                             continue
                         }
+
+                        if (currentDirection.isBlank()) continue
 
                         val isRealTime = box.hasClass("bg-primary") ||
                             box.hasClass("text-white") ||
@@ -315,8 +331,36 @@ class IdelisWebScraperService(
                             )
                         }
                     }
+                } else if (containsNotServedText(row.text()) || isCurrentDirectionNotServed) {
+                    hasNotServedInCurrentDirection = true
+                    notServedTimesForCurrentDirection.addAll(extractTimesFromNotServedText(row.text()))
                 }
             }
+
+            flushCurrentNotServedDirection()
+        }
+
+        // Fusionner les entrées d'une même ligne et direction pour regrouper leurs horaires non desservis
+        val mergedNotServedEntries = rawNotServedEntries
+            .groupBy { "${it.lineRef.uppercase(Locale.ROOT)}|${it.direction.lowercase(Locale.FRANCE)}" }
+            .values
+            .map { entries ->
+                val first = entries.first()
+                first.copy(times = entries.flatMap { it.times }.distinct())
+            }
+
+        val notServedMessage = if (isStopNotServed) {
+            alertMessage?.takeIf { containsNotServedText(it) }
+                ?: if (mergedNotServedEntries.isEmpty()) {
+                    doc.select("p, span, div")
+                        .map { it.ownText().trim() }
+                        .firstOrNull { containsNotServedText(it) && it.length <= 220 }
+                        ?: "Cet arrêt n'est pas desservi actuellement."
+                } else {
+                    null
+                }
+        } else {
+            null
         }
 
         // Filtrage final de sécurité : aucun bus contenant "Cet arrêt n'est pas desservi"
@@ -335,8 +379,35 @@ class IdelisWebScraperService(
             departures = departures,
             alertMessage = alertMessage,
             isStopNotServed = isStopNotServed,
-            notServedMessage = notServedMessage
+            notServedMessage = notServedMessage,
+            notServedEntries = mergedNotServedEntries
         )
+    }
+
+    internal fun extractTimesFromNotServedText(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        val withoutPhrase = text
+            .replace(Regex("""(?i)cet\s+arr[êe]t\s+n['’ʼ]est\s+pas\s+desservi[^0-9\[]*"""), " ")
+            .replace(Regex("""(?i)n['’ʼ]est\s+pas\s+desservi[^0-9\[]*"""), " ")
+            .trim()
+
+        val timeRegex = Regex("""\b(\d{1,2}[:h]\d{2}|\d{1,3}\s*min|Imminent|À\s+l'approche)\b""", RegexOption.IGNORE_CASE)
+        val matches = timeRegex.findAll(withoutPhrase).map { it.value.trim() }.toList()
+        if (matches.isNotEmpty()) {
+            return matches
+        }
+
+        return Regex("""\[([^\]]+)]""").findAll(withoutPhrase)
+            .map { it.groupValues[1].trim() }
+            .filter { it.isNotBlank() && !containsNotServedText(it) }
+            .toList()
+    }
+
+    private fun cleanNotServedTextFromLabel(text: String): String {
+        return text
+            .replace(Regex("""(?i)cet\s+arr[êe]t\s+n['’ʼ]est\s+pas\s+desservi[^.\n]*"""), "")
+            .replace(Regex("""(?i)n['’ʼ]est\s+pas\s+desservi[^.\n]*"""), "")
+            .trim(' ', '-', '–', ':', ',', ';')
     }
 
     /**

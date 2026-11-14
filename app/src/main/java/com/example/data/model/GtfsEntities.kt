@@ -44,14 +44,6 @@ data class GtfsRoute(
  */
 @Entity(
     tableName = "trips",
-    foreignKeys = [
-        ForeignKey(
-            entity = GtfsRoute::class,
-            parentColumns = ["routeId"],
-            childColumns = ["routeId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [Index(value = ["routeId"])]
 )
 data class GtfsTrip(
@@ -68,20 +60,6 @@ data class GtfsTrip(
  */
 @Entity(
     tableName = "stop_times",
-    foreignKeys = [
-        ForeignKey(
-            entity = GtfsTrip::class,
-            parentColumns = ["tripId"],
-            childColumns = ["tripId"],
-            onDelete = ForeignKey.CASCADE
-        ),
-        ForeignKey(
-            entity = GtfsStop::class,
-            parentColumns = ["stopId"],
-            childColumns = ["stopId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["tripId"]),
         Index(value = ["stopId"]),

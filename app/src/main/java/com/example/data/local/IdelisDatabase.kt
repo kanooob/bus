@@ -25,7 +25,7 @@ import com.example.data.model.GtfsCalendarDate
         GtfsCalendar::class,
         GtfsCalendarDate::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class IdelisDatabase : RoomDatabase() {

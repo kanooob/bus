@@ -12,6 +12,7 @@ import com.example.data.model.GtfsStop
 import com.example.data.model.GtfsSyncFrequency
 import com.example.data.model.IdeCycleStation
 import com.example.data.model.InAppRefreshFrequency
+import com.example.data.model.NotServedEntry
 import com.example.data.model.ParkAndRide
 import com.example.data.model.PrimaryColorMode
 import com.example.data.model.ThemeMode
@@ -117,6 +118,7 @@ data class TransitBoardUiState(
     // Arrêt non desservi ("Cet arrêt n'est pas desservi...")
     val isStopNotServed: Boolean = false,
     val notServedMessage: String? = null,
+    val notServedEntries: List<NotServedEntry> = emptyList(),
     // Info Trafic en direct (?type=777 requete=infostrafic)
     val isTrafficLoading: Boolean = false,
     val trafficErrorMessage: String? = null,
@@ -205,12 +207,11 @@ class TransitBoardViewModel(
             refreshDepartures()
 
             val gtfsFreq = _uiState.value.gtfsSyncFrequency
-            if (gtfsFreq != GtfsSyncFrequency.NEVER && gtfsFreq.intervalMs > 0L) {
-                val lastDownload = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L
-                val now = System.currentTimeMillis()
-                if (now - lastDownload >= gtfsFreq.intervalMs) {
-                    triggerGtfsZipSync()
-                }
+            val lastDownload = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L
+            val isFirstDownload = lastDownload == 0L
+            val now = System.currentTimeMillis()
+            if (isFirstDownload || (gtfsFreq != GtfsSyncFrequency.NEVER && gtfsFreq.intervalMs > 0L && now - lastDownload >= gtfsFreq.intervalMs)) {
+                triggerGtfsZipSync(isFirstSync = isFirstDownload)
             }
         }
     }
@@ -835,7 +836,8 @@ class TransitBoardViewModel(
                     lastUpdatedFormatted = updatedStr,
                     secondsUntilRefresh = nextInterval,
                     isStopNotServed = result.isStopNotServed,
-                    notServedMessage = result.notServedMessage
+                    notServedMessage = result.notServedMessage,
+                    notServedEntries = result.notServedEntries
                 )
             }
         }
@@ -871,14 +873,12 @@ class TransitBoardViewModel(
     /**
      * Déclenche manuellement ou via le bouton le téléchargement et l'analyse du ZIP GTFS Idelis.
      */
-    fun triggerGtfsZipSync(customUrl: String? = null) {
+    fun triggerGtfsZipSync(customUrl: String? = null, isFirstSync: Boolean = false) {
         viewModelScope.launch {
             _uiState.update { it.copy(isGtfsSyncing = true, syncSuccessMessage = null) }
-            val report = if (customUrl.isNullOrBlank()) {
-                repository.syncGtfsZipArchive()
-            } else {
-                repository.syncGtfsZipArchive(customUrl)
-            }
+            val effectiveUrl = customUrl?.takeIf { it.isNotBlank() } ?: _uiState.value.gtfsZipUrl
+            val firstSync = isFirstSync || (preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L) == 0L
+            val report = repository.syncGtfsZipArchive(effectiveUrl, isFirstSync = firstSync)
 
             if (report.success) {
                 val now = System.currentTimeMillis()
@@ -893,7 +893,8 @@ class TransitBoardViewModel(
                     activePeriod = repository.getCurrentPeriod(),
                     worksNotes = repository.getWorksAlerts(),
                     syncSuccessMessage = if (report.success) {
-                        "GTFS synchronisé : ${report.stopsCount} arrêts, ${report.routesCount} lignes (${report.activePeriod.label})"
+                        val viaSuffix = if (report.usedWaybackFallback) " via Wayback Machine" else ""
+                        "GTFS synchronisé$viaSuffix : ${report.stopsCount} arrêts, ${report.routesCount} lignes (${report.activePeriod.label})"
                     } else {
                         "Échec GTFS : ${report.errorMessage}"
                     }

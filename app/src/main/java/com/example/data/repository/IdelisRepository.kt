@@ -16,6 +16,7 @@ import com.example.data.model.IdelisPeriod
 import com.example.data.model.IdelisWebDeparture
 import com.example.data.model.IdelisWebMonitoringResult
 import com.example.data.model.IdelisWebStop
+import com.example.data.model.NotServedEntry
 import com.example.data.model.TrafficAlert
 import com.example.data.model.GtfsSyncReport
 import com.example.data.remote.GitHubUpdaterService
@@ -42,7 +43,8 @@ data class DeparturesResult(
     val isSimulation: Boolean = false,
     val statusMessage: String,
     val isStopNotServed: Boolean = false,
-    val notServedMessage: String? = null
+    val notServedMessage: String? = null,
+    val notServedEntries: List<NotServedEntry> = emptyList()
 )
 
 /**
@@ -305,9 +307,10 @@ class IdelisRepository(
      * pour constituer et rafraîchir le référentiel Room local.
      */
     suspend fun syncGtfsZipArchive(
-        zipUrl: String = GtfsDownloadService.DEFAULT_GTFS_ZIP_URL
+        zipUrl: String = GtfsDownloadService.DEFAULT_GTFS_ZIP_URL,
+        isFirstSync: Boolean = false
     ): GtfsSyncReport = withContext(Dispatchers.IO) {
-        val report = gtfsDownloadService.downloadAndProcessGtfsZip(zipUrl)
+        val report = gtfsDownloadService.downloadAndProcessGtfsZip(zipUrl, isFirstSync = isFirstSync)
         if (report.success) {
             globalCurrentPeriod = report.activePeriod
             if (report.detectedWorks.isNotEmpty()) {
@@ -435,13 +438,24 @@ class IdelisRepository(
 
                     if (monitoring.isStopNotServed) {
                         Log.d(TAG, "Arrêt '$poleName' signalé non desservi (${comparisons.size} autres passages valides)")
+                        val enrichedNotServed = monitoring.notServedEntries.map { entry ->
+                            val officialColor = (globalOfficialRoutesMap[entry.lineRef.uppercase()] ?: officialRoutesMap[entry.lineRef.uppercase()])
+                                ?.colorHex?.takeIf { it.isNotBlank() }
+                            val officialIcon = entry.linePictoUrl
+                                ?: (globalLineIconsMap[entry.lineRef.uppercase()] ?: lineIconsMap[entry.lineRef.uppercase()])
+                            entry.copy(
+                                lineColorHex = officialColor ?: entry.lineColorHex,
+                                linePictoUrl = officialIcon
+                            )
+                        }
                         return@withContext DeparturesResult(
                             departures = comparisons,
                             isOfflineFallback = false,
                             isSimulation = false,
                             statusMessage = monitoring.notServedMessage ?: "Cet arrêt n'est pas desservi",
                             isStopNotServed = true,
-                            notServedMessage = monitoring.notServedMessage
+                            notServedMessage = monitoring.notServedMessage,
+                            notServedEntries = enrichedNotServed
                         )
                     }
 

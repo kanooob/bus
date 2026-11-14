@@ -125,6 +125,54 @@ class IdelisWebScraperTest {
         assertEquals(1, result.departures.size)
         assertEquals("F", result.departures[0].lineRef)
         assertEquals("4 min", result.departures[0].timeText)
+        assertEquals(1, result.notServedEntries.size)
+        assertEquals("T1", result.notServedEntries[0].lineRef)
+        assertEquals("PAU Cité Multimédia", result.notServedEntries[0].direction)
+    }
+
+    @Test
+    fun testNotServedSchedulesExtractionStripsRepeatedPhrase() {
+        val html = """
+            <div class="ligne-group">
+                <div class="row">
+                    <div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/6.png" alt="Ligne 6" /></div>
+                </div>
+                <div class="row">
+                    <div class="col-12"><span class="text-black-50">Direction: PAU Bosquet - Arrêt: Pau Université -</span></div>
+                </div>
+                <div class="row">
+                    <div class="col-3 pr-1"><div class="p-1 text-center border rounded">Cet arrêt n'est pas desservi [09:34]</div></div>
+                    <div class="col-3 pr-1"><div class="p-1 text-center border rounded">Cet arrêt n'est pas desservi [09:53]</div></div>
+                    <div class="col-3 pr-1"><div class="p-1 text-center border rounded">Cet arrêt n'est pas desservi [10:09]</div></div>
+                    <div class="col-3 pr-1"><div class="p-1 text-center border rounded">Cet arrêt n'est pas desservi [10:31]</div></div>
+                </div>
+            </div>
+            <div class="ligne-group">
+                <div class="row">
+                    <div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" /></div>
+                </div>
+                <div class="row">
+                    <div class="col-12"><span class="text-black-50">Direction: PAU Gare de Pau</span></div>
+                </div>
+                <div class="row">
+                    <div class="col-3 pr-1"><div class="p-1 text-center border rounded text-white bg-primary">5 min</div></div>
+                </div>
+            </div>
+        """.trimIndent()
+
+        val result = service.parseStopMonitoringHtml("Pau Université", html)
+        assertTrue(result.isStopNotServed)
+        assertEquals(null, result.notServedMessage)
+        assertEquals(1, result.departures.size)
+        assertEquals("F", result.departures[0].lineRef)
+
+        // Seule la ligne/direction ayant "Cet arrêt n'est pas desservi" apparaît dans notServedEntries
+        assertEquals(1, result.notServedEntries.size)
+        val entry = result.notServedEntries[0]
+        assertEquals("6", entry.lineRef)
+        assertEquals("Ligne 6", entry.lineName)
+        assertEquals("PAU Bosquet (Pau Université)", entry.direction)
+        assertEquals(listOf("09:34", "09:53", "10:09", "10:31"), entry.times)
     }
 
     @Test

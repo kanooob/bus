@@ -13,5 +13,7 @@ data class GtfsSyncReport(
     val detectedWorks: List<String> = emptyList(),
     val downloadedFiles: List<String> = emptyList(),
     val success: Boolean = true,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val sourceUsed: String = "Direct",
+    val usedWaybackFallback: Boolean = false
 )

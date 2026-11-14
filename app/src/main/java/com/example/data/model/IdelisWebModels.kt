@@ -25,6 +25,18 @@ data class IdelisWebDeparture(
 )
 
 /**
+ * Représente une ligne et direction dont certains horaires indiquent que l'arrêt n'est pas desservi.
+ */
+data class NotServedEntry(
+    val lineRef: String,
+    val lineName: String,
+    val linePictoUrl: String? = null,
+    val lineColorHex: String = "#8C935D",
+    val direction: String,
+    val times: List<String>
+)
+
+/**
  * Résultat complet d'un appel stop_monitoring.
  */
 data class IdelisWebMonitoringResult(
@@ -32,7 +44,8 @@ data class IdelisWebMonitoringResult(
     val departures: List<IdelisWebDeparture>,
     val alertMessage: String? = null,
     val isStopNotServed: Boolean = false,
-    val notServedMessage: String? = null
+    val notServedMessage: String? = null,
+    val notServedEntries: List<NotServedEntry> = emptyList()
 )
 
 /**

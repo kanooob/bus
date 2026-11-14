@@ -1,6 +1,7 @@
 package com.example.data.remote
 
 import android.util.Log
+import androidx.room.withTransaction
 import com.example.BuildConfig
 import com.example.data.local.IdelisDatabase
 import com.example.data.model.GtfsRoute
@@ -36,10 +37,8 @@ import java.util.zip.ZipInputStream
  */
 class GtfsDownloadService(
     private val database: IdelisDatabase,
-    private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val okHttpClient: OkHttpClient = WaybackGtfsFetcher.defaultClient(),
+    private val waybackFetcher: WaybackGtfsFetcher = WaybackGtfsFetcher(okHttpClient)
 ) {
 
     companion object {
@@ -58,7 +57,8 @@ class GtfsDownloadService(
      * et met à jour le référentiel Room local.
      */
     suspend fun downloadAndProcessGtfsZip(
-        url: String = DEFAULT_GTFS_ZIP_URL
+        url: String = DEFAULT_GTFS_ZIP_URL,
+        isFirstSync: Boolean = false
     ): GtfsSyncReport = withContext(Dispatchers.IO) {
         val downloadedFiles = mutableListOf<String>()
         var detectedPeriod = IdelisPeriod.VERTE
@@ -72,30 +72,23 @@ class GtfsDownloadService(
         val rawCalendarDates = mutableListOf<com.example.data.model.GtfsCalendarDate>()
 
         try {
-            Log.d(TAG, "Téléchargement du ZIP GTFS Idelis depuis : $url")
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
-                .build()
-
-            val bytes = okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    Log.w(TAG, "Échec téléchargement HTTP ${response.code}")
-                    return@withContext GtfsSyncReport(
-                        success = false,
-                        errorMessage = "Erreur HTTP ${response.code} lors du téléchargement du GTFS"
-                    )
-                }
-                response.body?.bytes()
-            }
-            if (bytes == null || bytes.isEmpty()) {
+            Log.d(TAG, "Téléchargement du ZIP GTFS Idelis depuis : $url (premièreSync=$isFirstSync)")
+            val downloadResult = waybackFetcher.fetchGtfsZip(url, isFirstSync = isFirstSync)
+            if (downloadResult.isFailure) {
+                val err = downloadResult.exceptionOrNull()?.message
+                    ?: "Erreur lors du téléchargement du GTFS"
+                Log.w(TAG, "Échec téléchargement GTFS (direct + Wayback) : $err")
                 return@withContext GtfsSyncReport(
                     success = false,
-                    errorMessage = "Fichier GTFS ZIP reçu vide"
+                    errorMessage = err
                 )
             }
+            val fetched = downloadResult.getOrThrow()
+            val bytes = fetched.bytes
+            val usedWayback = fetched.usedWaybackMachine
+            val sourceLabel = if (usedWayback) "Wayback Machine" else "Direct"
 
-            Log.d(TAG, "Archive reçue (${bytes.size / 1024} Ko). Décompression et analyse...")
+            Log.d(TAG, "Archive reçue (${bytes.size / 1024} Ko, source=$sourceLabel). Décompression et analyse...")
             val nowCal = Calendar.getInstance()
             val dayOfWeek = nowCal.get(Calendar.DAY_OF_WEEK)
             val todayStr = SimpleDateFormat("yyyyMMdd", Locale.FRANCE).format(nowCal.time)
@@ -177,33 +170,35 @@ class GtfsDownloadService(
             Log.d(TAG, "Fichiers GTFS analysés : ${downloadedFiles.joinToString()}")
             Log.d(TAG, "Extraits : ${rawStops.size} arrêts, ${rawRoutes.size} lignes, ${rawTrips.size} trips, ${rawStopTimes.size} horaires")
 
-            // Sauvegarde dans la base de données Room locale
+            // Sauvegarde dans la base de données Room locale dans une transaction
             // Les arrêts théoriques ne sont pas insérés dans stopDao (seuls les arrêts réels reçus par requête sont conservés)
             Log.d(TAG, "${rawStops.size} arrêts du référentiel GTFS analysés")
 
-            if (rawRoutes.isNotEmpty()) {
-                database.routeDao().clearAllRoutes()
-                database.routeDao().insertRoutes(rawRoutes)
-            }
-
-            if (rawTrips.isNotEmpty()) {
-                database.stopTimeDao().clearAllTrips()
-                database.stopTimeDao().insertTrips(rawTrips.take(3000))
-            }
-
-            if (rawStopTimes.isNotEmpty()) {
-                database.stopTimeDao().clearAllStopTimes()
-                database.stopTimeDao().insertStopTimes(rawStopTimes.take(5000))
-            }
-
-            if (rawCalendars.isNotEmpty()) {
-                database.calendarDao().clearAllCalendars()
-                database.calendarDao().insertCalendars(rawCalendars)
-            }
-
-            if (rawCalendarDates.isNotEmpty()) {
-                database.calendarDao().clearAllCalendarDates()
-                database.calendarDao().insertCalendarDates(rawCalendarDates)
+            database.withTransaction {
+                if (rawStopTimes.isNotEmpty()) {
+                    database.stopTimeDao().clearAllStopTimes()
+                }
+                if (rawTrips.isNotEmpty()) {
+                    database.stopTimeDao().clearAllTrips()
+                }
+                if (rawRoutes.isNotEmpty()) {
+                    database.routeDao().clearAllRoutes()
+                    database.routeDao().insertRoutes(rawRoutes)
+                }
+                if (rawTrips.isNotEmpty()) {
+                    database.stopTimeDao().insertTrips(rawTrips.take(3000))
+                }
+                if (rawStopTimes.isNotEmpty()) {
+                    database.stopTimeDao().insertStopTimes(rawStopTimes.take(5000))
+                }
+                if (rawCalendars.isNotEmpty()) {
+                    database.calendarDao().clearAllCalendars()
+                    database.calendarDao().insertCalendars(rawCalendars)
+                }
+                if (rawCalendarDates.isNotEmpty()) {
+                    database.calendarDao().clearAllCalendarDates()
+                    database.calendarDao().insertCalendarDates(rawCalendarDates)
+                }
             }
 
             GtfsSyncReport(
@@ -214,7 +209,9 @@ class GtfsDownloadService(
                 activePeriod = detectedPeriod,
                 detectedWorks = worksList,
                 downloadedFiles = downloadedFiles,
-                success = true
+                success = true,
+                sourceUsed = sourceLabel,
+                usedWaybackFallback = usedWayback
             )
         } catch (e: Exception) {
             Log.e(TAG, "Erreur traitement GTFS : ${e.message}", e)
@@ -261,8 +258,8 @@ class GtfsDownloadService(
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return
 
-        val headerLine = lines.next()
-        val headers = parseCsvLine(headerLine)
+        val headerLine = lines.next().removePrefix("\uFEFF")
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
         val idIdx = headers.indexOf("stop_id")
         val nameIdx = headers.indexOf("stop_name")
         val latIdx = headers.indexOf("stop_lat")
@@ -299,8 +296,8 @@ class GtfsDownloadService(
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return
 
-        val headerLine = lines.next()
-        val headers = parseCsvLine(headerLine)
+        val headerLine = lines.next().removePrefix("\uFEFF")
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
         val idIdx = headers.indexOf("route_id")
         val shortNameIdx = headers.indexOf("route_short_name")
         val longNameIdx = headers.indexOf("route_long_name")
@@ -337,8 +334,8 @@ class GtfsDownloadService(
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return
 
-        val headerLine = lines.next()
-        val headers = parseCsvLine(headerLine)
+        val headerLine = lines.next().removePrefix("\uFEFF")
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
         val tripIdIdx = headers.indexOf("trip_id")
         val routeIdIdx = headers.indexOf("route_id")
         val serviceIdIdx = headers.indexOf("service_id")
@@ -374,8 +371,8 @@ class GtfsDownloadService(
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return
 
-        val headerLine = lines.next()
-        val headers = parseCsvLine(headerLine)
+        val headerLine = lines.next().removePrefix("\uFEFF")
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
         val tripIdIdx = headers.indexOf("trip_id")
         val arrTimeIdx = headers.indexOf("arrival_time")
         val depTimeIdx = headers.indexOf("departure_time")
@@ -414,8 +411,8 @@ class GtfsDownloadService(
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return
 
-        val headerLine = lines.next()
-        val headers = parseCsvLine(headerLine)
+        val headerLine = lines.next().removePrefix("\uFEFF")
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
         val serviceIdIdx = headers.indexOf("service_id")
         val monIdx = headers.indexOf("monday")
         val tueIdx = headers.indexOf("tuesday")
@@ -457,8 +454,8 @@ class GtfsDownloadService(
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return
 
-        val headerLine = lines.next()
-        val headers = parseCsvLine(headerLine)
+        val headerLine = lines.next().removePrefix("\uFEFF")
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
         val serviceIdIdx = headers.indexOf("service_id")
         val dateIdx = headers.indexOf("date")
         val exceptionIdx = headers.indexOf("exception_type")

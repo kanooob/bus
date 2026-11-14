@@ -11,6 +11,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,10 +37,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
-import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -64,13 +66,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.example.data.model.NotServedEntry
 import com.example.data.model.UpdateNetworkMode
 import com.example.data.remote.AppUpdateNotifier
 import com.example.data.remote.AppUpdateState
@@ -275,18 +282,24 @@ fun TransitBoardScreen(
                         }
                     }
                 } else if (uiState.isStopNotServed && uiState.departures.isEmpty()) {
-                    // Affichage EN GROS que l'arrêt n'est pas desservi
-                    Box(
+                    // Affichage compact et discret lorsque l'arrêt n'est pas desservi
+                    Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .padding(24.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         StopNotServedCard(
                             message = uiState.notServedMessage,
-                            isDarkTheme = effectiveDarkTheme,
-                            isFullScreen = true
+                            notServedEntries = uiState.notServedEntries,
+                            isDarkTheme = effectiveDarkTheme
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Glissez de haut en bas pour actualiser ou sélectionnez un autre arrêt",
+                            style = MaterialTheme.typography.bodySmall.copy(color = Color.Gray),
+                            textAlign = TextAlign.Center
                         )
                     }
                 } else if (uiState.departures.isEmpty()) {
@@ -332,11 +345,11 @@ fun TransitBoardScreen(
                     ) {
                         if (uiState.isStopNotServed) {
                             item(key = "stop_not_served_banner") {
-                                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                                     StopNotServedCard(
                                         message = uiState.notServedMessage,
-                                        isDarkTheme = effectiveDarkTheme,
-                                        isFullScreen = false
+                                        notServedEntries = uiState.notServedEntries,
+                                        isDarkTheme = effectiveDarkTheme
                                     )
                                 }
                             }
@@ -464,58 +477,153 @@ fun TransitBoardScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StopNotServedCard(
     message: String?,
-    isDarkTheme: Boolean,
-    isFullScreen: Boolean
+    notServedEntries: List<NotServedEntry>,
+    isDarkTheme: Boolean
 ) {
-    val cardBg = if (isDarkTheme) Color(0xFF311419) else Color(0xFFFFEBEE)
-    val titleColor = if (isDarkTheme) Color(0xFFFF8A80) else Color(0xFFB71C1C)
-    val bodyColor = if (isDarkTheme) Color(0xFFFDE8E8) else Color(0xFF4A1010)
+    val cardBg = if (isDarkTheme) Color(0xFF2B191C) else Color(0xFFFEF2F2)
+    val borderColor = if (isDarkTheme) Color(0xFFEF9A9A).copy(alpha = 0.25f) else Color(0xFFFCA5A5).copy(alpha = 0.7f)
+    val titleColor = if (isDarkTheme) Color(0xFFFCA5A5) else Color(0xFFB91C1C)
+    val bodyColor = if (isDarkTheme) Color(0xFFE2E8F0) else Color(0xFF334155)
+    val mutedColor = if (isDarkTheme) Color(0xFF94A3B8) else Color(0xFF64748B)
+    val pillBg = if (isDarkTheme) Color(0xFF3F2327) else Color(0xFFFEE2E2)
+    val pillText = if (isDarkTheme) Color(0xFFFECACA) else Color(0xFF991B1B)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(cardBg)
-            .border(2.dp, SketchRed.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
-            .padding(if (isFullScreen) 24.dp else 16.dp)
-            .testTag("stop_not_served_banner"),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .testTag("stop_not_served_banner")
     ) {
-        Icon(
-            imageVector = Icons.Default.WarningAmber,
-            contentDescription = "Arrêt non desservi",
-            tint = titleColor,
-            modifier = Modifier.size(if (isFullScreen) 64.dp else 40.dp)
-        )
-        Spacer(modifier = Modifier.height(if (isFullScreen) 14.dp else 8.dp))
-        Text(
-            text = "CET ARRÊT N'EST PAS DESSERVI",
-            color = titleColor,
-            fontSize = if (isFullScreen) 24.sp else 19.sp,
-            fontWeight = FontWeight.Black,
-            textAlign = TextAlign.Center,
-            lineHeight = if (isFullScreen) 30.sp else 24.sp
-        )
-        if (!message.isNullOrBlank()) {
-            Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(
+                imageVector = Icons.Default.Info,
+                contentDescription = "Arrêt non desservi",
+                tint = titleColor,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = message,
-                color = bodyColor,
-                fontSize = if (isFullScreen) 15.sp else 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center
+                text = "Arrêt non desservi",
+                color = titleColor,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
             )
         }
-        if (isFullScreen) {
-            Spacer(modifier = Modifier.height(10.dp))
+
+        if (notServedEntries.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                notServedEntries.forEach { entry ->
+                    val badgeColor = try {
+                        Color(android.graphics.Color.parseColor("#" + entry.lineColorHex.removePrefix("#")))
+                    } catch (_: Exception) {
+                        titleColor
+                    }
+                    val badgeTextColor = if (entry.lineRef.equals("F", ignoreCase = true)) {
+                        Color(0xFF121212)
+                    } else {
+                        Color.White
+                    }
+
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(badgeColor),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                var isImageLoaded by remember(entry.linePictoUrl) { mutableStateOf(false) }
+
+                                if (!entry.linePictoUrl.isNullOrBlank()) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(LocalContext.current)
+                                            .data(entry.linePictoUrl)
+                                            .crossfade(true)
+                                            .build(),
+                                        contentDescription = "Icône ligne ${entry.lineRef}",
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(9.dp)),
+                                        contentScale = ContentScale.Fit,
+                                        onSuccess = { isImageLoaded = true },
+                                        onError = { isImageLoaded = false }
+                                    )
+                                }
+
+                                if (entry.linePictoUrl.isNullOrBlank() || !isImageLoaded) {
+                                    Text(
+                                        text = entry.lineRef,
+                                        color = badgeTextColor,
+                                        fontSize = if (entry.lineRef.length > 3) 9.5.sp else 12.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = entry.direction,
+                                    color = bodyColor,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        if (entry.times.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(5.dp))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(start = 36.dp)
+                            ) {
+                                entry.times.forEach { time ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(pillBg)
+                                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                                    ) {
+                                        Text(
+                                            text = time,
+                                            color = pillText,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (!message.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Glissez de haut en bas pour actualiser ou sélectionnez un autre arrêt.",
-                color = if (isDarkTheme) Color(0xFFCBD5E1) else Color(0xFF64748B),
+                text = message,
+                color = mutedColor,
                 fontSize = 12.5.sp,
-                textAlign = TextAlign.Center
+                lineHeight = 17.sp
             )
         }
     }

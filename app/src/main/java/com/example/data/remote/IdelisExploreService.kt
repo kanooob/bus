@@ -75,6 +75,8 @@ class IdelisExploreService {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    private val waybackGtfsFetcher = WaybackGtfsFetcher()
+
     private fun JSONObject.optNullableString(key: String): String? {
         if (isNull(key)) return null
         val value = optString(key, "").trim()
@@ -324,14 +326,8 @@ class IdelisExploreService {
         val worksNotes = mutableListOf<String>()
 
         try {
-            val request = Request.Builder()
-                .url(URL_GTFS_ZIP)
-                .addHeader("User-Agent", "IdelisPauInfo-Android/${BuildConfig.VERSION_NAME}")
-                .build()
-
-            val bytes = okHttpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) response.body?.bytes() else null
-            }
+            val fetched = waybackGtfsFetcher.fetchGtfsZip(URL_GTFS_ZIP).getOrNull()
+            val bytes = fetched?.bytes
             if (bytes != null && bytes.isNotEmpty()) {
                 val zipStream = ZipInputStream(ByteArrayInputStream(bytes))
                     var entry = zipStream.nextEntry

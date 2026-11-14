@@ -583,4 +583,200 @@ class ExampleRobolectricTest {
             .getString(android.app.Notification.EXTRA_TITLE).orEmpty()
         assertTrue(notifTitle.contains("Manifestation centre-ville"))
     }
+
+    private fun buildSampleGtfsZipBytes(): ByteArray {
+        val baos = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(baos).use { zos ->
+            val files = mapOf(
+                "agency.txt" to "agency_id,agency_name,agency_url,agency_timezone\nIDELIS,Idelis,https://www.idelis.fr,Europe/Paris\n",
+                "calendar_dates.txt" to "service_id,date,exception_type\nSEM,20261114,1\n",
+                "calendar.txt" to "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nSEM,1,1,1,1,1,0,0,20260101,20261231\n",
+                "fare_attributes.txt" to "fare_id,price,currency_type,payment_method,transfers\nT1,1.30,EUR,0,\n",
+                "fare_rules.txt" to "fare_id,route_id\nT1,F\n",
+                "feed_info.txt" to "feed_publisher_name,feed_publisher_url,feed_lang\nIdelis,https://data.idelis.fr,fr\n",
+                "routes.txt" to "route_id,route_short_name,route_long_name,route_color,route_text_color\nF,F,Fébus,F18700,121212\n",
+                "shapes.txt" to "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\nSH1,43.2995,-0.3668,1\n",
+                // stop_times.txt intentionnellement avant stops.txt et trips.txt avec un stop_id absent de stopDao
+                "stop_times.txt" to "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nTRIP_ORPHAN,12:00:00,12:00:00,STOP_GTFS_EXT_1,1\n",
+                "stops.txt" to "stop_id,stop_name,stop_lat,stop_lon\nSTOP_GTFS_EXT_1,Pôle Bosquet,43.2995,-0.3668\n",
+                "transfers.txt" to "from_stop_id,to_stop_id,transfer_type\nSTOP_GTFS_EXT_1,STOP_GTFS_EXT_1,2\n",
+                "trips.txt" to "trip_id,route_id,service_id,trip_headsign\nTRIP_1,F,SEM,Gare de Pau\n"
+            )
+            for ((name, content) in files) {
+                zos.putNextEntry(java.util.zip.ZipEntry(name))
+                zos.write(content.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+        }
+        return baos.toByteArray()
+    }
+
+    @Test
+    fun `gtfs download falls back to wayback machine and imports full zip without foreign key error`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        val sampleZip = buildSampleGtfsZipBytes()
+        val requestedUrls = mutableListOf<String>()
+
+        val mockClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                requestedUrls.add(url)
+                val builder = okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+
+                when {
+                    url.startsWith("https://data.idelis.fr/") -> {
+                        builder.code(503).message("Service Unavailable")
+                            .body(okhttp3.ResponseBody.create(null, "Down"))
+                            .build()
+                    }
+                    url.startsWith("https://web.archive.org/cdx/search/cdx") -> {
+                        val cdxJson = """
+                            [
+                              ["timestamp","original"],
+                              ["20261110101500","https://opendata.idelis.fr/?file=GTFS_MultiRoutes%2FData.GTFS.zip"]
+                            ]
+                        """.trimIndent()
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, cdxJson))
+                            .build()
+                    }
+                    url.startsWith("https://web.archive.org/web/20261110101500id_/") -> {
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, sampleZip))
+                            .build()
+                    }
+                    else -> {
+                        builder.code(404).message("Not Found")
+                            .body(okhttp3.ResponseBody.create(null, ""))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val service = com.example.data.remote.GtfsDownloadService(db, mockClient)
+        val report = service.downloadAndProcessGtfsZip(isFirstSync = true)
+
+        assertTrue("La synchro GTFS doit réussir sans erreur FOREIGN KEY: ${report.errorMessage}", report.success)
+        assertTrue(report.usedWaybackFallback)
+        assertEquals("Wayback Machine", report.sourceUsed)
+        assertEquals(1, report.routesCount)
+        assertEquals(1, report.tripsCount)
+        assertEquals(1, report.stopTimesCount)
+        assertEquals(12, report.downloadedFiles.size)
+        assertTrue(report.downloadedFiles.containsAll(listOf("routes.txt", "stops.txt", "trips.txt", "stop_times.txt", "calendar.txt", "calendar_dates.txt")))
+        assertTrue(requestedUrls.any { it.startsWith("https://web.archive.org/web/20261110101500id_/") })
+    }
+
+    @Test
+    fun `wayback fetcher falls back to legacy idelis snapshot via cdx picking latest date`() {
+        val sampleZip = buildSampleGtfsZipBytes()
+        val legacyUrl = com.example.data.remote.WaybackGtfsFetcher.LEGACY_IDELIS_GTFS_URL_ENCODED
+
+        val mockClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val builder = okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+
+                when {
+                    // L'URL principale renvoie du HTML invalide au lieu d'un ZIP
+                    url.startsWith("https://data.idelis.fr/") -> {
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, "<html>Maintenance</html>"))
+                            .build()
+                    }
+                    // Availability vide
+                    url.startsWith("https://archive.org/wayback/available") -> {
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, """{"archived_snapshots":{}}"""))
+                            .build()
+                    }
+                    // CDX renvoie plusieurs instantanés pour l'URL Idelis -> doit prendre le dernier en date
+                    url.startsWith("https://web.archive.org/cdx/search/cdx") && url.contains("opendata.idelis.fr") -> {
+                        val cdxJson = """
+                            [
+                              ["timestamp","original"],
+                              ["20260408120650","$legacyUrl"],
+                              ["20261112090000","$legacyUrl"]
+                            ]
+                        """.trimIndent()
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, cdxJson))
+                            .build()
+                    }
+                    url.startsWith("https://web.archive.org/cdx/search/cdx") -> {
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, """[]"""))
+                            .build()
+                    }
+                    url == "https://web.archive.org/web/20261112090000id_/$legacyUrl" -> {
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, sampleZip))
+                            .build()
+                    }
+                    else -> {
+                        builder.code(404).message("Not Found")
+                            .body(okhttp3.ResponseBody.create(null, ""))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val fetcher = com.example.data.remote.WaybackGtfsFetcher(mockClient)
+        val result = fetcher.fetchGtfsZip(
+            primaryUrl = com.example.data.remote.GtfsDownloadService.DEFAULT_GTFS_ZIP_URL,
+            isFirstSync = true
+        )
+
+        assertTrue(result.isSuccess)
+        val fetched = result.getOrThrow()
+        assertTrue(fetched.usedWaybackMachine)
+        assertEquals("20261112090000", fetched.archiveTimestamp)
+        assertEquals("https://web.archive.org/web/20261112090000id_/$legacyUrl", fetched.sourceUrl)
+    }
+
+    @Test
+    fun `wayback fetcher falls back to dynamic latest wayback redirect when apis return nothing`() {
+        val sampleZip = buildSampleGtfsZipBytes()
+        val latestUrl = "https://web.archive.org/web/2id_/${com.example.data.remote.WaybackGtfsFetcher.LEGACY_IDELIS_GTFS_URL_ENCODED}"
+
+        val mockClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val builder = okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+
+                when (url) {
+                    latestUrl -> {
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, sampleZip))
+                            .build()
+                    }
+                    else -> {
+                        builder.code(503).message("Unavailable")
+                            .body(okhttp3.ResponseBody.create(null, "Down"))
+                            .build()
+                    }
+                }
+            }
+            .build()
+
+        val fetcher = com.example.data.remote.WaybackGtfsFetcher(mockClient)
+        val result = fetcher.fetchGtfsZip(
+            primaryUrl = com.example.data.remote.GtfsDownloadService.DEFAULT_GTFS_ZIP_URL,
+            isFirstSync = true
+        )
+
+        assertTrue(result.isSuccess)
+        val fetched = result.getOrThrow()
+        assertTrue(fetched.usedWaybackMachine)
+        assertEquals(latestUrl, fetched.sourceUrl)
+    }
 }

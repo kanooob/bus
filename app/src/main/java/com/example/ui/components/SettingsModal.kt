@@ -10,6 +10,7 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -94,6 +95,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -102,6 +104,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.example.BuildConfig
+import com.example.R
 import com.example.data.local.PreferencesManager
 import com.example.data.model.AppUpdateCheckFrequency
 import com.example.data.model.GtfsSyncFrequency
@@ -475,7 +478,8 @@ fun SettingsModal(
                                             } else if (gtfsReport != null) {
                                                 Text(
                                                     text = if (gtfsReport.success) {
-                                                        "✓ ${gtfsReport.stopsCount} arrêts • ${gtfsReport.routesCount} lignes"
+                                                        val suffix = if (gtfsReport.usedWaybackFallback) " (Wayback Machine)" else ""
+                                                        "✓ ${gtfsReport.stopsCount} arrêts • ${gtfsReport.routesCount} lignes$suffix"
                                                     } else {
                                                         "⚠ ${gtfsReport.errorMessage}"
                                                     },
@@ -1105,23 +1109,43 @@ fun SettingsModal(
                             color = primaryColor.copy(alpha = 0.1f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = "Galaxie Bus",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontWeight = FontWeight.Black,
-                                        color = primaryColor
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color.White,
+                                    shadowElevation = 1.dp,
+                                    modifier = Modifier.size(52.dp)
+                                ) {
+                                    Image(
+                                        painter = painterResource(id = R.drawable.galaxie_bus_logo),
+                                        contentDescription = "Logo Galaxie Bus",
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(6.dp)
                                     )
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Version actuelle : v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                                )
-                                Text(
-                                    text = "ID : ${BuildConfig.APPLICATION_ID}",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = mutedColor)
-                                )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Galaxie Bus",
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.Black,
+                                            color = primaryColor
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Version actuelle : v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "ID : ${BuildConfig.APPLICATION_ID}",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = mutedColor)
+                                    )
+                                }
                             }
                         }
 
