@@ -128,7 +128,8 @@ data class TransitBoardUiState(
     // Mise à jour automatique GitHub (vérification + téléchargement Wi-Fi + installation APK)
     val appUpdateState: AppUpdateState = AppUpdateState.Idle,
     val updatePromptVisible: Boolean = false,
-    val isWifiConnected: Boolean = false
+    val isWifiConnected: Boolean = false,
+    val usageStatsEnabled: Boolean = true
 )
 
 class TransitBoardViewModel(
@@ -162,7 +163,8 @@ class TransitBoardViewModel(
             queryTypeParam = preferencesManager?.getQueryTypeParam() ?: com.example.data.local.PreferencesManager.DEFAULT_QUERY_TYPE,
             githubRepo = preferencesManager?.getGithubRepo() ?: com.example.data.local.PreferencesManager.DEFAULT_GITHUB_REPO,
             githubTag = preferencesManager?.getGithubTag() ?: com.example.data.local.PreferencesManager.DEFAULT_GITHUB_TAG,
-            lastGtfsSyncTimestamp = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L
+            lastGtfsSyncTimestamp = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L,
+            usageStatsEnabled = preferencesManager?.isUsageStatsEnabled() ?: true
         )
     )
     val uiState: StateFlow<TransitBoardUiState> = _uiState.asStateFlow()
@@ -173,6 +175,7 @@ class TransitBoardViewModel(
     private var webSearchJob: Job? = null
     private var updateJob: Job? = null
     private var refreshJob: Job? = null
+    private var usageStatsPingJob: Job? = null
 
     init {
         loadStops()
@@ -183,6 +186,16 @@ class TransitBoardViewModel(
         startTrafficRefreshJob()
         syncTrafficBackgroundSchedule()
         checkForAppUpdateOnLaunch()
+        sendDailyUsageStatsPingOnLaunch()
+    }
+
+    private fun sendDailyUsageStatsPingOnLaunch() {
+        val pm = preferencesManager ?: return
+        if (!pm.isUsageStatsEnabled()) return
+        usageStatsPingJob?.cancel()
+        usageStatsPingJob = viewModelScope.launch {
+            repository.usageStatsPingService.pingIfDue(pm)
+        }
     }
 
     private fun checkForAppUpdateOnLaunch() {
@@ -459,6 +472,14 @@ class TransitBoardViewModel(
         _uiState.update { it.copy(updateNetworkMode = mode) }
     }
 
+    fun setUsageStatsEnabled(enabled: Boolean) {
+        preferencesManager?.setUsageStatsEnabled(enabled)
+        _uiState.update { it.copy(usageStatsEnabled = enabled) }
+        if (!enabled) {
+            usageStatsPingJob?.cancel()
+        }
+    }
+
     fun exportBackupJson(): String {
         return preferencesManager?.exportBackupJson() ?: "{}"
     }
@@ -515,6 +536,7 @@ class TransitBoardViewModel(
                     githubRepo = ghRepo,
                     githubTag = ghTag,
                     favoriteStopIds = favs,
+                    usageStatsEnabled = pm.isUsageStatsEnabled(),
                     backupRestoreMessage = "Sauvegarde restaurée ($count favori(s), paramètres appliqués)",
                     isBackupError = false
                 )
@@ -1284,6 +1306,7 @@ class TransitBoardViewModel(
         trafficRefreshJob?.cancel()
         updateJob?.cancel()
         refreshJob?.cancel()
+        usageStatsPingJob?.cancel()
     }
 }
 

@@ -64,6 +64,10 @@ class PreferencesManager(context: Context) {
         private const val KEY_GITHUB_REPO = "github_repo_target"
         private const val KEY_GITHUB_TAG = "github_tag_target"
 
+        // Compteur d'utilisateurs (statistiques quotidiennes)
+        private const val KEY_USAGE_STATS_ENABLED = "usage_stats_enabled"
+        private const val KEY_LAST_USAGE_STATS_PING_DATE = "last_usage_stats_ping_date"
+
         const val DEFAULT_WEB_URL = "https://www.idelis.fr/?type=777"
         private const val LEGACY_GTFS_ZIP_URL = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
         const val DEFAULT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
@@ -323,6 +327,19 @@ class PreferencesManager(context: Context) {
         prefs.edit().putString(KEY_GITHUB_TAG, tag.trim()).apply()
     }
 
+    // Compteur d'utilisateurs (activé par défaut)
+    fun isUsageStatsEnabled(): Boolean = prefs.getBoolean(KEY_USAGE_STATS_ENABLED, true)
+
+    fun setUsageStatsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_USAGE_STATS_ENABLED, enabled).apply()
+    }
+
+    fun getLastUsageStatsPingDate(): String? = prefs.getString(KEY_LAST_USAGE_STATS_PING_DATE, null)
+
+    fun saveLastUsageStatsPingDate(dateKey: String) {
+        prefs.edit().putString(KEY_LAST_USAGE_STATS_PING_DATE, dateKey).apply()
+    }
+
     // 4. Avancé : Sauvegarde et restauration JSON
     fun exportBackupJson(): String {
         val favArray = JSONArray()
@@ -346,6 +363,7 @@ class PreferencesManager(context: Context) {
             put("queryTypeParam", getQueryTypeParam())
             put("githubRepo", getGithubRepo())
             put("githubTag", getGithubTag())
+            put("usageStatsEnabled", isUsageStatsEnabled())
         }
 
         val root = JSONObject().apply {
@@ -423,6 +441,9 @@ class PreferencesManager(context: Context) {
                 settingsObj.optString("queryTypeParam").takeIf { it.isNotBlank() }?.let { saveQueryTypeParam(it) }
                 settingsObj.optString("githubRepo").takeIf { it.isNotBlank() }?.let { saveGithubRepo(it) }
                 settingsObj.optString("githubTag").takeIf { it.isNotBlank() }?.let { saveGithubTag(it) }
+                if (settingsObj.has("usageStatsEnabled")) {
+                    setUsageStatsEnabled(settingsObj.optBoolean("usageStatsEnabled", true))
+                }
             }
 
             Result.success(favoritesCount)

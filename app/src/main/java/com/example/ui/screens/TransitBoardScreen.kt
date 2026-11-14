@@ -489,6 +489,8 @@ fun TransitBoardScreen(
                 onResetAdvancedUrls = {
                     viewModel.resetAdvancedUrlsToDefault()
                 },
+                usageStatsEnabled = uiState.usageStatsEnabled,
+                onToggleUsageStats = { viewModel.setUsageStatsEnabled(it) },
                 onDismissRequest = { isSettingsOpen = false }
             )
         }

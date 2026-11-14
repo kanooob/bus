@@ -117,13 +117,15 @@ class SettingsModalRobolectricTest {
         composeTestRule.waitForIdle()
         assertEquals(0, dismissCount)
 
-        // 4. Sous-menu Avancé + retour système -> puis retour système depuis le menu principal ferme les paramètres
+        // 4. Sous-menu Avancé + compteur d'utilisateurs + retour système -> puis retour système depuis le menu principal ferme les paramètres
         composeTestRule.onNodeWithTag("settings_categories_menu")
             .performScrollToNode(hasTestTag("settings_category_advanced"))
         composeTestRule.onNodeWithTag("settings_category_advanced").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("setting_backup_restore_row").assertIsDisplayed()
         composeTestRule.onNodeWithTag("setting_network_api_row").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("setting_usage_stats_row").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("setting_usage_stats_switch").assertIsDisplayed()
 
         composeTestRule.runOnUiThread {
             backDispatcher?.onBackPressed()
@@ -137,5 +139,52 @@ class SettingsModalRobolectricTest {
         }
         composeTestRule.waitForIdle()
         assertEquals(1, dismissCount)
+    }
+
+    @Test
+    fun `usage stats switch in advanced settings defaults to enabled and toggles callback`() {
+        var currentEnabled = true
+        var lastToggledValue: Boolean? = null
+
+        composeTestRule.setContent {
+            MyApplicationTheme(darkTheme = false) {
+                SettingsModal(
+                    isDarkTheme = false,
+                    themeMode = ThemeMode.SYSTEM,
+                    onSelectThemeMode = {},
+                    primaryColorMode = PrimaryColorMode.APP_DEFAULT,
+                    onSelectPrimaryColorMode = {},
+                    inAppRefreshFrequency = InAppRefreshFrequency.EVERY_1_MIN,
+                    onSelectInAppRefreshFrequency = {},
+                    widgetRefreshFrequency = WidgetRefreshFrequency.EVERY_15_MIN,
+                    onSelectWidgetRefreshFrequency = {},
+                    widgetLocationFrequency = WidgetLocationFrequency.EVERY_15_MIN,
+                    onSelectWidgetLocationFrequency = {},
+                    gtfsSyncFrequency = GtfsSyncFrequency.DAILY_ON_OPEN,
+                    onSelectGtfsSyncFrequency = {},
+                    appUpdateCheckFrequency = AppUpdateCheckFrequency.DAILY_ON_OPEN,
+                    onSelectAppUpdateCheckFrequency = {},
+                    updateNetworkMode = UpdateNetworkMode.WIFI_AND_CELLULAR,
+                    onSelectUpdateNetworkMode = {},
+                    usageStatsEnabled = currentEnabled,
+                    onToggleUsageStats = { enabled ->
+                        currentEnabled = enabled
+                        lastToggledValue = enabled
+                    },
+                    onDismissRequest = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("settings_categories_menu")
+            .performScrollToNode(hasTestTag("settings_category_advanced"))
+        composeTestRule.onNodeWithTag("settings_category_advanced").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("setting_usage_stats_switch").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(false, lastToggledValue)
     }
 }

@@ -26,6 +26,7 @@ import com.example.data.remote.IdelisSiriService
 import com.example.data.remote.IdelisWebScraperService
 import com.example.data.remote.OfficialRouteGtfs
 import com.example.data.remote.StopServing
+import com.example.data.remote.UsageStatsPingService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -67,7 +68,8 @@ class IdelisRepository(
     val gtfsDownloadService: GtfsDownloadService = GtfsDownloadService(database),
     val routeStopsRepository: RouteStopsRepository = RouteStopsRepository(appContext),
     val webScraperService: IdelisWebScraperService = IdelisWebScraperService(),
-    val updaterService: GitHubUpdaterService = GitHubUpdaterService()
+    val updaterService: GitHubUpdaterService = GitHubUpdaterService(),
+    val usageStatsPingService: UsageStatsPingService = UsageStatsPingService()
 ) {
 
     init {

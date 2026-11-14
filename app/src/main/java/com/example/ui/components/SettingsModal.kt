@@ -48,6 +48,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DarkMode
@@ -228,6 +229,8 @@ fun SettingsModal(
     githubTag: String = "",
     onSaveAdvancedSettings: (webUrl: String, gtfsUrl: String, siriUrl: String, queryParam: String, githubRepo: String, githubTag: String) -> Unit = { _, _, _, _, _, _ -> },
     onResetAdvancedUrls: () -> Unit = {},
+    usageStatsEnabled: Boolean = true,
+    onToggleUsageStats: (Boolean) -> Unit = {},
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -514,7 +517,7 @@ fun SettingsModal(
                                 item {
                                     SettingsCategoryMenuCard(
                                         category = SettingsCategory.ADVANCED,
-                                        summary = "Sauvegarde JSON • URLs réseau / API / SIRI",
+                                        summary = "Sauvegarde JSON • URLs réseau / API • Compteur d'utilisateurs",
                                         cardColor = cardColor,
                                         primaryColor = primaryColor,
                                         onClick = { selectedCategory = SettingsCategory.ADVANCED }
@@ -1057,6 +1060,23 @@ fun SettingsModal(
                                                     isSubtitleNeutral = true,
                                                     onClick = { activeDialog = ActiveSettingsDialog.NETWORK_API_CONFIG },
                                                     testTag = "setting_network_api_row"
+                                                )
+
+                                                SectionDivider()
+
+                                                SettingsSwitchRow(
+                                                    icon = Icons.Default.BarChart,
+                                                    title = "Compteur d'utilisateurs",
+                                                    subtitle = if (usageStatsEnabled) {
+                                                        "Activé (par défaut) — statistiques anonymes"
+                                                    } else {
+                                                        "Désactivé — aucun envoi statistique"
+                                                    },
+                                                    supportingNote = "Envoie silencieusement la version de l'application et d'Android une fois par jour à l'ouverture.",
+                                                    checked = usageStatsEnabled,
+                                                    onCheckedChange = onToggleUsageStats,
+                                                    testTag = "setting_usage_stats_row",
+                                                    switchTestTag = "setting_usage_stats_switch"
                                                 )
                                             }
                                         }
