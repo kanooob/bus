@@ -4,4 +4,10 @@
     <string name="widget_description">Horaires des prochains départs de bus Idelis pour un arrêt choisi</string>
     <string name="widget_configure_title">Configurer le widget</string>
     <string name="widget_select_stop">Sélectionner un arrêt</string>
+    <string name="notif_channel_app_updates_name">Mises à jour de l\'application</string>
+    <string name="notif_channel_app_updates_desc">Notifications lorsqu\'une nouvelle version de Galaxie Bus est disponible ou prête à installer</string>
+    <string name="notif_channel_traffic_alerts_name">Info trafic Idelis</string>
+    <string name="notif_channel_traffic_alerts_desc">Notifications lorsqu\'une nouvelle perturbation trafic est signalée sur le réseau</string>
+    <string name="notif_channel_widget_updates_name">Actualisation des widgets</string>
+    <string name="notif_channel_widget_updates_desc">Notification silencieuse affichée uniquement pendant l\'actualisation des widgets</string>
 </resources>

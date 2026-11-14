@@ -47,6 +47,12 @@ data class DeparturesResult(
     val notServedEntries: List<NotServedEntry> = emptyList()
 )
 
+data class NearestStopResolution(
+    val stop: GtfsStop,
+    val distanceMeters: Double,
+    val matchedViaWebSearch: Boolean
+)
+
 /**
  * Repository orchestrant le GTFS local (Room), le service de téléchargement et d'analyse GTFS ZIP,
  * l'API OpenDataSoft Explore v2.1 et l'API SIRI SOAP.
@@ -84,20 +90,164 @@ class IdelisRepository(
      * Enregistre un arrêt sélectionné ou mis en favori depuis une requête dans la base locale
      * pour qu'il soit immédiatement accessible, mémorisable dans les favoris et sélectionnable.
      */
-    suspend fun saveWebStop(webStop: IdelisWebStop): GtfsStop = withContext(Dispatchers.IO) {
+    suspend fun saveWebStop(
+        webStop: IdelisWebStop,
+        lat: Double = 0.0,
+        lon: Double = 0.0
+    ): GtfsStop = withContext(Dispatchers.IO) {
         val cleanPole = webStop.pole.trim()
         val stopId = "WEB_" + cleanPole.replace(Regex("[^a-zA-Z0-9]"), "_")
         val existing = database.stopDao().getStopById(stopId)
-        if (existing != null) return@withContext existing
+        if (existing != null) {
+            if ((existing.stopLat == 0.0 || existing.stopLon == 0.0) && lat != 0.0 && lon != 0.0) {
+                val updated = existing.copy(stopLat = lat, stopLon = lon)
+                database.stopDao().insertStops(listOf(updated))
+                return@withContext updated
+            }
+            return@withContext existing
+        }
 
         val newStop = GtfsStop(
             stopId = stopId,
             stopName = webStop.name.trim(),
             stopDesc = "Arrêt réseau idelis.fr (Pôle : $cleanPole)",
-            parentStation = cleanPole
+            parentStation = cleanPole,
+            stopLat = lat,
+            stopLon = lon
         )
         database.stopDao().insertStops(listOf(newStop))
         newStop
+    }
+
+    /**
+     * Garantit qu'un arrêt sélectionné est bien présent dans la base Room locale.
+     */
+    suspend fun ensureStopSaved(stop: GtfsStop): GtfsStop = withContext(Dispatchers.IO) {
+        val existing = database.stopDao().getStopById(stop.stopId)
+        if (existing != null) {
+            if ((existing.stopLat == 0.0 || existing.stopLon == 0.0) && stop.stopLat != 0.0 && stop.stopLon != 0.0) {
+                val updated = existing.copy(stopLat = stop.stopLat, stopLon = stop.stopLon)
+                database.stopDao().insertStops(listOf(updated))
+                return@withContext updated
+            }
+            return@withContext existing
+        }
+        database.stopDao().insertStops(listOf(stop))
+        stop
+    }
+
+    /**
+     * Recherche un arrêt via l'autocomplétion officielle idelis.fr (?type=777),
+     * exactement comme une recherche manuelle. Si le nom complet ne renvoie rien,
+     * essaie des sous-requêtes de quelques mots et choisit le résultat le plus ressemblant.
+     */
+    suspend fun resolveWebStopByName(
+        rawStopName: String,
+        fallbackPole: String? = null
+    ): IdelisWebStop? {
+        val queries = StopSearchMatcher.buildProgressiveSearchQueries(rawStopName, fallbackPole)
+        for (query in queries) {
+            val result = searchWebStops(query)
+            val candidates = result.getOrNull().orEmpty()
+            if (candidates.isNotEmpty()) {
+                val best = StopSearchMatcher.selectMostSimilarWebStop(rawStopName, candidates)
+                if (best != null) {
+                    Log.d(TAG, "Arrêt '$rawStopName' résolu via requête '$query' -> '${best.name}' (pole='${best.pole}')")
+                    return best
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Identifie l'arrêt géolocalisé le plus proche, le recherche sur idelis.fr comme une recherche manuelle
+     * (avec repli sur quelques mots et sélection du plus ressemblant), puis le sauvegarde en base locale.
+     */
+    suspend fun resolveAndSaveNearestStop(
+        userLat: Double,
+        userLon: Double,
+        fallbackStops: List<GtfsStop> = emptyList()
+    ): NearestStopResolution? = withContext(Dispatchers.IO) {
+        ensureStopsAndRoutesLoaded()
+
+        fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+            val dLat = Math.toRadians(lat2 - lat1)
+            val dLon = Math.toRadians(lon2 - lon1)
+            val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
+            val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+            return 6371000.0 * c
+        }
+
+        val requestStops = globalDownloadedStopsCache.filter { it.lat != 0.0 && it.lon != 0.0 }
+        val nearestFromRequest = requestStops.minByOrNull {
+            distanceMeters(userLat, userLon, it.lat, it.lon)
+        }
+
+        val dbGeoStops = (database.stopDao().getAllStopsList() + fallbackStops)
+            .distinctBy { it.stopId }
+            .filter { it.stopLat != 0.0 && it.stopLon != 0.0 }
+        val nearestFromDb = dbGeoStops.minByOrNull {
+            distanceMeters(userLat, userLon, it.stopLat, it.stopLon)
+        }
+
+        val distRequest = nearestFromRequest?.let { distanceMeters(userLat, userLon, it.lat, it.lon) } ?: Double.MAX_VALUE
+        val distDb = nearestFromDb?.let { distanceMeters(userLat, userLon, it.stopLat, it.stopLon) } ?: Double.MAX_VALUE
+
+        val rawName: String
+        val fallbackPole: String?
+        val stopLat: Double
+        val stopLon: Double
+        val bestDist: Double
+        val fallbackDesc: String
+
+        when {
+            nearestFromRequest != null && distRequest <= distDb -> {
+                rawName = nearestFromRequest.stopName
+                fallbackPole = nearestFromRequest.pole
+                stopLat = nearestFromRequest.lat
+                stopLon = nearestFromRequest.lon
+                bestDist = distRequest
+                fallbackDesc = "Arrêt géolocalisé • Ligne ${nearestFromRequest.lineRef}"
+            }
+            nearestFromDb != null -> {
+                rawName = nearestFromDb.stopName
+                fallbackPole = nearestFromDb.parentStation
+                stopLat = nearestFromDb.stopLat
+                stopLon = nearestFromDb.stopLon
+                bestDist = distDb
+                fallbackDesc = nearestFromDb.stopDesc ?: "Arrêt géolocalisé"
+            }
+            else -> return@withContext null
+        }
+
+        val matchedWebStop = resolveWebStopByName(rawName, fallbackPole)
+        if (matchedWebStop != null) {
+            val saved = saveWebStop(matchedWebStop, lat = stopLat, lon = stopLon)
+            return@withContext NearestStopResolution(
+                stop = saved,
+                distanceMeters = bestDist,
+                matchedViaWebSearch = true
+            )
+        }
+
+        val cleanPole = (fallbackPole?.takeIf { it.isNotBlank() } ?: getCanonicalStopName(rawName)).trim()
+        val fallbackStop = GtfsStop(
+            stopId = "WEB_" + cleanPole.replace(Regex("[^a-zA-Z0-9]"), "_"),
+            stopName = getCanonicalStopName(rawName),
+            stopDesc = "$fallbackDesc (Pôle : $cleanPole)",
+            parentStation = cleanPole,
+            stopLat = stopLat,
+            stopLon = stopLon
+        )
+        val savedFallback = ensureStopSaved(fallbackStop)
+        NearestStopResolution(
+            stop = savedFallback,
+            distanceMeters = bestDist,
+            matchedViaWebSearch = false
+        )
     }
 
     /**
@@ -395,11 +545,13 @@ class IdelisRepository(
         stopId: String,
         useSimulationMode: Boolean = false,
         forceOffline: Boolean = false,
-        requestorRef: String = IdelisSiriService.DEFAULT_REQUESTOR_REF
+        requestorRef: String = IdelisSiriService.DEFAULT_REQUESTOR_REF,
+        stopOverride: GtfsStop? = null
     ): DeparturesResult = withContext(Dispatchers.IO) {
         ensureStopsAndRoutesLoaded()
 
         val stop = database.stopDao().getStopById(stopId)
+            ?: stopOverride
             ?: GtfsDatabaseSeeder.INITIAL_STOPS.firstOrNull { it.stopId == stopId }
 
         val theoreticalDepartures = buildTheoreticalDeparturesForStop(stop, stopId)

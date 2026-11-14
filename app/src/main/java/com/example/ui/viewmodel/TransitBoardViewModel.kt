@@ -77,6 +77,7 @@ data class TransitBoardUiState(
     val gtfsSyncFrequency: GtfsSyncFrequency = GtfsSyncFrequency.DAILY_ON_OPEN,
     val trafficRefreshFrequency: TrafficRefreshFrequency = TrafficRefreshFrequency.EVERY_2_HOURS,
     val trafficNotificationsEnabled: Boolean = false,
+    val widgetUpdateNotificationsEnabled: Boolean = true,
     val lastTrafficRefreshTimestamp: Long = 0L,
     val appUpdateCheckFrequency: AppUpdateCheckFrequency = AppUpdateCheckFrequency.DAILY_ON_OPEN,
     val updateNetworkMode: UpdateNetworkMode = UpdateNetworkMode.WIFI_AND_CELLULAR,
@@ -107,6 +108,7 @@ data class TransitBoardUiState(
     // Autocomplétion et recherche en direct idelis.fr (?type=777)
     val webSuggestions: List<com.example.data.model.IdelisWebStop> = emptyList(),
     val isWebSearching: Boolean = false,
+    val isLocatingNearest: Boolean = false,
     // Paramètres avancés : URLs & Requêtes
     val webMonitoringUrl: String = com.example.data.local.PreferencesManager.DEFAULT_WEB_URL,
     val gtfsZipUrl: String = com.example.data.local.PreferencesManager.DEFAULT_GTFS_ZIP_URL,
@@ -145,6 +147,7 @@ class TransitBoardViewModel(
             gtfsSyncFrequency = preferencesManager?.getGtfsSyncFrequency() ?: GtfsSyncFrequency.DAILY_ON_OPEN,
             trafficRefreshFrequency = preferencesManager?.getTrafficRefreshFrequency() ?: TrafficRefreshFrequency.EVERY_2_HOURS,
             trafficNotificationsEnabled = preferencesManager?.isTrafficNotificationsEnabled() ?: false,
+            widgetUpdateNotificationsEnabled = preferencesManager?.isWidgetUpdateNotificationsEnabled() ?: true,
             lastTrafficRefreshTimestamp = preferencesManager?.getLastTrafficRefreshTimestamp() ?: 0L,
             appUpdateCheckFrequency = preferencesManager?.getAppUpdateCheckFrequency() ?: AppUpdateCheckFrequency.DAILY_ON_OPEN,
             updateNetworkMode = preferencesManager?.getUpdateNetworkMode() ?: UpdateNetworkMode.WIFI_AND_CELLULAR,
@@ -409,6 +412,11 @@ class TransitBoardViewModel(
         syncTrafficBackgroundSchedule()
     }
 
+    fun setWidgetUpdateNotificationsEnabled(enabled: Boolean) {
+        preferencesManager?.setWidgetUpdateNotificationsEnabled(enabled)
+        _uiState.update { it.copy(widgetUpdateNotificationsEnabled = enabled) }
+    }
+
     fun openTrafficInfoFromNotification() {
         _uiState.update { it.copy(trafficInfoPromptVisible = true) }
     }
@@ -468,6 +476,7 @@ class TransitBoardViewModel(
             val gtfsFreq = pm.getGtfsSyncFrequency()
             val trafficFreq = pm.getTrafficRefreshFrequency()
             val trafficNotifEnabled = pm.isTrafficNotificationsEnabled()
+            val widgetNotifEnabled = pm.isWidgetUpdateNotificationsEnabled()
             val updateFreq = pm.getAppUpdateCheckFrequency()
             val networkMode = pm.getUpdateNetworkMode()
             val webUrl = pm.getWebMonitoringUrl()
@@ -496,6 +505,7 @@ class TransitBoardViewModel(
                     isPeriodicSyncEnabled = gtfsFreq != GtfsSyncFrequency.NEVER,
                     trafficRefreshFrequency = trafficFreq,
                     trafficNotificationsEnabled = trafficNotifEnabled,
+                    widgetUpdateNotificationsEnabled = widgetNotifEnabled,
                     appUpdateCheckFrequency = updateFreq,
                     updateNetworkMode = networkMode,
                     webMonitoringUrl = webUrl,
@@ -563,6 +573,9 @@ class TransitBoardViewModel(
         preferencesManager?.saveLastSelectedStopId(stop.stopId)
         val interval = _uiState.value.inAppRefreshFrequency.intervalSeconds
         _uiState.update { it.copy(selectedStop = stop, secondsUntilRefresh = interval) }
+        viewModelScope.launch {
+            repository.ensureStopSaved(stop)
+        }
         refreshDepartures()
     }
 
@@ -629,6 +642,45 @@ class TransitBoardViewModel(
     fun clearWebSuggestions() {
         webSearchJob?.cancel()
         _uiState.update { it.copy(webSuggestions = emptyList(), isWebSearching = false) }
+    }
+
+    /**
+     * Recherche et sélectionne l'arrêt le plus proche de la position GPS fournie en interrogeant
+     * l'autocomplétion idelis.fr de la même façon qu'une recherche manuelle (avec repli sur quelques mots
+     * et sélection du résultat le plus ressemblant).
+     */
+    fun selectNearestStopAsync(
+        userLat: Double,
+        userLon: Double,
+        onResolved: (GtfsStop?, String?) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLocatingNearest = true) }
+            try {
+                val resolution = repository.resolveAndSaveNearestStop(
+                    userLat = userLat,
+                    userLon = userLon,
+                    fallbackStops = _uiState.value.allStops
+                )
+                if (resolution != null) {
+                    selectStop(resolution.stop)
+                    val distLabel = if (resolution.distanceMeters < 1000) {
+                        "${resolution.distanceMeters.toInt()} m"
+                    } else {
+                        String.format(Locale.FRANCE, "%.1f km", resolution.distanceMeters / 1000.0)
+                    }
+                    val feedback = "Arrêt le plus proche : ${resolution.stop.stopName} ($distLabel)"
+                    _uiState.update { it.copy(isLocatingNearest = false) }
+                    onResolved(resolution.stop, feedback)
+                } else {
+                    _uiState.update { it.copy(isLocatingNearest = false) }
+                    onResolved(null, null)
+                }
+            } catch (_: Exception) {
+                _uiState.update { it.copy(isLocatingNearest = false) }
+                onResolved(null, null)
+            }
+        }
     }
 
     /**
@@ -804,7 +856,8 @@ class TransitBoardViewModel(
                 stopId = stop.stopId,
                 useSimulationMode = false,
                 forceOffline = false,
-                requestorRef = _uiState.value.requestorRef
+                requestorRef = _uiState.value.requestorRef,
+                stopOverride = stop
             )
 
             if (_uiState.value.selectedStop?.stopId != stop.stopId) {

@@ -225,4 +225,42 @@ class IdelisWebScraperTest {
         val formatted = com.example.data.remote.formatReleaseNotesForDisplay(raw)
         assertEquals("Nouveautés\n• Mode 45s ajouté\n• Fix réseau", formatted)
     }
+
+    @Test
+    fun testProgressiveSearchQueriesIncludesFullThenCleanedThenFewWords() {
+        val queries = com.example.data.repository.StopSearchMatcher.buildProgressiveSearchQueries(
+            rawStopName = "PAU Pl. d'Espagne - Bosquet Quai C"
+        )
+        assertTrue(queries.isNotEmpty())
+        assertEquals("PAU Pl. d'Espagne - Bosquet Quai C", queries[0])
+        assertTrue(queries.contains("PAU Pl. d'Espagne - Bosquet"))
+        assertTrue(queries.contains("Pl. d'Espagne - Bosquet"))
+        assertTrue(queries.any { it.contains("Espagne") && it.contains("Bosquet") })
+        assertTrue(queries.contains("Bosquet"))
+    }
+
+    @Test
+    fun testSelectMostSimilarWebStopPicksBestMatch() {
+        val candidates = listOf(
+            com.example.data.model.IdelisWebStop(pole = "Mairie de Pau", name = "Mairie de Pau"),
+            com.example.data.model.IdelisWebStop(pole = "Mairie de Billère", name = "Mairie de Billère"),
+            com.example.data.model.IdelisWebStop(pole = "Mairie de Lons", name = "Mairie de Lons")
+        )
+        val best = com.example.data.repository.StopSearchMatcher.selectMostSimilarWebStop(
+            targetStopName = "BILLÈRE Mairie",
+            candidates = candidates
+        )
+        assertNotNull(best)
+        assertEquals("Mairie de Billère", best?.pole)
+
+        val hospitalCandidates = listOf(
+            com.example.data.model.IdelisWebStop(pole = "Lycée Mitterrand", name = "Lycée Mitterrand"),
+            com.example.data.model.IdelisWebStop(pole = "Hôpital François Mitterrand", name = "Hôpital François Mitterrand")
+        )
+        val bestHospital = com.example.data.repository.StopSearchMatcher.selectMostSimilarWebStop(
+            targetStopName = "PAU Hôpital F. Mitterrand",
+            candidates = hospitalCandidates
+        )
+        assertEquals("Hôpital François Mitterrand", bestHospital?.pole)
+    }
 }

@@ -779,4 +779,194 @@ class ExampleRobolectricTest {
         assertTrue(fetched.usedWaybackMachine)
         assertEquals(latestUrl, fetched.sourceUrl)
     }
+
+    @Test
+    fun `nearest stop searches autocomplete with few-word fallback and fetches matching pole instead of Bosquet`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        db.stopDao().clearAllStops()
+
+        val recordedAutocompleteQueries = mutableListOf<String>()
+        val recordedMonitoringPoles = mutableListOf<String>()
+
+        val mockClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                val body = req.body as? okhttp3.FormBody
+                val params = mutableMapOf<String, String>()
+                if (body != null) {
+                    for (i in 0 until body.size) {
+                        params[body.name(i)] = body.value(i)
+                    }
+                }
+                val requete = params["requete"]
+                val builder = okhttp3.Response.Builder()
+                    .request(req)
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+
+                when (requete) {
+                    "autocomplete" -> {
+                        val search = params["requete_val[search]"].orEmpty()
+                        recordedAutocompleteQueries.add(search)
+                        val html = if (search.equals("Mitterrand", ignoreCase = true) ||
+                            search.equals("Hôpital Mitterrand", ignoreCase = true)
+                        ) {
+                            """
+                            <li class="ui-menu-item"><a data-pole="Lycée Mitterrand">Lycée Mitterrand</a></li>
+                            <li class="ui-menu-item"><a data-pole="Hôpital François Mitterrand">Hôpital François Mitterrand</a></li>
+                            """.trimIndent()
+                        } else {
+                            ""
+                        }
+                        builder.body(okhttp3.ResponseBody.create(null, html)).build()
+                    }
+                    "stop_monitoring" -> {
+                        val pole = params["requete_val[pole]"].orEmpty()
+                        recordedMonitoringPoles.add(pole)
+                        val html = if (pole == "Hôpital François Mitterrand") {
+                            """
+                            <div class="ligne-group">
+                                <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" /></div></div>
+                                <div class="row"><div class="col-12"><span class="text-black-50">Direction: PAU Gare de Pau - Arrêt: Hôpital François Mitterrand</span></div></div>
+                                <div class="row"><div class="col-3 pr-1"><div class="p-1 text-center border rounded text-white bg-primary">4 min</div></div></div>
+                            </div>
+                            """.trimIndent()
+                        } else {
+                            ""
+                        }
+                        builder.body(okhttp3.ResponseBody.create(null, html)).build()
+                    }
+                    else -> builder.body(okhttp3.ResponseBody.create(null, "")).build()
+                }
+            }
+            .build()
+
+        val webService = com.example.data.remote.IdelisWebScraperService(client = mockClient)
+        val repo = com.example.data.repository.IdelisRepository(
+            database = db,
+            appContext = context,
+            webScraperService = webService
+        )
+
+        // Simuler un arrêt OpenDataSoft proche de l'utilisateur dont le libellé exact diffère du site web
+        com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = listOf(
+            com.example.data.remote.StopServing(
+                timeo = 9001,
+                stopName = "PAU Hôpital F. Mitterrand Quai A",
+                pole = null,
+                lineRef = "F",
+                direction = "PAU Gare de Pau",
+                sens = 1,
+                commune = "Pau",
+                lat = 43.3256,
+                lon = -0.3475
+            )
+        )
+
+        val resolution = repo.resolveAndSaveNearestStop(userLat = 43.3257, userLon = -0.3474)
+        org.junit.Assert.assertNotNull(resolution)
+        assertTrue(resolution!!.matchedViaWebSearch)
+        assertEquals("Hôpital François Mitterrand", resolution.stop.stopName)
+        assertEquals("Hôpital François Mitterrand", resolution.stop.parentStation)
+        assertTrue(
+            "La recherche doit d'abord essayer le nom complet puis se replier sur quelques mots",
+            recordedAutocompleteQueries.first() == "PAU Hôpital F. Mitterrand Quai A" &&
+                recordedAutocompleteQueries.size >= 2
+        )
+
+        // Vérifier que l'arrêt est bien enregistré en base et utilisé pour getDeparturesForStop (pas Bosquet !)
+        val persisted = db.stopDao().getStopById(resolution.stop.stopId)
+        org.junit.Assert.assertNotNull(persisted)
+
+        val departuresResult = repo.getDeparturesForStop(resolution.stop.stopId)
+        assertEquals(listOf("Hôpital François Mitterrand"), recordedMonitoringPoles)
+        assertEquals(1, departuresResult.departures.size)
+        assertFalse(departuresResult.departures[0].destinationName.contains("Bosquet", ignoreCase = true))
+        assertTrue(departuresResult.departures[0].destinationName.contains("PAU Gare de Pau"))
+    }
+
+    @Test
+    fun `notification channels register all three categories with silent widget channel`() {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+
+        com.example.data.remote.NotificationChannels.ensureAllChannels(context)
+
+        val updatesChannel = manager.getNotificationChannel(com.example.data.remote.NotificationChannels.CHANNEL_APP_UPDATES)
+        val trafficChannel = manager.getNotificationChannel(com.example.data.remote.NotificationChannels.CHANNEL_TRAFFIC_ALERTS)
+        val widgetChannel = manager.getNotificationChannel(com.example.data.remote.NotificationChannels.CHANNEL_WIDGET_UPDATES)
+
+        org.junit.Assert.assertNotNull(updatesChannel)
+        org.junit.Assert.assertNotNull(trafficChannel)
+        org.junit.Assert.assertNotNull(widgetChannel)
+
+        assertEquals(android.app.NotificationManager.IMPORTANCE_DEFAULT, updatesChannel!!.importance)
+        assertEquals(android.app.NotificationManager.IMPORTANCE_DEFAULT, trafficChannel!!.importance)
+        assertEquals(android.app.NotificationManager.IMPORTANCE_LOW, widgetChannel!!.importance)
+        assertEquals(null, widgetChannel.sound)
+        assertFalse(widgetChannel.shouldVibrate())
+        assertFalse(widgetChannel.canShowBadge())
+    }
+
+    @Test
+    fun `widget update notifier shows silent notification only during refresh and respects preference`() {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+        val shadowApp = org.robolectric.Shadows.shadowOf(context)
+        shadowApp.grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val shadowNotificationManager = org.robolectric.Shadows.shadowOf(
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        )
+
+        assertTrue(prefs.isWidgetUpdateNotificationsEnabled())
+
+        val started1 = com.example.data.remote.WidgetUpdateNotifier.showWidgetRefreshing(
+            context = context,
+            stopId = "WEB_Bosquet",
+            stopName = "📍 Pôle Bosquet",
+            prefs = prefs
+        )
+        assertTrue(started1)
+        assertEquals(1, shadowNotificationManager.allNotifications.size)
+        val notif = shadowNotificationManager.allNotifications.first()
+        assertEquals(com.example.data.remote.NotificationChannels.CHANNEL_WIDGET_UPDATES, notif.channelId)
+        assertTrue((notif.flags and android.app.Notification.FLAG_ONGOING_EVENT) != 0)
+        assertTrue(notif.extras.getString(android.app.Notification.EXTRA_TEXT).orEmpty().contains("Pôle Bosquet"))
+
+        // Deuxième widget en cours d'actualisation simultanée : la notification reste visible jusqu'à la fin des 2
+        val started2 = com.example.data.remote.WidgetUpdateNotifier.showWidgetRefreshing(
+            context = context,
+            stopId = "WEB_Universite",
+            stopName = "Université",
+            prefs = prefs
+        )
+        assertTrue(started2)
+        assertEquals(1, shadowNotificationManager.allNotifications.size)
+
+        com.example.data.remote.WidgetUpdateNotifier.finishWidgetRefreshing(context)
+        assertEquals(1, shadowNotificationManager.allNotifications.size)
+
+        com.example.data.remote.WidgetUpdateNotifier.finishWidgetRefreshing(context)
+        assertEquals(0, shadowNotificationManager.allNotifications.size)
+
+        // Désactivation via préférence + restauration JSON
+        prefs.setWidgetUpdateNotificationsEnabled(false)
+        assertFalse(
+            com.example.data.remote.WidgetUpdateNotifier.showWidgetRefreshing(
+                context = context,
+                stopId = "WEB_Bosquet",
+                stopName = "Pôle Bosquet",
+                prefs = prefs
+            )
+        )
+        assertEquals(0, shadowNotificationManager.allNotifications.size)
+
+        val backup = prefs.exportBackupJson()
+        prefs.setWidgetUpdateNotificationsEnabled(true)
+        assertTrue(prefs.importBackupJson(backup).isSuccess)
+        assertFalse(prefs.isWidgetUpdateNotificationsEnabled())
+    }
 }

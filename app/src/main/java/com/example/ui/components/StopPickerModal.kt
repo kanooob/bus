@@ -6,8 +6,15 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
+import android.os.Build
+import android.os.CancellationSignal
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,8 +22,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -30,22 +39,28 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,8 +79,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.data.model.GtfsStop
 import com.example.data.model.IdelisWebStop
-import com.example.ui.theme.SketchBlack
-import com.example.ui.theme.SketchRed
 
 /**
  * Calcule la distance en mètres entre deux coordonnées géodésiques.
@@ -95,16 +108,68 @@ private fun cleanStopIdForWeb(pole: String): String {
 @SuppressLint("MissingPermission")
 private fun getLastKnownLocation(context: Context): Location? {
     val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
-    val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+    val providers = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            add(LocationManager.FUSED_PROVIDER)
+        }
+        add(LocationManager.GPS_PROVIDER)
+        add(LocationManager.NETWORK_PROVIDER)
+        add(LocationManager.PASSIVE_PROVIDER)
+    }
+    var best: Location? = null
     for (provider in providers) {
         try {
             if (locationManager.isProviderEnabled(provider)) {
                 val loc = locationManager.getLastKnownLocation(provider)
-                if (loc != null) return loc
+                if (loc != null && (best == null || loc.time > best.time)) {
+                    best = loc
+                }
             }
         } catch (_: SecurityException) {}
+        catch (_: IllegalArgumentException) {}
     }
-    return null
+    return best
+}
+
+@SuppressLint("MissingPermission")
+private suspend fun fetchBestLocation(context: Context): Location? {
+    val lastKnown = getLastKnownLocation(context)
+    val isFresh = lastKnown != null && (System.currentTimeMillis() - lastKnown.time) < 90_000L
+    if (isFresh) return lastKnown
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        if (locationManager != null) {
+            val provider = when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    locationManager.isProviderEnabled(LocationManager.FUSED_PROVIDER) -> LocationManager.FUSED_PROVIDER
+                locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+                locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+                else -> null
+            }
+            if (provider != null) {
+                val current = withTimeoutOrNull(3000L) {
+                    suspendCancellableCoroutine<Location?> { cont ->
+                        val signal = CancellationSignal()
+                        cont.invokeOnCancellation { signal.cancel() }
+                        try {
+                            locationManager.getCurrentLocation(
+                                provider,
+                                signal,
+                                context.mainExecutor
+                            ) { loc ->
+                                if (cont.isActive) cont.resume(loc)
+                            }
+                        } catch (_: Exception) {
+                            if (cont.isActive) cont.resume(null)
+                        }
+                    }
+                }
+                if (current != null) return current
+            }
+        }
+    }
+    return lastKnown
 }
 
 /**
@@ -114,7 +179,7 @@ private fun getLastKnownLocation(context: Context): Location? {
  * - Possibilité de mettre en favori (⭐) n'importe quel arrêt reçu par requête directement depuis les résultats.
  * - Affichage prioritaire de "Mes arrêts favoris" avec désélection / suppression aisée.
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun StopPickerModal(
     stops: List<GtfsStop>,
@@ -126,6 +191,8 @@ fun StopPickerModal(
     onToggleFavoriteWebStop: (IdelisWebStop) -> Unit = {},
     webSuggestions: List<IdelisWebStop> = emptyList(),
     isWebSearching: Boolean = false,
+    isLocatingNearest: Boolean = false,
+    onNearestStopRequested: ((Double, Double, () -> Unit) -> Unit)? = null,
     onWebStopSelected: (IdelisWebStop) -> Unit = {},
     onStopSelected: (GtfsStop) -> Unit,
     onDismissRequest: () -> Unit,
@@ -133,11 +200,20 @@ fun StopPickerModal(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val bgColor = if (isDarkTheme) Color(0xFF141B26) else Color.White
-    val titleColor = if (isDarkTheme) Color.White else SketchBlack
-    val contentColor = if (isDarkTheme) Color(0xFFF0F4F8) else SketchBlack
-    val surfaceColor = if (isDarkTheme) Color(0xFF1C2636) else Color(0xFFF5F5F5)
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val onPrimaryColor = MaterialTheme.colorScheme.onPrimary
+    val primaryContainerColor = MaterialTheme.colorScheme.primaryContainer
+    val onPrimaryContainerColor = MaterialTheme.colorScheme.onPrimaryContainer
+    val secondaryContainerColor = MaterialTheme.colorScheme.secondaryContainer
+    val onSecondaryContainerColor = MaterialTheme.colorScheme.onSecondaryContainer
+    val bgColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val titleColor = MaterialTheme.colorScheme.onSurface
+    val contentColor = MaterialTheme.colorScheme.onSurface
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val surfaceColor = MaterialTheme.colorScheme.surfaceContainerLow
+    val outlineColor = MaterialTheme.colorScheme.outlineVariant
 
+    val coroutineScope = rememberCoroutineScope()
     var userLocation by remember { mutableStateOf<Location?>(null) }
     var isLocating by remember { mutableStateOf(false) }
     var locationFeedback by remember { mutableStateOf<String?>(null) }
@@ -150,90 +226,91 @@ fun StopPickerModal(
         stops.filter { !favoriteStopIds.contains(it.stopId) }
     }
 
-    // Système de localisation de l'arrêt de bus amélioré par celui des requêtes officielles Idelis
-    fun findAndSelectNearest() {
-        val loc = userLocation ?: getLastKnownLocation(context) ?: Location("default_pau").apply {
-            latitude = 43.2974
-            longitude = -0.3688
-        }
-        userLocation = loc
-
-        // 1. Recherche parmi les arrêts géolocalisés issus des requêtes officielles (Explore / OpenData)
-        val requestStops = com.example.data.repository.IdelisRepository.globalDownloadedStopsCache.filter { it.lat != 0.0 && it.lon != 0.0 }
-        val nearestFromRequest = if (requestStops.isNotEmpty()) {
-            requestStops.minByOrNull {
-                calculateDistanceMeters(loc.latitude, loc.longitude, it.lat, it.lon)
+    // Système de localisation de l'arrêt de bus le plus proche via recherche officielle idelis.fr
+    fun findAndSelectNearest(hasPermission: Boolean) {
+        isLocating = true
+        coroutineScope.launch {
+            val freshLoc = if (hasPermission) fetchBestLocation(context) else null
+            val loc = freshLoc ?: userLocation ?: getLastKnownLocation(context) ?: Location("default_pau").apply {
+                latitude = 43.2974
+                longitude = -0.3688
             }
-        } else null
+            userLocation = loc
 
-        // 2. Recherche parmi les arrêts déjà mémorisés en base
-        val dbGeoStops = stops.filter { it.stopLat != 0.0 && it.stopLon != 0.0 }
-        val nearestFromDb = if (dbGeoStops.isNotEmpty()) {
-            dbGeoStops.minByOrNull {
-                calculateDistanceMeters(loc.latitude, loc.longitude, it.stopLat, it.stopLon)
+            if (onNearestStopRequested != null) {
+                onNearestStopRequested(loc.latitude, loc.longitude) {
+                    isLocating = false
+                    onDismissRequest()
+                }
+                return@launch
             }
-        } else null
 
-        // Choisir le plus proche absolu
-        var chosenStop: GtfsStop? = null
-        var chosenDist = Double.MAX_VALUE
+            // Repli local uniquement si aucun callback ViewModel n'est fourni
+            val requestStops = com.example.data.repository.IdelisRepository.globalDownloadedStopsCache.filter { it.lat != 0.0 && it.lon != 0.0 }
+            val nearestFromRequest = if (requestStops.isNotEmpty()) {
+                requestStops.minByOrNull {
+                    calculateDistanceMeters(loc.latitude, loc.longitude, it.lat, it.lon)
+                }
+            } else null
 
-        if (nearestFromRequest != null) {
-            val d = calculateDistanceMeters(loc.latitude, loc.longitude, nearestFromRequest.lat, nearestFromRequest.lon)
-            chosenDist = d
-            chosenStop = GtfsStop(
-                stopId = "WEB_" + nearestFromRequest.stopName.trim().replace(Regex("[^a-zA-Z0-9]"), "_"),
-                stopName = nearestFromRequest.stopName,
-                stopDesc = "Arrêt géolocalisé via requêtes officielles • Ligne ${nearestFromRequest.lineRef}",
-                parentStation = nearestFromRequest.pole ?: nearestFromRequest.stopName,
-                stopLat = nearestFromRequest.lat,
-                stopLon = nearestFromRequest.lon
-            )
-        }
+            val dbGeoStops = stops.filter { it.stopLat != 0.0 && it.stopLon != 0.0 }
+            val nearestFromDb = if (dbGeoStops.isNotEmpty()) {
+                dbGeoStops.minByOrNull {
+                    calculateDistanceMeters(loc.latitude, loc.longitude, it.stopLat, it.stopLon)
+                }
+            } else null
 
-        if (nearestFromDb != null) {
-            val d = calculateDistanceMeters(loc.latitude, loc.longitude, nearestFromDb.stopLat, nearestFromDb.stopLon)
-            if (d < chosenDist) {
+            var chosenStop: GtfsStop? = null
+            var chosenDist = Double.MAX_VALUE
+
+            if (nearestFromRequest != null) {
+                val d = calculateDistanceMeters(loc.latitude, loc.longitude, nearestFromRequest.lat, nearestFromRequest.lon)
                 chosenDist = d
-                chosenStop = nearestFromDb
+                chosenStop = GtfsStop(
+                    stopId = "WEB_" + nearestFromRequest.stopName.trim().replace(Regex("[^a-zA-Z0-9]"), "_"),
+                    stopName = nearestFromRequest.stopName,
+                    stopDesc = "Arrêt géolocalisé via requêtes officielles • Ligne ${nearestFromRequest.lineRef}",
+                    parentStation = nearestFromRequest.pole ?: nearestFromRequest.stopName,
+                    stopLat = nearestFromRequest.lat,
+                    stopLon = nearestFromRequest.lon
+                )
             }
-        }
 
-        if (chosenStop == null) {
-            chosenStop = stops.firstOrNull() ?: com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP
-        }
+            if (nearestFromDb != null) {
+                val d = calculateDistanceMeters(loc.latitude, loc.longitude, nearestFromDb.stopLat, nearestFromDb.stopLon)
+                if (d < chosenDist) {
+                    chosenDist = d
+                    chosenStop = nearestFromDb
+                }
+            }
 
-        locationFeedback = "Arrêt le plus proche : ${chosenStop.stopName}" + if (chosenDist < 100000) " (${formatDistance(chosenDist)})" else ""
-        onStopSelected(chosenStop)
-        onDismissRequest()
+            if (chosenStop == null) {
+                chosenStop = stops.firstOrNull() ?: com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP
+            }
+
+            isLocating = false
+            locationFeedback = "Arrêt le plus proche : ${chosenStop.stopName}" + if (chosenDist < 100000) " (${formatDistance(chosenDist)})" else ""
+            onStopSelected(chosenStop)
+            onDismissRequest()
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        isLocating = false
         val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
         val coarseGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (fineGranted || coarseGranted) {
-            val loc = getLastKnownLocation(context)
-            if (loc != null) userLocation = loc
-            findAndSelectNearest()
-        } else {
-            findAndSelectNearest()
-        }
+        findAndSelectNearest(hasPermission = fineGranted || coarseGranted)
     }
 
     fun onNearestStopClick() {
-        isLocating = true
         val hasFine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val hasCoarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
         if (hasFine || hasCoarse) {
-            isLocating = false
-            val loc = getLastKnownLocation(context)
-            if (loc != null) userLocation = loc
-            findAndSelectNearest()
+            findAndSelectNearest(hasPermission = true)
         } else {
+            isLocating = true
             permissionLauncher.launch(
                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
             )
@@ -241,24 +318,40 @@ fun StopPickerModal(
     }
 
     val isSearching = searchQuery.trim().isNotBlank()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    val isSheetExpanded = sheetState.targetValue == SheetValue.Expanded ||
+        sheetState.currentValue == SheetValue.Expanded
 
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = onDismissRequest,
+        sheetState = sheetState,
         containerColor = bgColor,
-        titleContentColor = titleColor,
-        shape = RoundedCornerShape(16.dp),
-        modifier = modifier.testTag("stop_picker_dialog"),
-        title = {
+        contentColor = contentColor,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = mutedColor.copy(alpha = 0.45f))
+        },
+        modifier = modifier.testTag("stop_picker_dialog")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                .padding(horizontal = 20.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Icon(
                         imageVector = Icons.Default.DirectionsBus,
                         contentDescription = null,
-                        tint = titleColor,
+                        tint = primaryColor,
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -271,37 +364,64 @@ fun StopPickerModal(
                     )
                 }
 
-                IconButton(onClick = onDismissRequest) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = "Fermer", tint = contentColor)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                if (isSheetExpanded) {
+                                    sheetState.partialExpand()
+                                } else {
+                                    sheetState.expand()
+                                }
+                            }
+                        },
+                        modifier = Modifier.testTag("stop_picker_expand_button")
+                    ) {
+                        Icon(
+                            imageVector = if (isSheetExpanded) {
+                                Icons.Default.KeyboardArrowDown
+                            } else {
+                                Icons.Default.KeyboardArrowUp
+                            },
+                            contentDescription = if (isSheetExpanded) "Réduire" else "Agrandir vers le haut",
+                            tint = mutedColor
+                        )
+                    }
+
+                    IconButton(onClick = onDismissRequest) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Fermer", tint = contentColor)
+                    }
                 }
             }
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // OPTION : Arrêt le plus proche
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // OPTION : Arrêt le plus proche
+            val effectiveLocating = isLocating || isLocatingNearest
                 Button(
                     onClick = { onNearestStopClick() },
+                    enabled = !effectiveLocating,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("nearest_stop_button"),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = SketchRed,
-                        contentColor = Color.White
+                        containerColor = primaryColor,
+                        contentColor = onPrimaryColor
                     ),
-                    shape = RoundedCornerShape(10.dp)
+                    shape = RoundedCornerShape(12.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        if (isLocating) {
+                        if (effectiveLocating) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
-                                color = Color.White,
+                                color = onPrimaryColor,
                                 strokeWidth = 2.dp
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Localisation...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Recherche de l'arrêt le plus proche...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         } else {
                             Icon(
                                 imageVector = Icons.Default.NearMe,
@@ -323,7 +443,7 @@ fun StopPickerModal(
                     Text(
                         text = locationFeedback ?: "",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            color = SketchRed,
+                            color = primaryColor,
                             fontWeight = FontWeight.Bold
                         )
                     )
@@ -341,20 +461,20 @@ fun StopPickerModal(
                         Text(
                             "Rechercher un arrêt en direct (ex: Bosquet, Gare, Verdun)...",
                             fontSize = 12.sp,
-                            color = Color.Gray,
+                            color = mutedColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     },
                     leadingIcon = {
-                        Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = SketchRed)
+                        Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = primaryColor)
                     },
                     trailingIcon = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (isWebSearching) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(16.dp),
-                                    color = SketchRed,
+                                    color = primaryColor,
                                     strokeWidth = 2.dp
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -363,20 +483,21 @@ fun StopPickerModal(
                                 IconButton(onClick = {
                                     onSearchQueryChange("")
                                 }) {
-                                    Icon(imageVector = Icons.Default.Close, contentDescription = "Effacer", tint = Color.Gray)
+                                    Icon(imageVector = Icons.Default.Close, contentDescription = "Effacer", tint = mutedColor)
                                 }
                             }
                         }
                     },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = SketchRed,
-                        unfocusedBorderColor = if (isDarkTheme) Color(0xFF2A3A52) else Color(0xFFDCDCDC),
+                        focusedBorderColor = primaryColor,
+                        unfocusedBorderColor = outlineColor,
                         focusedTextColor = contentColor,
                         unfocusedTextColor = contentColor,
                         focusedContainerColor = surfaceColor,
-                        unfocusedContainerColor = surfaceColor
+                        unfocusedContainerColor = surfaceColor,
+                        cursorColor = primaryColor
                     ),
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(14.dp),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("stop_search_input")
                 )
@@ -386,7 +507,8 @@ fun StopPickerModal(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(310.dp),
+                        .weight(1f),
+                    contentPadding = PaddingValues(bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     // CAS 1 : RECHERCHE ACTIVE -> Affiche EXCLUSIVEMENT les arrêts reçus par requête idelis.fr
@@ -411,7 +533,7 @@ fun StopPickerModal(
                                         text = "ARRÊTS REÇUS PAR REQUÊTE (${webSuggestions.size})",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Black,
-                                            color = SketchRed,
+                                            color = primaryColor,
                                             letterSpacing = 0.5.sp
                                         )
                                     )
@@ -420,7 +542,7 @@ fun StopPickerModal(
                                 Text(
                                     text = "⭐ Toucher l'étoile pour ajouter en favori",
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        color = Color.Gray,
+                                        color = mutedColor,
                                         fontSize = 10.sp
                                     )
                                 )
@@ -439,14 +561,14 @@ fun StopPickerModal(
                                         Text(
                                             text = "Aucun arrêt trouvé pour \"$searchQuery\"",
                                             style = MaterialTheme.typography.bodyMedium.copy(
-                                                color = Color.Gray,
+                                                color = mutedColor,
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                         )
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
                                             text = "Vérifiez l'orthographe du pôle ou de l'arrêt",
-                                            style = MaterialTheme.typography.labelSmall.copy(color = Color.Gray)
+                                            style = MaterialTheme.typography.labelSmall.copy(color = mutedColor)
                                         )
                                     }
                                 }
@@ -462,12 +584,12 @@ fun StopPickerModal(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(12.dp))
                                     .background(
                                         when {
-                                            isSelected -> SketchRed.copy(alpha = 0.16f)
+                                            isSelected -> primaryContainerColor
                                             isFav -> Color(0xFFFFB300).copy(alpha = 0.12f)
-                                            else -> SketchRed.copy(alpha = 0.10f)
+                                            else -> surfaceColor
                                         }
                                     )
                                     .clickable {
@@ -487,13 +609,23 @@ fun StopPickerModal(
                                         modifier = Modifier
                                             .size(34.dp)
                                             .clip(CircleShape)
-                                            .background(if (isFav) Color(0xFFFFB300) else SketchRed),
+                                            .background(
+                                                when {
+                                                    isSelected -> primaryColor
+                                                    isFav -> Color(0xFFFFB300)
+                                                    else -> secondaryContainerColor
+                                                }
+                                            ),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.DirectionsBus,
                                             contentDescription = null,
-                                            tint = Color.White,
+                                            tint = when {
+                                                isSelected -> onPrimaryColor
+                                                isFav -> Color.White
+                                                else -> onSecondaryContainerColor
+                                            },
                                             modifier = Modifier.size(18.dp)
                                         )
                                     }
@@ -505,7 +637,7 @@ fun StopPickerModal(
                                             text = webStop.name,
                                             style = MaterialTheme.typography.bodyMedium.copy(
                                                 fontWeight = FontWeight.Black,
-                                                color = if (isSelected) SketchRed else contentColor
+                                                color = if (isSelected) onPrimaryContainerColor else contentColor
                                             ),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -513,7 +645,11 @@ fun StopPickerModal(
                                         Text(
                                             text = "Pôle requête : ${webStop.pole}",
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                color = if (isFav) Color(0xFFD97706) else SketchRed,
+                                                color = when {
+                                                    isSelected -> onPrimaryContainerColor.copy(alpha = 0.85f)
+                                                    isFav -> Color(0xFFD97706)
+                                                    else -> primaryColor
+                                                },
                                                 fontWeight = FontWeight.SemiBold,
                                                 fontSize = 11.sp
                                             ),
@@ -528,7 +664,7 @@ fun StopPickerModal(
                                         Icon(
                                             imageVector = Icons.Default.Check,
                                             contentDescription = "Sélectionné",
-                                            tint = SketchRed,
+                                            tint = onPrimaryContainerColor,
                                             modifier = Modifier.size(18.dp)
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
@@ -558,7 +694,7 @@ fun StopPickerModal(
                                         Icon(
                                             imageVector = if (isFav) Icons.Default.Star else Icons.Default.StarBorder,
                                             contentDescription = if (isFav) "Retirer des favoris" else "Mettre en favori",
-                                            tint = if (isFav) Color(0xFFFFB300) else (if (isDarkTheme) Color.LightGray else Color.Gray),
+                                            tint = if (isFav) Color(0xFFFFB300) else mutedColor,
                                             modifier = Modifier.size(24.dp)
                                         )
                                     }
@@ -604,9 +740,9 @@ fun StopPickerModal(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
+                                        .clip(RoundedCornerShape(12.dp))
                                         .background(
-                                            if (isSelected) SketchRed.copy(alpha = 0.14f)
+                                            if (isSelected) primaryContainerColor
                                             else Color(0xFFFFB300).copy(alpha = 0.10f)
                                         )
                                         .clickable {
@@ -626,13 +762,13 @@ fun StopPickerModal(
                                             modifier = Modifier
                                                 .size(34.dp)
                                                 .clip(CircleShape)
-                                                .background(if (isSelected) SketchRed else Color(0xFFFFB300)),
+                                                .background(if (isSelected) primaryColor else Color(0xFFFFB300)),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.Star,
                                                 contentDescription = null,
-                                                tint = Color.White,
+                                                tint = if (isSelected) onPrimaryColor else Color.White,
                                                 modifier = Modifier.size(18.dp)
                                             )
                                         }
@@ -644,7 +780,7 @@ fun StopPickerModal(
                                                 text = stop.stopName,
                                                 style = MaterialTheme.typography.bodyMedium.copy(
                                                     fontWeight = FontWeight.Black,
-                                                    color = if (isSelected) SketchRed else contentColor
+                                                    color = if (isSelected) onPrimaryContainerColor else contentColor
                                                 ),
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
@@ -652,7 +788,7 @@ fun StopPickerModal(
                                             Text(
                                                 text = stop.stopDesc ?: (stop.parentStation?.let { "Pôle : $it" } ?: "Arrêt réseau"),
                                                 style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = Color.Gray,
+                                                    color = if (isSelected) onPrimaryContainerColor.copy(alpha = 0.8f) else mutedColor,
                                                     fontSize = 11.sp
                                                 ),
                                                 maxLines = 1,
@@ -666,7 +802,7 @@ fun StopPickerModal(
                                             Text(
                                                 text = formatDistance(distanceMeters),
                                                 style = MaterialTheme.typography.labelSmall.copy(
-                                                    color = if (isSelected) SketchRed else Color.Gray,
+                                                    color = if (isSelected) onPrimaryContainerColor else mutedColor,
                                                     fontWeight = FontWeight.Bold
                                                 )
                                             )
@@ -677,7 +813,7 @@ fun StopPickerModal(
                                             Icon(
                                                 imageVector = Icons.Default.Check,
                                                 contentDescription = "Sélectionné",
-                                                tint = SketchRed,
+                                                tint = onPrimaryContainerColor,
                                                 modifier = Modifier.size(18.dp)
                                             )
                                             Spacer(modifier = Modifier.width(2.dp))
@@ -705,7 +841,7 @@ fun StopPickerModal(
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(14.dp))
                                         .background(surfaceColor)
                                         .padding(16.dp),
                                     contentAlignment = Alignment.Center
@@ -729,7 +865,7 @@ fun StopPickerModal(
                                         Text(
                                             text = "Recherchez un arrêt ci-dessus et appuyez sur l'étoile ⭐ pour l'ajouter à vos favoris.",
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                color = Color.Gray,
+                                                color = mutedColor,
                                                 fontSize = 11.5.sp
                                             ),
                                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -747,7 +883,7 @@ fun StopPickerModal(
                                         text = "SUGGESTIONS RAPIDES DE RECHERCHE",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
-                                            color = Color.Gray,
+                                            color = mutedColor,
                                             letterSpacing = 0.5.sp
                                         )
                                     )
@@ -776,7 +912,7 @@ fun StopPickerModal(
                                                 ),
                                                 border = SuggestionChipDefaults.suggestionChipBorder(
                                                     enabled = true,
-                                                    borderColor = SketchRed.copy(alpha = 0.3f)
+                                                    borderColor = primaryColor.copy(alpha = 0.35f)
                                                 )
                                             )
                                         }
@@ -792,7 +928,7 @@ fun StopPickerModal(
                                     text = "ARRÊTS RÉCENTS",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Bold,
-                                        color = Color.Gray,
+                                        color = mutedColor,
                                         letterSpacing = 0.5.sp
                                     ),
                                     modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
@@ -804,8 +940,8 @@ fun StopPickerModal(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSelected) SketchRed.copy(alpha = 0.12f) else surfaceColor)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (isSelected) primaryContainerColor else surfaceColor)
                                         .clickable {
                                             onStopSelected(stop)
                                             onDismissRequest()
@@ -823,13 +959,13 @@ fun StopPickerModal(
                                             modifier = Modifier
                                                 .size(32.dp)
                                                 .clip(CircleShape)
-                                                .background(if (isSelected) SketchRed else Color(0xFFE0E0E0)),
+                                                .background(if (isSelected) primaryColor else secondaryContainerColor),
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Default.DirectionsBus,
                                                 contentDescription = null,
-                                                tint = if (isSelected) Color.White else SketchBlack,
+                                                tint = if (isSelected) onPrimaryColor else onSecondaryContainerColor,
                                                 modifier = Modifier.size(17.dp)
                                             )
                                         }
@@ -841,7 +977,7 @@ fun StopPickerModal(
                                                 text = stop.stopName,
                                                 style = MaterialTheme.typography.bodyMedium.copy(
                                                     fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
-                                                    color = if (isSelected) SketchRed else contentColor
+                                                    color = if (isSelected) onPrimaryContainerColor else contentColor
                                                 ),
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
@@ -849,7 +985,7 @@ fun StopPickerModal(
                                             Text(
                                                 text = stop.parentStation?.let { "Pôle : $it" } ?: "Arrêt consulté",
                                                 style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = Color.Gray,
+                                                    color = if (isSelected) onPrimaryContainerColor.copy(alpha = 0.8f) else mutedColor,
                                                     fontSize = 11.sp
                                                 ),
                                                 maxLines = 1,
@@ -867,7 +1003,7 @@ fun StopPickerModal(
                                         Icon(
                                             imageVector = Icons.Default.StarBorder,
                                             contentDescription = "Ajouter aux favoris",
-                                            tint = if (isDarkTheme) Color.LightGray else Color.Gray,
+                                            tint = mutedColor,
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }
@@ -876,8 +1012,6 @@ fun StopPickerModal(
                         }
                     }
                 }
-            }
-        },
-        confirmButton = {}
-    )
+        }
+    }
 }

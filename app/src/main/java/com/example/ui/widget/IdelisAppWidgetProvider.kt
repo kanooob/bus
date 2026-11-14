@@ -16,6 +16,8 @@ import android.widget.RemoteViews
 import com.example.MainActivity
 import com.example.R
 import com.example.data.local.IdelisDatabase
+import com.example.data.remote.NotificationChannels
+import com.example.data.remote.WidgetUpdateNotifier
 import com.example.data.repository.IdelisRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,40 +64,52 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
         @SuppressLint("MissingPermission")
         private fun getLastKnownLocation(context: Context): Location? {
             val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
-            val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+            val providers = buildList {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    add(LocationManager.FUSED_PROVIDER)
+                }
+                add(LocationManager.GPS_PROVIDER)
+                add(LocationManager.NETWORK_PROVIDER)
+                add(LocationManager.PASSIVE_PROVIDER)
+            }
+            var best: Location? = null
             for (provider in providers) {
                 try {
                     if (locationManager.isProviderEnabled(provider)) {
                         val loc = locationManager.getLastKnownLocation(provider)
-                        if (loc != null) return loc
+                        if (loc != null && (best == null || loc.time > best.time)) {
+                            best = loc
+                        }
                     }
                 } catch (_: SecurityException) {}
+                catch (_: IllegalArgumentException) {}
             }
-            return null
+            return best
         }
 
         fun updateAppWidget(
             context: Context,
             appWidgetManager: AppWidgetManager,
-            appWidgetId: Int
+            appWidgetId: Int,
+            postSilentNotification: Boolean = false
         ) {
             val isDynamicNearest = IdelisWidgetPreferences.isWidgetDynamicNearest(context, appWidgetId)
             var stopId = IdelisWidgetPreferences.getWidgetStopId(context, appWidgetId)
             var stopName = IdelisWidgetPreferences.getWidgetStopName(context, appWidgetId)
 
             var isMoving = false
+            val dynamicLocation = if (isDynamicNearest) getLastKnownLocation(context) else null
 
             // Option Arrêt le plus proche automatique avec détection de mouvement
             if (isDynamicNearest) {
-                val loc = getLastKnownLocation(context)
-                if (loc != null) {
-                    if (loc.hasSpeed() && loc.speed > 0.8f) { // ~3 km/h
+                if (dynamicLocation != null) {
+                    if (dynamicLocation.hasSpeed() && dynamicLocation.speed > 0.8f) { // ~3 km/h
                         isMoving = true
                     }
                     val requestStops = IdelisRepository.globalDownloadedStopsCache.filter { it.lat != 0.0 && it.lon != 0.0 }
                     val nearest = if (requestStops.isNotEmpty()) {
                         requestStops.minByOrNull {
-                            calculateDistanceMeters(loc.latitude, loc.longitude, it.lat, it.lon)
+                            calculateDistanceMeters(dynamicLocation.latitude, dynamicLocation.longitude, it.lat, it.lon)
                         }
                     } else null
 
@@ -105,6 +119,8 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                     } else {
                         stopName = "📍 Arrêt le plus proche"
                     }
+                } else {
+                    stopName = "📍 Arrêt le plus proche"
                 }
             }
 
@@ -139,7 +155,7 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 putExtra(EXTRA_STOP_ID, stopId)
             }
-            val openAppPendingIntent = PendingIntent.getActivity(
+            var openAppPendingIntent = PendingIntent.getActivity(
                 context,
                 appWidgetId * 10 + 1,
                 openAppIntent,
@@ -154,14 +170,54 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
 
             // 2. Chargement asynchrone des passages réels
             CoroutineScope(Dispatchers.IO).launch {
+                val prefs = com.example.data.local.PreferencesManager(context)
+                val notifStarted = if (postSilentNotification) {
+                    WidgetUpdateNotifier.showWidgetRefreshing(
+                        context = context,
+                        stopId = stopId,
+                        stopName = stopName,
+                        prefs = prefs
+                    )
+                } else {
+                    false
+                }
                 try {
                     val database = IdelisDatabase.getInstance(context)
-                    val prefs = com.example.data.local.PreferencesManager(context)
                     val repository = IdelisRepository(database, context, prefs)
+
+                    var resolvedStopOverride: com.example.data.model.GtfsStop? = null
+                    var effectiveStopId = stopId
+                    if (isDynamicNearest && dynamicLocation != null) {
+                        val resolved = repository.resolveAndSaveNearestStop(
+                            userLat = dynamicLocation.latitude,
+                            userLon = dynamicLocation.longitude,
+                            fallbackStops = emptyList()
+                        )
+                        if (resolved != null) {
+                            resolvedStopOverride = resolved.stop
+                            effectiveStopId = resolved.stop.stopId
+                            views.setTextViewText(R.id.widget_stop_name, "📍 ${resolved.stop.stopName}")
+                            val updatedOpenIntent = Intent(context, MainActivity::class.java).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                putExtra(EXTRA_STOP_ID, effectiveStopId)
+                            }
+                            openAppPendingIntent = PendingIntent.getActivity(
+                                context,
+                                appWidgetId * 10 + 1,
+                                updatedOpenIntent,
+                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                            )
+                            views.setOnClickPendingIntent(R.id.widget_title_area, openAppPendingIntent)
+                            views.setOnClickPendingIntent(R.id.widget_icon_bus, openAppPendingIntent)
+                            views.setOnClickPendingIntent(R.id.widget_root, openAppPendingIntent)
+                        }
+                    }
+
                     val departuresResult = repository.getDeparturesForStop(
-                        stopId = stopId,
+                        stopId = effectiveStopId,
                         useSimulationMode = false,
-                        forceOffline = false
+                        forceOffline = false,
+                        stopOverride = resolvedStopOverride
                     )
 
                     val departures = departuresResult.departures
@@ -217,18 +273,25 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                     views.setViewVisibility(R.id.widget_empty_view, View.VISIBLE)
                     views.setTextViewText(R.id.widget_empty_view, "Horaires en cours d'actualisation")
                     appWidgetManager.updateAppWidget(appWidgetId, views)
+                } finally {
+                    if (notifStarted) {
+                        WidgetUpdateNotifier.finishWidgetRefreshing(context)
+                    }
                 }
             }
         }
 
-        fun refreshAllWidgets(context: Context) {
+        fun refreshAllWidgets(
+            context: Context,
+            postSilentNotification: Boolean = false
+        ) {
             try {
                 val appWidgetManager = AppWidgetManager.getInstance(context)
                 val componentName = android.content.ComponentName(context, IdelisAppWidgetProvider::class.java)
                 val ids = appWidgetManager.getAppWidgetIds(componentName)
                 if (ids.isNotEmpty()) {
                     for (id in ids) {
-                        updateAppWidget(context, appWidgetManager, id)
+                        updateAppWidget(context, appWidgetManager, id, postSilentNotification = postSilentNotification)
                     }
                 }
             } catch (_: Exception) {}
@@ -280,8 +343,9 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray
     ) {
+        NotificationChannels.ensureAllChannels(context)
         for (appWidgetId in appWidgetIds) {
-            updateAppWidget(context, appWidgetManager, appWidgetId)
+            updateAppWidget(context, appWidgetManager, appWidgetId, postSilentNotification = true)
         }
     }
 
@@ -292,7 +356,7 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
         newOptions: Bundle
     ) {
         super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions)
-        updateAppWidget(context, appWidgetManager, appWidgetId)
+        updateAppWidget(context, appWidgetManager, appWidgetId, postSilentNotification = false)
     }
 
     override fun onDeleted(context: Context, appWidgetIds: IntArray) {
@@ -303,13 +367,14 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action == ACTION_REFRESH_WIDGET) {
+            NotificationChannels.ensureAllChannels(context)
             val appWidgetId = intent.getIntExtra(
                 AppWidgetManager.EXTRA_APPWIDGET_ID,
                 AppWidgetManager.INVALID_APPWIDGET_ID
             )
             if (appWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
                 val appWidgetManager = AppWidgetManager.getInstance(context)
-                updateAppWidget(context, appWidgetManager, appWidgetId)
+                updateAppWidget(context, appWidgetManager, appWidgetId, postSilentNotification = true)
             }
         }
     }

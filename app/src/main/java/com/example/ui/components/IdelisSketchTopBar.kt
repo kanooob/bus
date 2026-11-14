@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -30,8 +31,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.SketchBlack
-import com.example.ui.theme.SketchRed
 
 /**
  * Barre supérieure fidèle au croquis utilisateur avec vraies icônes Material :
@@ -47,9 +46,9 @@ fun IdelisSketchTopBar(
     isDarkTheme: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val iconColor = if (isDarkTheme) Color.White else SketchBlack
-    val titleTextColor = if (isDarkTheme) Color.White else Color(0xFF111111)
-    val subTextColor = if (isDarkTheme) Color(0xFFCBD5E1) else Color(0xFF4B5563)
+    val iconColor = MaterialTheme.colorScheme.onBackground
+    val titleTextColor = MaterialTheme.colorScheme.onBackground
+    val subTextColor = MaterialTheme.colorScheme.onSurfaceVariant
 
     Row(
         modifier = modifier

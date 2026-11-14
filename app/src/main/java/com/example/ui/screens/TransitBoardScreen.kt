@@ -6,6 +6,12 @@ import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -396,6 +402,12 @@ fun TransitBoardScreen(
                 onSearchQueryChange = { query -> viewModel.updatePickerSearchQuery(query) },
                 webSuggestions = uiState.webSuggestions,
                 isWebSearching = uiState.isWebSearching,
+                isLocatingNearest = uiState.isLocatingNearest,
+                onNearestStopRequested = { lat, lon, onComplete ->
+                    viewModel.selectNearestStopAsync(lat, lon) { _, _ ->
+                        onComplete()
+                    }
+                },
                 onWebStopSelected = { webStop -> viewModel.selectWebStop(webStop) },
                 onToggleFavorite = { stopId -> viewModel.toggleFavoriteStop(stopId) },
                 onToggleFavoriteWebStop = { webStop -> viewModel.toggleFavoriteWebStop(webStop) },
@@ -420,8 +432,12 @@ fun TransitBoardScreen(
             )
         }
 
-        // Modale de paramètres (ouverte par 'paramètres')
-        if (isSettingsOpen) {
+        // Écran de paramètres plein écran (ouvert par 'paramètres')
+        AnimatedVisibility(
+            visible = isSettingsOpen,
+            enter = slideInHorizontally(tween(240)) { it / 3 } + fadeIn(tween(220)),
+            exit = slideOutHorizontally(tween(200)) { it / 3 } + fadeOut(tween(180))
+        ) {
             SettingsModal(
                 isDarkTheme = effectiveDarkTheme,
                 themeMode = uiState.themeMode,
@@ -444,6 +460,8 @@ fun TransitBoardScreen(
                 onSelectTrafficRefreshFrequency = { viewModel.setTrafficRefreshFrequency(it) },
                 trafficNotificationsEnabled = uiState.trafficNotificationsEnabled,
                 onToggleTrafficNotifications = { viewModel.setTrafficNotificationsEnabled(it) },
+                widgetUpdateNotificationsEnabled = uiState.widgetUpdateNotificationsEnabled,
+                onToggleWidgetUpdateNotifications = { viewModel.setWidgetUpdateNotificationsEnabled(it) },
                 lastTrafficRefreshTimestamp = uiState.lastTrafficRefreshTimestamp,
                 appUpdateCheckFrequency = uiState.appUpdateCheckFrequency,
                 onSelectAppUpdateCheckFrequency = { viewModel.setAppUpdateCheckFrequency(it) },

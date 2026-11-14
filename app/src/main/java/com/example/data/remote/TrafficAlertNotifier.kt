@@ -1,11 +1,8 @@
 package com.example.data.remote
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -21,9 +18,7 @@ import java.util.Locale
 object TrafficAlertNotifier {
 
     private const val TAG = "TrafficAlertNotifier"
-    const val CHANNEL_ID = "galaxie_bus_traffic_alerts"
-    private const val CHANNEL_NAME = "Info trafic Idelis"
-    private const val CHANNEL_DESC = "Notifications lorsqu'une nouvelle perturbation trafic est signalée sur le réseau"
+    const val CHANNEL_ID = NotificationChannels.CHANNEL_TRAFFIC_ALERTS
     private const val NOTIFICATION_ID_TRAFFIC = 7002
     const val EXTRA_OPEN_TRAFFIC_INFO = "EXTRA_OPEN_TRAFFIC_INFO"
 
@@ -35,19 +30,7 @@ object TrafficAlertNotifier {
     }
 
     fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-            if (manager.getNotificationChannel(CHANNEL_ID) == null) {
-                val channel = NotificationChannel(
-                    CHANNEL_ID,
-                    CHANNEL_NAME,
-                    NotificationManager.IMPORTANCE_DEFAULT
-                ).apply {
-                    description = CHANNEL_DESC
-                }
-                manager.createNotificationChannel(channel)
-            }
-        }
+        NotificationChannels.ensureAllChannels(context)
     }
 
     /**

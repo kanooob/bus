@@ -10,11 +10,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,24 +28,29 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,12 +69,11 @@ import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.IdelisPeriod
 import com.example.data.model.TrafficAlert
-import com.example.ui.theme.SketchBlack
-import com.example.ui.theme.SketchRed
 import com.example.ui.theme.StatusDelayed
 import com.example.ui.theme.StatusGreen
+import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun TrafficInfoModal(
     alerts: List<TrafficAlert>,
@@ -81,10 +86,16 @@ fun TrafficInfoModal(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val bgColor = if (isDarkTheme) Color(0xFF141B26) else Color.White
-    val titleColor = if (isDarkTheme) Color.White else SketchBlack
-    val contentColor = if (isDarkTheme) Color(0xFFF0F4F8) else SketchBlack
-    val mutedColor = if (isDarkTheme) Color(0xFF94A3B8) else Color(0xFF64748B)
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val onPrimaryColor = MaterialTheme.colorScheme.onPrimary
+    val secondaryContainerColor = MaterialTheme.colorScheme.secondaryContainer
+    val onSecondaryContainerColor = MaterialTheme.colorScheme.onSecondaryContainer
+    val bgColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val titleColor = MaterialTheme.colorScheme.onSurface
+    val contentColor = MaterialTheme.colorScheme.onSurface
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val cardColor = MaterialTheme.colorScheme.surfaceContainerLow
+    val cardBorderColor = MaterialTheme.colorScheme.outlineVariant
 
     var isHornPressed by remember { mutableStateOf(false) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
@@ -134,16 +145,31 @@ fun TrafficInfoModal(
         }
     }
 
-    AlertDialog(
+    val coroutineScope = rememberCoroutineScope()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    val isSheetExpanded = sheetState.targetValue == SheetValue.Expanded ||
+        sheetState.currentValue == SheetValue.Expanded
+
+    ModalBottomSheet(
         onDismissRequest = {
             stopHorn()
             onDismissRequest()
         },
+        sheetState = sheetState,
         containerColor = bgColor,
-        titleContentColor = titleColor,
-        shape = RoundedCornerShape(16.dp),
-        modifier = modifier.testTag("traffic_info_dialog"),
-        title = {
+        contentColor = contentColor,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            BottomSheetDefaults.DragHandle(color = mutedColor.copy(alpha = 0.45f))
+        },
+        modifier = modifier.testTag("traffic_info_dialog")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                .padding(horizontal = 20.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -156,7 +182,7 @@ fun TrafficInfoModal(
                     Icon(
                         imageVector = Icons.Default.Warning,
                         contentDescription = null,
-                        tint = Color(0xFFF57C00),
+                        tint = primaryColor,
                         modifier = Modifier.size(22.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -177,7 +203,7 @@ fun TrafficInfoModal(
                         if (isLoading) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(18.dp),
-                                color = SketchRed,
+                                color = primaryColor,
                                 strokeWidth = 2.dp
                             )
                         } else {
@@ -190,13 +216,13 @@ fun TrafficInfoModal(
                         }
                     }
 
-                    // Bouton Klaxon à gauche de la croix (joue le son tant qu'on maintient appuyé)
+                    // Bouton Klaxon à gauche des contrôles (joue le son tant qu'on maintient appuyé)
                     Box(
                         modifier = Modifier
-                            .size(38.dp)
+                            .size(40.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isHornPressed) SketchRed else (if (isDarkTheme) Color(0xFF1C2636) else Color(0xFFF0F0F0))
+                                if (isHornPressed) primaryColor else secondaryContainerColor
                             )
                             .pointerInput(Unit) {
                                 detectTapGestures(
@@ -218,8 +244,31 @@ fun TrafficInfoModal(
                         Icon(
                             imageVector = Icons.Default.Campaign,
                             contentDescription = "Klaxon bus",
-                            tint = if (isHornPressed) Color.White else (if (isDarkTheme) Color.White else SketchBlack),
+                            tint = if (isHornPressed) onPrimaryColor else onSecondaryContainerColor,
                             modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                if (isSheetExpanded) {
+                                    sheetState.partialExpand()
+                                } else {
+                                    sheetState.expand()
+                                }
+                            }
+                        },
+                        modifier = Modifier.testTag("traffic_expand_toggle_button")
+                    ) {
+                        Icon(
+                            imageVector = if (isSheetExpanded) {
+                                Icons.Default.KeyboardArrowDown
+                            } else {
+                                Icons.Default.KeyboardArrowUp
+                            },
+                            contentDescription = if (isSheetExpanded) "Réduire" else "Agrandir vers le haut",
+                            tint = mutedColor
                         )
                     }
 
@@ -233,23 +282,26 @@ fun TrafficInfoModal(
                     }
                 }
             }
-        },
-        text = {
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "Perturbations en direct (${activePeriod.label}) :",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = mutedColor,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 480.dp),
+                    .weight(1f),
+                contentPadding = PaddingValues(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                item {
-                    Text(
-                        text = "Perturbations en direct (idelis.fr • ${activePeriod.label}) :",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = mutedColor,
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
-                }
 
                 if (isLoading && alerts.isEmpty()) {
                     item {
@@ -259,7 +311,7 @@ fun TrafficInfoModal(
                                 .padding(vertical = 28.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            CircularProgressIndicator(color = SketchRed, strokeWidth = 3.dp)
+                            CircularProgressIndicator(color = primaryColor, strokeWidth = 3.dp)
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = "Chargement des alertes trafic...",
@@ -272,22 +324,22 @@ fun TrafficInfoModal(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(SketchRed.copy(alpha = 0.08f))
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.errorContainer)
                                 .padding(14.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
                                 text = errorMessage,
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    color = SketchRed,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
                                     fontWeight = FontWeight.SemiBold
                                 ),
                                 textAlign = TextAlign.Center
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(8.dp)) {
-                                Text("Réessayer", fontWeight = FontWeight.Bold, color = SketchRed)
+                            OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(12.dp)) {
+                                Text("Réessayer", fontWeight = FontWeight.Bold, color = primaryColor)
                             }
                         }
                     }
@@ -328,13 +380,11 @@ fun TrafficInfoModal(
                     items(alerts, key = { it.id }) { alert ->
                         Card(
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isDarkTheme) Color(0xFF1C2636) else Color(0xFFFBFBFB)
+                                containerColor = cardColor
                             ),
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(16.dp),
                             border = CardDefaults.outlinedCardBorder().copy(
-                                brush = androidx.compose.ui.graphics.SolidColor(
-                                    if (isDarkTheme) Color(0xFF2A3A52) else Color(0xFFE0E0E0)
-                                )
+                                brush = androidx.compose.ui.graphics.SolidColor(cardBorderColor)
                             )
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
@@ -418,19 +468,19 @@ fun TrafficInfoModal(
                                                 context.startActivity(intent)
                                             } catch (_: Exception) {}
                                         },
-                                        shape = RoundedCornerShape(8.dp),
+                                        shape = RoundedCornerShape(12.dp),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Icon(
                                             imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                             contentDescription = null,
-                                            tint = SketchRed,
+                                            tint = primaryColor,
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
                                             text = "Voir la déviation / le plan",
-                                            color = SketchRed,
+                                            color = primaryColor,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp
                                         )
@@ -441,18 +491,6 @@ fun TrafficInfoModal(
                     }
                 }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    stopHorn()
-                    onDismissRequest()
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = SketchRed, contentColor = Color.White),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("Fermer", fontWeight = FontWeight.Bold)
-            }
         }
-    )
+    }
 }

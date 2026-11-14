@@ -1,8 +1,6 @@
 package com.example.data.remote
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -22,9 +20,7 @@ import com.example.R
 object AppUpdateNotifier {
 
     private const val TAG = "AppUpdateNotifier"
-    const val CHANNEL_ID = "galaxie_bus_app_updates"
-    private const val CHANNEL_NAME = "Mises à jour de l'application"
-    private const val CHANNEL_DESC = "Notifications lorsqu'une nouvelle version de Galaxie Bus est disponible"
+    const val CHANNEL_ID = NotificationChannels.CHANNEL_APP_UPDATES
     private const val NOTIFICATION_ID_UPDATE = 7001
     const val EXTRA_OPEN_UPDATE = "EXTRA_OPEN_UPDATE"
 
@@ -40,19 +36,7 @@ object AppUpdateNotifier {
     }
 
     fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-            if (manager.getNotificationChannel(CHANNEL_ID) == null) {
-                val channel = NotificationChannel(
-                    CHANNEL_ID,
-                    CHANNEL_NAME,
-                    NotificationManager.IMPORTANCE_DEFAULT
-                ).apply {
-                    description = CHANNEL_DESC
-                }
-                manager.createNotificationChannel(channel)
-            }
-        }
+        NotificationChannels.ensureAllChannels(context)
     }
 
     fun notifyUpdateAvailable(context: Context, release: GitHubReleaseInfo): Boolean {

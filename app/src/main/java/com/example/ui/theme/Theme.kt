@@ -18,13 +18,21 @@ private val LightColorScheme = lightColorScheme(
     onPrimaryContainer = PrimaryGreen,
     secondary = SketchBlack,
     onSecondary = Color.White,
+    secondaryContainer = Color(0xFFEFF1E6),
+    onSecondaryContainer = SketchBlack,
     background = SketchWhite,
     onBackground = SketchBlack,
     surface = SketchWhite,
     onSurface = SketchBlack,
     surfaceVariant = Color(0xFFF7F7F7),
-    onSurfaceVariant = SketchBlack,
-    outline = SketchDivider
+    onSurfaceVariant = Color(0xFF555555),
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFF6F6F6),
+    surfaceContainer = Color(0xFFF2F2F2),
+    surfaceContainerHigh = SketchWhite,
+    surfaceContainerHighest = Color(0xFFEAEAEA),
+    outline = SketchDivider,
+    outlineVariant = Color(0xFFE0E0E0)
 )
 
 private val DarkColorScheme = darkColorScheme(
@@ -34,13 +42,21 @@ private val DarkColorScheme = darkColorScheme(
     onPrimaryContainer = PrimaryGreen,
     secondary = Color.White,
     onSecondary = SketchBlack,
+    secondaryContainer = TransitSurfaceVariant,
+    onSecondaryContainer = Color(0xFFF0F4F8),
     background = TransitDarkBg,
     onBackground = Color(0xFFF0F4F8),
     surface = TransitSurface,
     onSurface = Color(0xFFF0F4F8),
     surfaceVariant = TransitSurfaceVariant,
     onSurfaceVariant = Color(0xFFA0B0C4),
-    outline = TransitCardBorder
+    surfaceContainerLowest = TransitDarkBg,
+    surfaceContainerLow = Color(0xFF1C2636),
+    surfaceContainer = TransitSurfaceVariant,
+    surfaceContainerHigh = TransitSurface,
+    surfaceContainerHighest = Color(0xFF233044),
+    outline = TransitCardBorder,
+    outlineVariant = TransitCardBorder
 )
 
 @Composable

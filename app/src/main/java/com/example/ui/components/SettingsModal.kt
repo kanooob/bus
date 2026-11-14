@@ -10,6 +10,13 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -37,6 +44,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Backup
@@ -58,6 +66,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Traffic
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Update
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.Widgets
@@ -100,8 +109,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.example.BuildConfig
 import com.example.R
@@ -119,10 +126,38 @@ import com.example.data.model.WidgetRefreshFrequency
 import com.example.data.remote.AppUpdateNotifier
 import com.example.data.remote.AppUpdateState
 import com.example.data.remote.GitHubReleaseInfo
+import com.example.data.remote.NotificationChannels
 import com.example.data.remote.formatReleaseNotesForDisplay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+private enum class SettingsCategory(
+    val title: String,
+    val icon: ImageVector,
+    val testTag: String
+) {
+    APPEARANCE(
+        title = "Apparence",
+        icon = Icons.Default.Palette,
+        testTag = "settings_category_appearance"
+    ),
+    DATA_AND_REFRESH(
+        title = "Données et actualisation",
+        icon = Icons.Default.Sync,
+        testTag = "settings_category_data_refresh"
+    ),
+    APP_UPDATES(
+        title = "Mises à jour de l'application",
+        icon = Icons.Default.SystemUpdate,
+        testTag = "settings_category_app_updates"
+    ),
+    ADVANCED(
+        title = "Avancé",
+        icon = Icons.Default.Tune,
+        testTag = "settings_category_advanced"
+    )
+}
 
 private enum class ActiveSettingsDialog {
     THEME,
@@ -168,6 +203,8 @@ fun SettingsModal(
     onSelectTrafficRefreshFrequency: (TrafficRefreshFrequency) -> Unit = {},
     trafficNotificationsEnabled: Boolean = false,
     onToggleTrafficNotifications: (Boolean) -> Unit = {},
+    widgetUpdateNotificationsEnabled: Boolean = true,
+    onToggleWidgetUpdateNotifications: (Boolean) -> Unit = {},
     lastTrafficRefreshTimestamp: Long = 0L,
     appUpdateCheckFrequency: AppUpdateCheckFrequency,
     onSelectAppUpdateCheckFrequency: (AppUpdateCheckFrequency) -> Unit,
@@ -194,7 +231,17 @@ fun SettingsModal(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    BackHandler(onBack = onDismissRequest)
+    var selectedCategory by remember { mutableStateOf<SettingsCategory?>(null) }
+    var activeDialog by remember { mutableStateOf<ActiveSettingsDialog?>(null) }
+    var localBackupStatus by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+
+    BackHandler(enabled = activeDialog == null) {
+        if (selectedCategory != null) {
+            selectedCategory = null
+        } else {
+            onDismissRequest()
+        }
+    }
 
     val context = LocalContext.current
     val primaryColor = MaterialTheme.colorScheme.primary
@@ -202,9 +249,6 @@ fun SettingsModal(
     val cardColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDarkTheme) 0.55f else 0.7f)
     val contentColor = MaterialTheme.colorScheme.onBackground
     val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
-
-    var activeDialog by remember { mutableStateOf<ActiveSettingsDialog?>(null) }
-    var localBackupStatus by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
 
     val lastGtfsFormatted = remember(lastGtfsSyncTimestamp) {
         if (lastGtfsSyncTimestamp > 0L) {
@@ -275,43 +319,58 @@ fun SettingsModal(
         }
     }
 
-    Dialog(
-        onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    Surface(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("settings_dialog"),
+        color = bgColor
     ) {
         Box(
-            modifier = modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            contentAlignment = Alignment.Center
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.TopCenter
         ) {
-            Surface(
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 620.dp)
-                    .fillMaxHeight(0.94f)
-                    .testTag("settings_dialog"),
-                shape = RoundedCornerShape(24.dp),
-                color = bgColor,
-                tonalElevation = 4.dp,
-                shadowElevation = 8.dp
+                    .fillMaxSize()
+                    .widthIn(max = 760.dp)
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
             ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // En-tête de la page Paramètres
+                // En-tête de la page Paramètres ou du sous-menu actif
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = if (selectedCategory != null) 8.dp else 20.dp,
+                            end = 12.dp,
+                            top = 12.dp,
+                            bottom = 12.dp
+                        ),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (selectedCategory != null) {
+                            IconButton(
+                                onClick = { selectedCategory = null },
+                                modifier = Modifier.testTag("settings_back_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Retour aux paramètres",
+                                    tint = contentColor
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                        } else {
                             Box(
                                 modifier = Modifier
                                     .size(38.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(primaryColor.copy(alpha = 0.14f)),
+                                    .background(primaryColor.copy(alpha = 0.14f))
+                                    .testTag("settings_main_icon"),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -322,14 +381,30 @@ fun SettingsModal(
                                 )
                             }
                             Spacer(modifier = Modifier.width(12.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            if (selectedCategory != null) {
+                                Text(
+                                    text = "Paramètres",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = primaryColor,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                             Text(
-                                text = "Paramètres",
+                                text = selectedCategory?.title ?: "Paramètres",
                                 style = MaterialTheme.typography.titleLarge.copy(
                                     fontWeight = FontWeight.Black,
                                     color = contentColor
-                                )
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
 
                         IconButton(
                             onClick = onDismissRequest,
@@ -345,517 +420,651 @@ fun SettingsModal(
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
 
-                    // Corps hiérarchisé des 4 catégories
-                    LazyColumn(
+                    // Navigation entre le menu principal des catégories et chaque sous-menu
+                    AnimatedContent(
+                        targetState = selectedCategory,
+                        transitionSpec = {
+                            if (targetState != null) {
+                                (slideInHorizontally(tween(220)) { it / 3 } + fadeIn(tween(220))) togetherWith
+                                    (slideOutHorizontally(tween(180)) { -it / 4 } + fadeOut(tween(160)))
+                            } else {
+                                (slideInHorizontally(tween(220)) { -it / 3 } + fadeIn(tween(220))) togetherWith
+                                    (slideOutHorizontally(tween(180)) { it / 4 } + fadeOut(tween(160)))
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp)
-                    ) {
-                        // ==========================================
-                        // 1. APPARENCE
-                        // ==========================================
-                        item {
-                            SettingsSectionGroup(
-                                sectionTitle = "1. Apparence",
-                                primaryColor = primaryColor,
-                                cardColor = cardColor
-                            ) {
-                                SettingsOptionRow(
-                                    icon = Icons.Default.DarkMode,
-                                    title = "Thème",
-                                    currentValue = formatValueWithDefault(
-                                        themeMode.label,
-                                        themeMode == ThemeMode.SYSTEM
-                                    ),
-                                    onClick = { activeDialog = ActiveSettingsDialog.THEME },
-                                    testTag = "setting_theme_row"
-                                )
+                        label = "settings_submenu_transition"
+                    ) { activeCategory ->
+                        if (activeCategory == null) {
+                            val hasBgLoc = hasBackgroundLocationPermission(context)
+                            val dataWarningCount = listOf(
+                                widgetRefreshFrequency.intervalMinutes in 1..14,
+                                !hasBgLoc && widgetLocationFrequency != WidgetLocationFrequency.MANUAL_ONLY,
+                                trafficNotificationsEnabled && (!hasNotifPermission || trafficRefreshFrequency == TrafficRefreshFrequency.NEVER),
+                                widgetUpdateNotificationsEnabled && !hasNotifPermission
+                            ).count { it }
 
-                                SectionDivider()
-
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Palette,
-                                    title = "Couleur principale",
-                                    currentValue = formatValueWithDefault(
-                                        primaryColorMode.label,
-                                        primaryColorMode == PrimaryColorMode.APP_DEFAULT
-                                    ),
-                                    supportingNote = if (primaryColorMode == PrimaryColorMode.DYNAMIC && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                                        "Material You nécessite Android 12+ (couleur par défaut utilisée)"
-                                    } else null,
-                                    onClick = { activeDialog = ActiveSettingsDialog.PRIMARY_COLOR },
-                                    testTag = "setting_primary_color_row"
-                                )
+                            val updateBadgeText = when (appUpdateState) {
+                                is AppUpdateState.ReadyToInstall -> "Prêt"
+                                is AppUpdateState.UpdateAvailableWaitingWifi -> "Nouveau"
+                                is AppUpdateState.Downloading -> "${appUpdateState.progressPercent}%"
+                                else -> null
                             }
-                        }
 
-                        // ==========================================
-                        // 2. DONNÉES ET ACTUALISATION
-                        // ==========================================
-                        item {
-                            SettingsSectionGroup(
-                                sectionTitle = "2. Données et actualisation",
-                                primaryColor = primaryColor,
-                                cardColor = cardColor
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("settings_categories_menu"),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Refresh,
-                                    title = "Fréquence dans l'application",
-                                    currentValue = formatValueWithDefault(
-                                        inAppRefreshFrequency.label,
-                                        inAppRefreshFrequency == InAppRefreshFrequency.EVERY_1_MIN
-                                    ),
-                                    onClick = { activeDialog = ActiveSettingsDialog.IN_APP_REFRESH },
-                                    testTag = "setting_in_app_refresh_row"
-                                )
-
-                                SectionDivider()
-
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Widgets,
-                                    title = "Fréquence des widgets",
-                                    currentValue = formatValueWithDefault(
-                                        widgetRefreshFrequency.label,
-                                        widgetRefreshFrequency == WidgetRefreshFrequency.EVERY_15_MIN
-                                    ),
-                                    constraintNote = ANDROID_WIDGET_CONSTRAINT,
-                                    isConstraintHighlighted = widgetRefreshFrequency.intervalMinutes in 1..14,
-                                    onClick = { activeDialog = ActiveSettingsDialog.WIDGET_REFRESH },
-                                    testTag = "setting_widget_refresh_row"
-                                )
-
-                                SectionDivider()
-
-                                val hasBgLoc = hasBackgroundLocationPermission(context)
-                                SettingsOptionRow(
-                                    icon = Icons.Default.LocationOn,
-                                    title = "Géolocalisation du widget « Arrêt proche »",
-                                    currentValue = formatValueWithDefault(
-                                        widgetLocationFrequency.label,
-                                        widgetLocationFrequency == WidgetLocationFrequency.EVERY_15_MIN
-                                    ),
-                                    constraintNote = ANDROID_LOCATION_CONSTRAINT,
-                                    isConstraintHighlighted = !hasBgLoc && widgetLocationFrequency != WidgetLocationFrequency.MANUAL_ONLY,
-                                    onClick = { activeDialog = ActiveSettingsDialog.WIDGET_LOCATION },
-                                    testTag = "setting_widget_location_row"
-                                )
-
-                                SectionDivider()
-
-                                Column {
-                                    SettingsOptionRow(
-                                        icon = Icons.Default.Schedule,
-                                        title = "Mise à jour des horaires (GTFS)",
-                                        currentValue = formatValueWithDefault(
-                                            gtfsSyncFrequency.label,
-                                            gtfsSyncFrequency == GtfsSyncFrequency.DAILY_ON_OPEN
-                                        ),
-                                        supportingNote = "Dernière mise à jour : $lastGtfsFormatted",
-                                        onClick = { activeDialog = ActiveSettingsDialog.GTFS_SYNC },
-                                        testTag = "setting_gtfs_sync_row"
+                                item {
+                                    SettingsCategoryMenuCard(
+                                        category = SettingsCategory.APPEARANCE,
+                                        summary = "Thème : ${themeMode.label} • Couleur : ${primaryColorMode.label}",
+                                        cardColor = cardColor,
+                                        primaryColor = primaryColor,
+                                        onClick = { selectedCategory = SettingsCategory.APPEARANCE }
                                     )
-
-                                    if (isGtfsSyncing || gtfsReport != null) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            if (isGtfsSyncing) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier.size(14.dp),
-                                                    color = primaryColor,
-                                                    strokeWidth = 2.dp
-                                                )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(
-                                                    text = "Téléchargement et analyse GTFS en cours...",
-                                                    style = MaterialTheme.typography.bodySmall.copy(color = primaryColor)
-                                                )
-                                            } else if (gtfsReport != null) {
-                                                Text(
-                                                    text = if (gtfsReport.success) {
-                                                        val suffix = if (gtfsReport.usedWaybackFallback) " (Wayback Machine)" else ""
-                                                        "✓ ${gtfsReport.stopsCount} arrêts • ${gtfsReport.routesCount} lignes$suffix"
-                                                    } else {
-                                                        "⚠ ${gtfsReport.errorMessage}"
-                                                    },
-                                                    style = MaterialTheme.typography.bodySmall.copy(
-                                                        color = if (gtfsReport.success) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
-                                                        fontWeight = FontWeight.SemiBold
-                                                    )
-                                                )
-                                            }
-                                        }
-                                    }
                                 }
 
-                                SectionDivider()
-
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Traffic,
-                                    title = "Actualisation de l'info trafic",
-                                    currentValue = formatValueWithDefault(
-                                        trafficRefreshFrequency.label,
-                                        trafficRefreshFrequency == TrafficRefreshFrequency.EVERY_2_HOURS
-                                    ),
-                                    supportingNote = "Dernière vérification : $lastTrafficFormatted",
-                                    onClick = { activeDialog = ActiveSettingsDialog.TRAFFIC_REFRESH },
-                                    testTag = "setting_traffic_refresh_row"
-                                )
-
-                                SectionDivider()
-
-                                SettingsSwitchRow(
-                                    icon = if (trafficNotificationsEnabled) {
-                                        Icons.Default.NotificationsActive
+                                item {
+                                    val dataSummary = if (isGtfsSyncing) {
+                                        "Synchronisation des horaires GTFS en cours..."
                                     } else {
-                                        Icons.Default.Notifications
-                                    },
-                                    title = "Notifications info trafic",
-                                    subtitle = if (trafficNotificationsEnabled) {
-                                        "Activées — notification lors d'une nouvelle info trafic"
-                                    } else {
-                                        "Recevoir une notification lors d'une nouvelle info trafic"
-                                    },
-                                    supportingNote = when {
-                                        trafficNotificationsEnabled && !hasNotifPermission ->
-                                            "Permission de notification requise (appuyez pour autoriser)"
-                                        trafficNotificationsEnabled && trafficRefreshFrequency == TrafficRefreshFrequency.NEVER ->
-                                            "Activez une fréquence d'actualisation ci-dessus pour recevoir des alertes."
+                                        "Appli : ${inAppRefreshFrequency.label} • Widgets : ${widgetRefreshFrequency.label}"
+                                    }
+                                    val dataBadge = when {
+                                        isGtfsSyncing -> "Sync"
+                                        dataWarningCount > 0 -> "$dataWarningCount alerte" + if (dataWarningCount > 1) "s" else ""
                                         else -> null
-                                    },
-                                    isWarningNote = trafficNotificationsEnabled &&
-                                        (!hasNotifPermission || trafficRefreshFrequency == TrafficRefreshFrequency.NEVER),
-                                    checked = trafficNotificationsEnabled,
-                                    onCheckedChange = { enabled ->
-                                        if (enabled &&
-                                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                            !AppUpdateNotifier.hasNotificationPermission(context)
-                                        ) {
-                                            trafficNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                        }
-                                        onToggleTrafficNotifications(enabled)
-                                    },
-                                    testTag = "setting_traffic_notifications_row",
-                                    switchTestTag = "setting_traffic_notifications_switch"
-                                )
+                                    }
+                                    SettingsCategoryMenuCard(
+                                        category = SettingsCategory.DATA_AND_REFRESH,
+                                        summary = dataSummary,
+                                        badgeText = dataBadge,
+                                        isBadgeWarning = !isGtfsSyncing && dataWarningCount > 0,
+                                        isSummaryHighlighted = isGtfsSyncing,
+                                        cardColor = cardColor,
+                                        primaryColor = primaryColor,
+                                        onClick = { selectedCategory = SettingsCategory.DATA_AND_REFRESH }
+                                    )
+                                }
+
+                                item {
+                                    val updateSummary = when (appUpdateState) {
+                                        is AppUpdateState.ReadyToInstall -> "Mise à jour ${appUpdateState.release.tagName} prête à installer"
+                                        is AppUpdateState.UpdateAvailableWaitingWifi -> "Version ${appUpdateState.release.tagName} disponible"
+                                        is AppUpdateState.Downloading -> "Téléchargement ${appUpdateState.release.tagName} (${appUpdateState.progressPercent}%)"
+                                        else -> "v${BuildConfig.VERSION_NAME} • Vérif. : ${appUpdateCheckFrequency.label}"
+                                    }
+                                    SettingsCategoryMenuCard(
+                                        category = SettingsCategory.APP_UPDATES,
+                                        summary = updateSummary,
+                                        badgeText = updateBadgeText,
+                                        isSummaryHighlighted = updateBadgeText != null,
+                                        cardColor = cardColor,
+                                        primaryColor = primaryColor,
+                                        onClick = { selectedCategory = SettingsCategory.APP_UPDATES }
+                                    )
+                                }
+
+                                item {
+                                    SettingsCategoryMenuCard(
+                                        category = SettingsCategory.ADVANCED,
+                                        summary = "Sauvegarde JSON • URLs réseau / API / SIRI",
+                                        cardColor = cardColor,
+                                        primaryColor = primaryColor,
+                                        onClick = { selectedCategory = SettingsCategory.ADVANCED }
+                                    )
+                                }
                             }
-                        }
-
-                        // ==========================================
-                        // 3. MISES À JOUR DE L'APPLICATION
-                        // ==========================================
-                        item {
-                            SettingsSectionGroup(
-                                sectionTitle = "3. Mises à jour de l'application",
-                                primaryColor = primaryColor,
-                                cardColor = cardColor
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("settings_submenu_list"),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Update,
-                                    title = "Vérification automatique",
-                                    currentValue = formatValueWithDefault(
-                                        appUpdateCheckFrequency.label,
-                                        appUpdateCheckFrequency == AppUpdateCheckFrequency.DAILY_ON_OPEN
-                                    ),
-                                    onClick = { activeDialog = ActiveSettingsDialog.UPDATE_CHECK_FREQ },
-                                    testTag = "setting_update_check_row"
-                                )
-
-                                SectionDivider()
-
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Wifi,
-                                    title = "Réseau autorisé",
-                                    currentValue = formatValueWithDefault(
-                                        updateNetworkMode.label,
-                                        updateNetworkMode == UpdateNetworkMode.WIFI_AND_CELLULAR
-                                    ),
-                                    onClick = { activeDialog = ActiveSettingsDialog.UPDATE_NETWORK },
-                                    testTag = "setting_update_network_row"
-                                )
-
-                                SectionDivider()
-
-                                // Vérifier maintenant (Action)
-                                Column {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable(
-                                                enabled = appUpdateState !is AppUpdateState.Checking &&
-                                                    appUpdateState !is AppUpdateState.Downloading
-                                            ) { onCheckForUpdate() }
-                                            .padding(horizontal = 16.dp, vertical = 14.dp)
-                                            .testTag("check_github_update_button"),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        SettingsLeadingIcon(
-                                            icon = Icons.Default.SystemUpdate,
-                                            tint = primaryColor
-                                        )
-                                        Spacer(modifier = Modifier.width(14.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "Vérifier maintenant",
-                                                style = MaterialTheme.typography.bodyLarge.copy(
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    color = contentColor
+                                when (activeCategory) {
+                                    SettingsCategory.APPEARANCE -> {
+                                        item {
+                                            SettingsSubmenuCard(cardColor = cardColor) {
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.DarkMode,
+                                                    title = "Thème",
+                                                    currentValue = formatValueWithDefault(
+                                                        themeMode.label,
+                                                        themeMode == ThemeMode.SYSTEM
+                                                    ),
+                                                    onClick = { activeDialog = ActiveSettingsDialog.THEME },
+                                                    testTag = "setting_theme_row"
                                                 )
-                                            )
-                                            Text(
-                                                text = when (appUpdateState) {
-                                                    is AppUpdateState.Checking -> "Recherche sur GitHub..."
-                                                    is AppUpdateState.UpToDate -> "Application à jour (v${appUpdateState.currentVersion})"
-                                                    is AppUpdateState.UpdateAvailableWaitingWifi -> "Nouvelle version ${appUpdateState.release.tagName} disponible"
-                                                    is AppUpdateState.Downloading -> "Téléchargement ${appUpdateState.release.tagName} (${appUpdateState.progressPercent}%)"
-                                                    is AppUpdateState.ReadyToInstall -> "Mise à jour ${appUpdateState.release.tagName} prête à installer"
-                                                    is AppUpdateState.Error -> appUpdateState.message
-                                                    AppUpdateState.Idle -> "Rechercher une nouvelle version sur GitHub"
-                                                },
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = when (appUpdateState) {
-                                                        is AppUpdateState.UpToDate -> Color(0xFF2E7D32)
-                                                        is AppUpdateState.Error -> MaterialTheme.colorScheme.error
-                                                        is AppUpdateState.UpdateAvailableWaitingWifi,
-                                                        is AppUpdateState.ReadyToInstall -> primaryColor
-                                                        else -> mutedColor
-                                                    }
+
+                                                SectionDivider()
+
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Palette,
+                                                    title = "Couleur principale",
+                                                    currentValue = formatValueWithDefault(
+                                                        primaryColorMode.label,
+                                                        primaryColorMode == PrimaryColorMode.APP_DEFAULT
+                                                    ),
+                                                    supportingNote = if (primaryColorMode == PrimaryColorMode.DYNAMIC && Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                                                        "Material You nécessite Android 12+ (couleur par défaut utilisée)"
+                                                    } else null,
+                                                    onClick = { activeDialog = ActiveSettingsDialog.PRIMARY_COLOR },
+                                                    testTag = "setting_primary_color_row"
                                                 )
-                                            )
-                                        }
-
-                                        if (appUpdateState is AppUpdateState.Checking) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(20.dp),
-                                                color = primaryColor,
-                                                strokeWidth = 2.dp
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                                contentDescription = null,
-                                                tint = mutedColor
-                                            )
-                                        }
-                                    }
-
-                                    // Description de la release GitHub lorsqu'une mise à jour est présente
-                                    val updateRelease: GitHubReleaseInfo? = when (appUpdateState) {
-                                        is AppUpdateState.UpdateAvailableWaitingWifi -> appUpdateState.release
-                                        is AppUpdateState.Downloading -> appUpdateState.release
-                                        is AppUpdateState.ReadyToInstall -> appUpdateState.release
-                                        is AppUpdateState.Error -> appUpdateState.release
-                                        else -> null
-                                    }
-                                    if (updateRelease != null) {
-                                        val notesText = remember(updateRelease.releaseNotes) {
-                                            formatReleaseNotesForDisplay(updateRelease.releaseNotes)
-                                        }
-                                        val showTitle = updateRelease.releaseName.isNotBlank() &&
-                                            !updateRelease.releaseName.equals(updateRelease.tagName, ignoreCase = true)
-                                        if (showTitle || notesText.isNotBlank()) {
-                                            Surface(
-                                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                                                shape = RoundedCornerShape(10.dp),
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 56.dp, end = 16.dp, bottom = 10.dp)
-                                                    .testTag("settings_update_release_notes")
-                                            ) {
-                                                Column(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .heightIn(max = 140.dp)
-                                                        .verticalScroll(rememberScrollState())
-                                                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                                                ) {
-                                                    Text(
-                                                        text = if (showTitle) updateRelease.releaseName else "Notes de version (${updateRelease.tagName})",
-                                                        style = MaterialTheme.typography.labelMedium.copy(
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = contentColor
-                                                        )
-                                                    )
-                                                    if (notesText.isNotBlank()) {
-                                                        Spacer(modifier = Modifier.height(4.dp))
-                                                        Text(
-                                                            text = notesText,
-                                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                                color = mutedColor,
-                                                                lineHeight = 16.sp
-                                                            )
-                                                        )
-                                                    }
-                                                }
                                             }
                                         }
                                     }
 
-                                    // Contrôles contextuels de téléchargement / installation
-                                    when (appUpdateState) {
-                                        is AppUpdateState.UpdateAvailableWaitingWifi -> {
-                                            if (!appUpdateState.release.apkDownloadUrl.isNullOrBlank()) {
-                                                Button(
-                                                    onClick = { onDownloadUpdate(true) },
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
-                                                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-                                                    shape = RoundedCornerShape(10.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.CloudDownload,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(16.dp)
+                                    SettingsCategory.DATA_AND_REFRESH -> {
+                                        item {
+                                            SettingsSectionGroup(
+                                                sectionTitle = "Actualisation et géolocalisation",
+                                                primaryColor = primaryColor,
+                                                cardColor = cardColor
+                                            ) {
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Refresh,
+                                                    title = "Fréquence dans l'application",
+                                                    currentValue = formatValueWithDefault(
+                                                        inAppRefreshFrequency.label,
+                                                        inAppRefreshFrequency == InAppRefreshFrequency.EVERY_1_MIN
+                                                    ),
+                                                    onClick = { activeDialog = ActiveSettingsDialog.IN_APP_REFRESH },
+                                                    testTag = "setting_in_app_refresh_row"
+                                                )
+
+                                                SectionDivider()
+
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Widgets,
+                                                    title = "Fréquence des widgets",
+                                                    currentValue = formatValueWithDefault(
+                                                        widgetRefreshFrequency.label,
+                                                        widgetRefreshFrequency == WidgetRefreshFrequency.EVERY_15_MIN
+                                                    ),
+                                                    constraintNote = ANDROID_WIDGET_CONSTRAINT,
+                                                    isConstraintHighlighted = widgetRefreshFrequency.intervalMinutes in 1..14,
+                                                    onClick = { activeDialog = ActiveSettingsDialog.WIDGET_REFRESH },
+                                                    testTag = "setting_widget_refresh_row"
+                                                )
+
+                                                SectionDivider()
+
+                                                val hasBgLoc = hasBackgroundLocationPermission(context)
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.LocationOn,
+                                                    title = "Géolocalisation du widget « Arrêt proche »",
+                                                    currentValue = formatValueWithDefault(
+                                                        widgetLocationFrequency.label,
+                                                        widgetLocationFrequency == WidgetLocationFrequency.EVERY_15_MIN
+                                                    ),
+                                                    constraintNote = ANDROID_LOCATION_CONSTRAINT,
+                                                    isConstraintHighlighted = !hasBgLoc && widgetLocationFrequency != WidgetLocationFrequency.MANUAL_ONLY,
+                                                    onClick = { activeDialog = ActiveSettingsDialog.WIDGET_LOCATION },
+                                                    testTag = "setting_widget_location_row"
+                                                )
+                                            }
+                                        }
+
+                                        item {
+                                            SettingsSectionGroup(
+                                                sectionTitle = "Horaires, info trafic et notifications",
+                                                primaryColor = primaryColor,
+                                                cardColor = cardColor
+                                            ) {
+                                                Column {
+                                                    SettingsOptionRow(
+                                                        icon = Icons.Default.Schedule,
+                                                        title = "Mise à jour des horaires (GTFS)",
+                                                        currentValue = formatValueWithDefault(
+                                                            gtfsSyncFrequency.label,
+                                                            gtfsSyncFrequency == GtfsSyncFrequency.DAILY_ON_OPEN
+                                                        ),
+                                                        supportingNote = "Dernière mise à jour : $lastGtfsFormatted",
+                                                        onClick = { activeDialog = ActiveSettingsDialog.GTFS_SYNC },
+                                                        testTag = "setting_gtfs_sync_row"
                                                     )
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text(
-                                                        text = if (isWifiConnected) "Télécharger (Wi-Fi)" else "Télécharger maintenant",
-                                                        fontWeight = FontWeight.Bold,
-                                                        fontSize = 12.5.sp
-                                                    )
+
+                                                    if (isGtfsSyncing || gtfsReport != null) {
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            if (isGtfsSyncing) {
+                                                                CircularProgressIndicator(
+                                                                    modifier = Modifier.size(14.dp),
+                                                                    color = primaryColor,
+                                                                    strokeWidth = 2.dp
+                                                                )
+                                                                Spacer(modifier = Modifier.width(8.dp))
+                                                                Text(
+                                                                    text = "Téléchargement et analyse GTFS en cours...",
+                                                                    style = MaterialTheme.typography.bodySmall.copy(color = primaryColor)
+                                                                )
+                                                            } else if (gtfsReport != null) {
+                                                                Text(
+                                                                    text = if (gtfsReport.success) {
+                                                                        val suffix = if (gtfsReport.usedWaybackFallback) " (Wayback Machine)" else ""
+                                                                        "✓ ${gtfsReport.stopsCount} arrêts • ${gtfsReport.routesCount} lignes$suffix"
+                                                                    } else {
+                                                                        "⚠ ${gtfsReport.errorMessage}"
+                                                                    },
+                                                                    style = MaterialTheme.typography.bodySmall.copy(
+                                                                        color = if (gtfsReport.success) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                                                                        fontWeight = FontWeight.SemiBold
+                                                                    )
+                                                                )
+                                                            }
+                                                        }
+                                                    }
                                                 }
-                                            } else {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        try {
-                                                            context.startActivity(
-                                                                Intent(Intent.ACTION_VIEW, Uri.parse(appUpdateState.release.htmlUrl))
-                                                            )
-                                                        } catch (_: Exception) {}
+
+                                                SectionDivider()
+
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Traffic,
+                                                    title = "Actualisation de l'info trafic",
+                                                    currentValue = formatValueWithDefault(
+                                                        trafficRefreshFrequency.label,
+                                                        trafficRefreshFrequency == TrafficRefreshFrequency.EVERY_2_HOURS
+                                                    ),
+                                                    supportingNote = "Dernière vérification : $lastTrafficFormatted",
+                                                    onClick = { activeDialog = ActiveSettingsDialog.TRAFFIC_REFRESH },
+                                                    testTag = "setting_traffic_refresh_row"
+                                                )
+
+                                                SectionDivider()
+
+                                                SettingsSwitchRow(
+                                                    icon = if (trafficNotificationsEnabled) {
+                                                        Icons.Default.NotificationsActive
+                                                    } else {
+                                                        Icons.Default.Notifications
                                                     },
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
-                                                    shape = RoundedCornerShape(10.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text("Ouvrir la release sur GitHub", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
-                                                }
-                                            }
-                                        }
-                                        is AppUpdateState.Downloading -> {
-                                            LinearProgressIndicator(
-                                                progress = { (appUpdateState.progressPercent / 100f).coerceIn(0f, 1f) },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 56.dp, end = 16.dp, bottom = 12.dp)
-                                                    .height(6.dp)
-                                                    .clip(RoundedCornerShape(3.dp)),
-                                                color = primaryColor
-                                            )
-                                        }
-                                        is AppUpdateState.ReadyToInstall -> {
-                                            Button(
-                                                onClick = { onInstallUpdate(appUpdateState.apkFilePath) },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 56.dp, end = 16.dp, bottom = 12.dp)
-                                                    .testTag("settings_install_apk_button"),
-                                                colors = ButtonDefaults.buttonColors(
-                                                    containerColor = Color(0xFF2E7D32),
-                                                    contentColor = Color.White
-                                                ),
-                                                shape = RoundedCornerShape(10.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.InstallMobile,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(16.dp)
+                                                    title = "Notifications info trafic",
+                                                    subtitle = if (trafficNotificationsEnabled) {
+                                                        "Activées — notification lors d'une nouvelle info trafic"
+                                                    } else {
+                                                        "Recevoir une notification lors d'une nouvelle info trafic"
+                                                    },
+                                                    supportingNote = when {
+                                                        trafficNotificationsEnabled && !hasNotifPermission ->
+                                                            "Permission de notification requise (appuyez pour autoriser)"
+                                                        trafficNotificationsEnabled && trafficRefreshFrequency == TrafficRefreshFrequency.NEVER ->
+                                                            "Activez une fréquence d'actualisation ci-dessus pour recevoir des alertes."
+                                                        else -> null
+                                                    },
+                                                    isWarningNote = trafficNotificationsEnabled &&
+                                                        (!hasNotifPermission || trafficRefreshFrequency == TrafficRefreshFrequency.NEVER),
+                                                    checked = trafficNotificationsEnabled,
+                                                    onCheckedChange = { enabled ->
+                                                        if (enabled &&
+                                                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                                            !AppUpdateNotifier.hasNotificationPermission(context)
+                                                        ) {
+                                                            trafficNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                                        }
+                                                        onToggleTrafficNotifications(enabled)
+                                                    },
+                                                    testTag = "setting_traffic_notifications_row",
+                                                    switchTestTag = "setting_traffic_notifications_switch"
                                                 )
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Installer la mise à jour", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+
+                                                SectionDivider()
+
+                                                SettingsSwitchRow(
+                                                    icon = Icons.Default.Widgets,
+                                                    title = "Notifications actualisation widgets",
+                                                    subtitle = if (widgetUpdateNotificationsEnabled) {
+                                                        "Silencieuse uniquement pendant l'actualisation des widgets"
+                                                    } else {
+                                                        "Désactivées pour l'actualisation des widgets"
+                                                    },
+                                                    supportingNote = if (widgetUpdateNotificationsEnabled && !hasNotifPermission) {
+                                                        "Permission de notification requise (appuyez pour autoriser)"
+                                                    } else null,
+                                                    isWarningNote = widgetUpdateNotificationsEnabled && !hasNotifPermission,
+                                                    checked = widgetUpdateNotificationsEnabled,
+                                                    onCheckedChange = { enabled ->
+                                                        if (enabled &&
+                                                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                                            !AppUpdateNotifier.hasNotificationPermission(context)
+                                                        ) {
+                                                            trafficNotifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                                        }
+                                                        onToggleWidgetUpdateNotifications(enabled)
+                                                    },
+                                                    testTag = "setting_widget_notifications_row",
+                                                    switchTestTag = "setting_widget_notifications_switch"
+                                                )
+
+                                                SectionDivider()
+
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Notifications,
+                                                    title = "Catégories de notifications (Infos de l'appli)",
+                                                    currentValue = "Mises à jour • Info trafic • Widgets (silencieux)",
+                                                    supportingNote = "Configurer chaque catégorie dans les paramètres système Android",
+                                                    isSubtitleNeutral = true,
+                                                    onClick = { NotificationChannels.openAppNotificationSettings(context) },
+                                                    testTag = "setting_notification_categories_row"
+                                                )
                                             }
                                         }
-                                        is AppUpdateState.Error -> {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    if (appUpdateState.release != null &&
-                                                        !appUpdateState.release.apkDownloadUrl.isNullOrBlank()
+                                    }
+
+                                    SettingsCategory.APP_UPDATES -> {
+                                        item {
+                                            SettingsSubmenuCard(cardColor = cardColor) {
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Update,
+                                                    title = "Vérification automatique",
+                                                    currentValue = formatValueWithDefault(
+                                                        appUpdateCheckFrequency.label,
+                                                        appUpdateCheckFrequency == AppUpdateCheckFrequency.DAILY_ON_OPEN
+                                                    ),
+                                                    onClick = { activeDialog = ActiveSettingsDialog.UPDATE_CHECK_FREQ },
+                                                    testTag = "setting_update_check_row"
+                                                )
+
+                                                SectionDivider()
+
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Wifi,
+                                                    title = "Réseau autorisé",
+                                                    currentValue = formatValueWithDefault(
+                                                        updateNetworkMode.label,
+                                                        updateNetworkMode == UpdateNetworkMode.WIFI_AND_CELLULAR
+                                                    ),
+                                                    onClick = { activeDialog = ActiveSettingsDialog.UPDATE_NETWORK },
+                                                    testTag = "setting_update_network_row"
+                                                )
+
+                                                SectionDivider()
+
+                                                // Vérifier maintenant (Action)
+                                                Column {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clickable(
+                                                                enabled = appUpdateState !is AppUpdateState.Checking &&
+                                                                    appUpdateState !is AppUpdateState.Downloading
+                                                            ) { onCheckForUpdate() }
+                                                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                                                            .testTag("check_github_update_button"),
+                                                        verticalAlignment = Alignment.CenterVertically
                                                     ) {
-                                                        onDownloadUpdate(true)
-                                                    } else {
-                                                        onCheckForUpdate()
+                                                        SettingsLeadingIcon(
+                                                            icon = Icons.Default.SystemUpdate,
+                                                            tint = primaryColor
+                                                        )
+                                                        Spacer(modifier = Modifier.width(14.dp))
+                                                        Column(modifier = Modifier.weight(1f)) {
+                                                            Text(
+                                                                text = "Vérifier maintenant",
+                                                                style = MaterialTheme.typography.bodyLarge.copy(
+                                                                    fontWeight = FontWeight.SemiBold,
+                                                                    color = contentColor
+                                                                )
+                                                            )
+                                                            Text(
+                                                                text = when (appUpdateState) {
+                                                                    is AppUpdateState.Checking -> "Recherche sur GitHub..."
+                                                                    is AppUpdateState.UpToDate -> "Application à jour (v${appUpdateState.currentVersion})"
+                                                                    is AppUpdateState.UpdateAvailableWaitingWifi -> "Nouvelle version ${appUpdateState.release.tagName} disponible"
+                                                                    is AppUpdateState.Downloading -> "Téléchargement ${appUpdateState.release.tagName} (${appUpdateState.progressPercent}%)"
+                                                                    is AppUpdateState.ReadyToInstall -> "Mise à jour ${appUpdateState.release.tagName} prête à installer"
+                                                                    is AppUpdateState.Error -> appUpdateState.message
+                                                                    AppUpdateState.Idle -> "Rechercher une nouvelle version sur GitHub"
+                                                                },
+                                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                                    color = when (appUpdateState) {
+                                                                        is AppUpdateState.UpToDate -> Color(0xFF2E7D32)
+                                                                        is AppUpdateState.Error -> MaterialTheme.colorScheme.error
+                                                                        is AppUpdateState.UpdateAvailableWaitingWifi,
+                                                                        is AppUpdateState.ReadyToInstall -> primaryColor
+                                                                        else -> mutedColor
+                                                                    }
+                                                                )
+                                                            )
+                                                        }
+
+                                                        if (appUpdateState is AppUpdateState.Checking) {
+                                                            CircularProgressIndicator(
+                                                                modifier = Modifier.size(20.dp),
+                                                                color = primaryColor,
+                                                                strokeWidth = 2.dp
+                                                            )
+                                                        } else {
+                                                            Icon(
+                                                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                                contentDescription = null,
+                                                                tint = mutedColor
+                                                            )
+                                                        }
                                                     }
-                                                },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
-                                                shape = RoundedCornerShape(10.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Refresh,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(16.dp)
+
+                                                    // Description de la release GitHub lorsqu'une mise à jour est présente
+                                                    val updateRelease: GitHubReleaseInfo? = when (appUpdateState) {
+                                                        is AppUpdateState.UpdateAvailableWaitingWifi -> appUpdateState.release
+                                                        is AppUpdateState.Downloading -> appUpdateState.release
+                                                        is AppUpdateState.ReadyToInstall -> appUpdateState.release
+                                                        is AppUpdateState.Error -> appUpdateState.release
+                                                        else -> null
+                                                    }
+                                                    if (updateRelease != null) {
+                                                        val notesText = remember(updateRelease.releaseNotes) {
+                                                            formatReleaseNotesForDisplay(updateRelease.releaseNotes)
+                                                        }
+                                                        val showTitle = updateRelease.releaseName.isNotBlank() &&
+                                                            !updateRelease.releaseName.equals(updateRelease.tagName, ignoreCase = true)
+                                                        if (showTitle || notesText.isNotBlank()) {
+                                                            Surface(
+                                                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                                                                shape = RoundedCornerShape(10.dp),
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(start = 56.dp, end = 16.dp, bottom = 10.dp)
+                                                                    .testTag("settings_update_release_notes")
+                                                            ) {
+                                                                Column(
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .heightIn(max = 140.dp)
+                                                                        .verticalScroll(rememberScrollState())
+                                                                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                                                                ) {
+                                                                    Text(
+                                                                        text = if (showTitle) updateRelease.releaseName else "Notes de version (${updateRelease.tagName})",
+                                                                        style = MaterialTheme.typography.labelMedium.copy(
+                                                                            fontWeight = FontWeight.Bold,
+                                                                            color = contentColor
+                                                                        )
+                                                                    )
+                                                                    if (notesText.isNotBlank()) {
+                                                                        Spacer(modifier = Modifier.height(4.dp))
+                                                                        Text(
+                                                                            text = notesText,
+                                                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                                                color = mutedColor,
+                                                                                lineHeight = 16.sp
+                                                                            )
+                                                                        )
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // Contrôles contextuels de téléchargement / installation
+                                                    when (appUpdateState) {
+                                                        is AppUpdateState.UpdateAvailableWaitingWifi -> {
+                                                            if (!appUpdateState.release.apkDownloadUrl.isNullOrBlank()) {
+                                                                Button(
+                                                                    onClick = { onDownloadUpdate(true) },
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
+                                                                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                                                                    shape = RoundedCornerShape(10.dp)
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.CloudDownload,
+                                                                        contentDescription = null,
+                                                                        modifier = Modifier.size(16.dp)
+                                                                    )
+                                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                                    Text(
+                                                                        text = if (isWifiConnected) "Télécharger (Wi-Fi)" else "Télécharger maintenant",
+                                                                        fontWeight = FontWeight.Bold,
+                                                                        fontSize = 12.5.sp
+                                                                    )
+                                                                }
+                                                            } else {
+                                                                OutlinedButton(
+                                                                    onClick = {
+                                                                        try {
+                                                                            context.startActivity(
+                                                                                Intent(Intent.ACTION_VIEW, Uri.parse(appUpdateState.release.htmlUrl))
+                                                                            )
+                                                                        } catch (_: Exception) {}
+                                                                    },
+                                                                    modifier = Modifier
+                                                                        .fillMaxWidth()
+                                                                        .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
+                                                                    shape = RoundedCornerShape(10.dp)
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                                                        contentDescription = null,
+                                                                        modifier = Modifier.size(16.dp)
+                                                                    )
+                                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                                    Text("Ouvrir la release sur GitHub", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                                                                }
+                                                            }
+                                                        }
+                                                        is AppUpdateState.Downloading -> {
+                                                            LinearProgressIndicator(
+                                                                progress = { (appUpdateState.progressPercent / 100f).coerceIn(0f, 1f) },
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(start = 56.dp, end = 16.dp, bottom = 12.dp)
+                                                                    .height(6.dp)
+                                                                    .clip(RoundedCornerShape(3.dp)),
+                                                                color = primaryColor
+                                                            )
+                                                        }
+                                                        is AppUpdateState.ReadyToInstall -> {
+                                                            Button(
+                                                                onClick = { onInstallUpdate(appUpdateState.apkFilePath) },
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(start = 56.dp, end = 16.dp, bottom = 12.dp)
+                                                                    .testTag("settings_install_apk_button"),
+                                                                colors = ButtonDefaults.buttonColors(
+                                                                    containerColor = Color(0xFF2E7D32),
+                                                                    contentColor = Color.White
+                                                                ),
+                                                                shape = RoundedCornerShape(10.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.InstallMobile,
+                                                                    contentDescription = null,
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                                Spacer(modifier = Modifier.width(6.dp))
+                                                                Text("Installer la mise à jour", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                                                            }
+                                                        }
+                                                        is AppUpdateState.Error -> {
+                                                            OutlinedButton(
+                                                                onClick = {
+                                                                    if (appUpdateState.release != null &&
+                                                                        !appUpdateState.release.apkDownloadUrl.isNullOrBlank()
+                                                                    ) {
+                                                                        onDownloadUpdate(true)
+                                                                    } else {
+                                                                        onCheckForUpdate()
+                                                                    }
+                                                                },
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(start = 56.dp, end = 16.dp, bottom = 12.dp),
+                                                                shape = RoundedCornerShape(10.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Refresh,
+                                                                    contentDescription = null,
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                                Spacer(modifier = Modifier.width(6.dp))
+                                                                Text("Réessayer", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                                                            }
+                                                        }
+                                                        else -> {}
+                                                    }
+                                                }
+
+                                                SectionDivider()
+
+                                                // À propos
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Info,
+                                                    title = "À propos",
+                                                    currentValue = "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                                                    supportingNote = githubRepo.ifBlank { PreferencesManager.DEFAULT_GITHUB_REPO },
+                                                    onClick = { activeDialog = ActiveSettingsDialog.ABOUT },
+                                                    testTag = "setting_about_row"
                                                 )
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text("Réessayer", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                                             }
                                         }
-                                        else -> {}
+                                    }
+
+                                    SettingsCategory.ADVANCED -> {
+                                        item {
+                                            SettingsSubmenuCard(cardColor = cardColor) {
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Backup,
+                                                    title = "Sauvegarde et restauration",
+                                                    currentValue = "Exporter ou importer les favoris et les paramètres au format JSON.",
+                                                    isSubtitleNeutral = true,
+                                                    onClick = {
+                                                        localBackupStatus = null
+                                                        onClearBackupMessage()
+                                                        activeDialog = ActiveSettingsDialog.BACKUP_RESTORE
+                                                    },
+                                                    testTag = "setting_backup_restore_row"
+                                                )
+
+                                                SectionDivider()
+
+                                                SettingsOptionRow(
+                                                    icon = Icons.Default.Code,
+                                                    title = "Configuration réseau / API",
+                                                    currentValue = "Personnaliser les URLs des requêtes (SIRI / GTFS).",
+                                                    isSubtitleNeutral = true,
+                                                    onClick = { activeDialog = ActiveSettingsDialog.NETWORK_API_CONFIG },
+                                                    testTag = "setting_network_api_row"
+                                                )
+                                            }
+                                        }
                                     }
                                 }
-
-                                SectionDivider()
-
-                                // À propos
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Info,
-                                    title = "À propos",
-                                    currentValue = "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
-                                    supportingNote = githubRepo.ifBlank { PreferencesManager.DEFAULT_GITHUB_REPO },
-                                    onClick = { activeDialog = ActiveSettingsDialog.ABOUT },
-                                    testTag = "setting_about_row"
-                                )
-                            }
-                        }
-
-                        // ==========================================
-                        // 4. AVANCÉ
-                        // ==========================================
-                        item {
-                            SettingsSectionGroup(
-                                sectionTitle = "4. Avancé",
-                                primaryColor = primaryColor,
-                                cardColor = cardColor
-                            ) {
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Backup,
-                                    title = "Sauvegarde et restauration",
-                                    currentValue = "Exporter ou importer les favoris et les paramètres au format JSON.",
-                                    isSubtitleNeutral = true,
-                                    onClick = {
-                                        localBackupStatus = null
-                                        onClearBackupMessage()
-                                        activeDialog = ActiveSettingsDialog.BACKUP_RESTORE
-                                    },
-                                    testTag = "setting_backup_restore_row"
-                                )
-
-                                SectionDivider()
-
-                                SettingsOptionRow(
-                                    icon = Icons.Default.Code,
-                                    title = "Configuration réseau / API",
-                                    currentValue = "Personnaliser les URLs des requêtes (SIRI / GTFS).",
-                                    isSubtitleNeutral = true,
-                                    onClick = { activeDialog = ActiveSettingsDialog.NETWORK_API_CONFIG },
-                                    testTag = "setting_network_api_row"
-                                )
                             }
                         }
                     }
-                }
             }
         }
     }
@@ -1433,6 +1642,119 @@ fun SettingsModal(
 }
 
 @Composable
+private fun SettingsCategoryMenuCard(
+    category: SettingsCategory,
+    summary: String,
+    cardColor: Color,
+    primaryColor: Color,
+    badgeText: String? = null,
+    isBadgeWarning: Boolean = false,
+    isSummaryHighlighted: Boolean = false,
+    onClick: () -> Unit
+) {
+    val contentColor = MaterialTheme.colorScheme.onSurface
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .testTag(category.testTag),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = cardColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(primaryColor.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = category.icon,
+                    contentDescription = null,
+                    tint = primaryColor,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = category.title,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = contentColor
+                    )
+                )
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = if (isSummaryHighlighted) primaryColor else mutedColor,
+                        fontWeight = if (isSummaryHighlighted) FontWeight.SemiBold else FontWeight.Normal
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (!badgeText.isNullOrBlank()) {
+                Spacer(modifier = Modifier.width(8.dp))
+                val badgeBg = if (isBadgeWarning) {
+                    Color(0xFFF59E0B).copy(alpha = 0.16f)
+                } else {
+                    primaryColor.copy(alpha = 0.16f)
+                }
+                val badgeFg = if (isBadgeWarning) Color(0xFFD97706) else primaryColor
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = badgeBg
+                ) {
+                    Text(
+                        text = badgeText,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = badgeFg,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = mutedColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsSubmenuCard(
+    cardColor: Color,
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = cardColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            content()
+        }
+    }
+}
+
+@Composable
 private fun SettingsSectionGroup(
     sectionTitle: String,
     primaryColor: Color,
@@ -1449,16 +1771,7 @@ private fun SettingsSectionGroup(
             ),
             modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
         )
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = cardColor),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-        ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                content()
-            }
-        }
+        SettingsSubmenuCard(cardColor = cardColor, content = content)
     }
 }
 

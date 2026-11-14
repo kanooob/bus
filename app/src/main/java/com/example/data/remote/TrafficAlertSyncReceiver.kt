@@ -22,6 +22,7 @@ class TrafficAlertSyncReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != ACTION_CHECK_TRAFFIC_ALERTS) return
+        NotificationChannels.ensureAllChannels(context)
 
         val prefs = PreferencesManager(context)
         val freq = prefs.getTrafficRefreshFrequency()

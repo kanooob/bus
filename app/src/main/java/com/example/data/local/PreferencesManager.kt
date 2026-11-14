@@ -47,6 +47,7 @@ class PreferencesManager(context: Context) {
         private const val KEY_GTFS_SYNC_FREQ = "gtfs_sync_frequency"
         private const val KEY_TRAFFIC_REFRESH_FREQ = "traffic_refresh_frequency"
         private const val KEY_TRAFFIC_NOTIFICATIONS_ENABLED = "traffic_notifications_enabled"
+        private const val KEY_WIDGET_UPDATE_NOTIFICATIONS_ENABLED = "widget_update_notifications_enabled"
         private const val KEY_LAST_TRAFFIC_REFRESH_TIME = "last_traffic_refresh_timestamp"
         private const val KEY_KNOWN_TRAFFIC_ALERT_KEYS = "known_traffic_alert_keys"
         private const val KEY_TRAFFIC_BASELINE_INITIALIZED = "traffic_baseline_initialized"
@@ -150,6 +151,13 @@ class PreferencesManager(context: Context) {
 
     fun setTrafficNotificationsEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_TRAFFIC_NOTIFICATIONS_ENABLED, enabled).apply()
+    }
+
+    fun isWidgetUpdateNotificationsEnabled(): Boolean =
+        prefs.getBoolean(KEY_WIDGET_UPDATE_NOTIFICATIONS_ENABLED, true)
+
+    fun setWidgetUpdateNotificationsEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WIDGET_UPDATE_NOTIFICATIONS_ENABLED, enabled).apply()
     }
 
     fun getLastTrafficRefreshTimestamp(): Long =
@@ -329,6 +337,7 @@ class PreferencesManager(context: Context) {
             put("gtfsSyncFrequency", getGtfsSyncFrequency().name)
             put("trafficRefreshFrequency", getTrafficRefreshFrequency().name)
             put("trafficNotificationsEnabled", isTrafficNotificationsEnabled())
+            put("widgetUpdateNotificationsEnabled", isWidgetUpdateNotificationsEnabled())
             put("appUpdateCheckFrequency", getAppUpdateCheckFrequency().name)
             put("updateNetworkMode", getUpdateNetworkMode().name)
             put("webMonitoringUrl", getWebMonitoringUrl())
@@ -398,6 +407,9 @@ class PreferencesManager(context: Context) {
                 }
                 if (settingsObj.has("trafficNotificationsEnabled")) {
                     setTrafficNotificationsEnabled(settingsObj.optBoolean("trafficNotificationsEnabled", false))
+                }
+                if (settingsObj.has("widgetUpdateNotificationsEnabled")) {
+                    setWidgetUpdateNotificationsEnabled(settingsObj.optBoolean("widgetUpdateNotificationsEnabled", true))
                 }
                 settingsObj.optString("appUpdateCheckFrequency").takeIf { it.isNotBlank() }?.let { raw ->
                     enumValues<AppUpdateCheckFrequency>().firstOrNull { it.name == raw }?.let { saveAppUpdateCheckFrequency(it) }

@@ -14,6 +14,7 @@ import com.example.data.local.PreferencesManager
 import com.example.data.model.PrimaryColorMode
 import com.example.data.model.ThemeMode
 import com.example.data.remote.AppUpdateNotifier
+import com.example.data.remote.NotificationChannels
 import com.example.data.remote.TrafficAlertNotifier
 import com.example.data.repository.IdelisRepository
 import com.example.ui.screens.TransitBoardScreen
@@ -33,6 +34,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        NotificationChannels.ensureAllChannels(applicationContext)
         enableEdgeToEdge()
         handleIntentExtras(intent)
         setContent {
@@ -59,8 +61,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Rafraîchit les widgets à l'ouverture / reprise de l'application
-        IdelisAppWidgetProvider.refreshAllWidgets(applicationContext)
+        // Rafraîchit les widgets à l'ouverture / reprise de l'application sans notification
+        IdelisAppWidgetProvider.refreshAllWidgets(applicationContext, postSilentNotification = false)
     }
 
     override fun onNewIntent(intent: Intent) {
