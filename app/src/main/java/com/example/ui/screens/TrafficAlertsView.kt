@@ -37,9 +37,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.example.data.model.TrafficAlert
+import com.example.ui.components.IdelisLinePictoImage
 import com.example.ui.theme.IdelisGold
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
@@ -128,22 +127,11 @@ fun TrafficAlertCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val iconLoader = androidx.compose.runtime.remember(context) {
-                        com.example.ui.components.IdelisLineIconCache.getImageLoader(context)
-                    }
                     alert.affectedLinePictos.forEach { pictoUrl ->
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(pictoUrl)
-                                .transformations(com.example.ui.components.IdelisLineIconTransformation)
-                                .crossfade(false)
-                                .build(),
-                            imageLoader = iconLoader,
+                        IdelisLinePictoImage(
+                            iconUrl = pictoUrl,
                             contentDescription = "Picto ligne impactée",
-                            modifier = Modifier
-                                .size(28.dp)
-                                .clip(RoundedCornerShape(percent = 30)),
-                            contentScale = ContentScale.Crop
+                            size = 28.dp
                         )
                     }
                     if (alert.affectedLinePictos.isEmpty()) {

@@ -1570,4 +1570,190 @@ class ExampleRobolectricTest {
             com.example.data.repository.IdelisRepository.globalServingsByStopName = prevServings
         }
     }
+
+    @Test
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    fun `line icon url is downloaded at most once across concurrent directions preloads and cold restart`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.ui.components.IdelisLineIconCache.clearForTesting(context)
+
+        val rawPng = android.graphics.Bitmap.createBitmap(128, 128, android.graphics.Bitmap.Config.ARGB_8888).apply {
+            eraseColor(android.graphics.Color.rgb(241, 135, 0))
+        }
+        val pngBytes = java.io.ByteArrayOutputStream().use { baos ->
+            rawPng.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, baos)
+            baos.toByteArray()
+        }
+        rawPng.recycle()
+
+        val downloadCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val iconUrl = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-icones-des-lignes/files/unique_febus_png"
+
+        val countingClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                downloadCount.incrementAndGet()
+                Thread.sleep(30)
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, pngBytes))
+                    .build()
+            }
+            .build()
+
+        com.example.ui.components.IdelisLineIconCache.setHttpClientForTesting(countingClient)
+        try {
+            // 1. Deux directions d'une même ligne + préchargement avec alias en doublon demandent la même URL en parallèle
+            val (img1, img2, img3) = kotlinx.coroutines.coroutineScope {
+                com.example.ui.components.IdelisLineIconCache.preloadIcons(context, listOf(iconUrl, " $iconUrl "))
+                val d1 = async { com.example.ui.components.IdelisLineIconCache.getOrLoadIcon(context, iconUrl) }
+                val d2 = async { com.example.ui.components.IdelisLineIconCache.getOrLoadIcon(context, iconUrl) }
+                val d3 = async { com.example.ui.components.IdelisLineIconCache.getOrLoadIcon(context, " $iconUrl ") }
+                Triple(d1.await(), d2.await(), d3.await())
+            }
+
+            assertTrue(img1 != null)
+            assertTrue(img2 != null)
+            assertTrue(img3 != null)
+            assertTrue(com.example.ui.components.IdelisLineIconCache.getCachedIconSync(iconUrl) != null)
+            assertEquals("Une même icône ne doit être téléchargée qu'une seule fois malgré les 2 directions", 1, downloadCount.get())
+
+            // 2. Simuler un redémarrage à froid (RAM vidée, fichier PNG conservé sur disque)
+            com.example.ui.components.IdelisLineIconCache.clearForTesting(context = null)
+            val fromDisk = com.example.ui.components.IdelisLineIconCache.getOrLoadIcon(context, iconUrl)
+            assertTrue(fromDisk != null)
+            assertEquals("Le redémarrage à froid doit relire le PNG sur disque sans re-télécharger", 1, downloadCount.get())
+        } finally {
+            com.example.ui.components.IdelisLineIconCache.setHttpClientForTesting(null)
+            com.example.ui.components.IdelisLineIconCache.clearForTesting(context)
+        }
+    }
+
+    @Test
+    fun `switching stops skips siri fallback on empty http 200 and shows instant cache when revisited`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+        prefs.setUsageStatsEnabled(false)
+        prefs.saveAppUpdateCheckFrequency(com.example.data.model.AppUpdateCheckFrequency.NEVER)
+        prefs.saveTrafficRefreshFrequency(com.example.data.model.TrafficRefreshFrequency.NEVER)
+
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        db.stopDao().clearAllStops()
+        db.stopDao().insertStops(listOf(com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP))
+
+        val cacheManager = com.example.data.local.OpenDataCacheManager(context)
+        cacheManager.clearAll()
+
+        val prevIcons = com.example.data.repository.IdelisRepository.globalLineIconsMap
+        val prevRoutes = com.example.data.repository.IdelisRepository.globalOfficialRoutesMap
+        com.example.data.repository.IdelisRepository.globalLineIconsMap = mapOf("F" to "https://data.idelis.fr/files/f.png", "T1" to "https://data.idelis.fr/files/t1.png")
+        com.example.data.repository.IdelisRepository.globalLineIconsUpdatedAtMs = System.currentTimeMillis()
+        com.example.data.repository.IdelisRepository.globalOfficialRoutesMap = emptyMap()
+
+        try {
+            val siriCalls = java.util.concurrent.atomic.AtomicInteger(0)
+            val mockWebClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val body = chain.request().body as? okhttp3.FormBody
+                    val pole = (0 until (body?.size ?: 0)).firstOrNull { body?.name(it) == "requete_val[pole]" }
+                        ?.let { body?.value(it) } ?: ""
+                    val html = when {
+                        pole.contains("EmptyStop", ignoreCase = true) -> """<div class="alert">Aucun passage</div>"""
+                        pole.contains("Gare", ignoreCase = true) -> """
+                            <div class="ligne-group">
+                                <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/T1.png" alt="Ligne T1" /></div></div>
+                                <div class="row"><div class="col-12"><span class="text-black-50">Direction: PAU Cité Multimédia - Arrêt: Gare</span></div></div>
+                                <div class="row"><div class="col-3 pr-1"><div class="p-1 text-center border rounded text-white bg-primary">6 min</div></div></div>
+                            </div>
+                        """.trimIndent()
+                        else -> """
+                            <div class="ligne-group">
+                                <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" /></div></div>
+                                <div class="row"><div class="col-12"><span class="text-black-50">Direction: PAU Hôpital - Arrêt: Bosquet</span></div></div>
+                                <div class="row"><div class="col-3 pr-1"><div class="p-1 text-center border rounded text-white bg-primary">2 min</div></div></div>
+                            </div>
+                        """.trimIndent()
+                    }
+                    okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(okhttp3.ResponseBody.create(null, html))
+                        .build()
+                }
+                .build()
+
+            val countingSiriClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    siriCalls.incrementAndGet()
+                    okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(503)
+                        .message("Mock")
+                        .body(okhttp3.ResponseBody.create(null, ""))
+                        .build()
+                }
+                .build()
+            val mockSiriService = com.example.data.remote.IdelisSiriService(okHttpClient = countingSiriClient)
+
+            val repo = com.example.data.repository.IdelisRepository(
+                database = db,
+                appContext = context,
+                preferencesManager = prefs,
+                siriService = mockSiriService,
+                webScraperService = com.example.data.remote.IdelisWebScraperService(client = mockWebClient)
+            )
+
+            // 1. Un arrêt vide en HTTP 200 ne doit JAMAIS appeler SIRI SOAP (pas d'attente de 5s)
+            val emptyRes = repo.getDeparturesForStop(
+                stopId = "WEB_EmptyStop",
+                stopOverride = com.example.data.model.GtfsStop(
+                    stopId = "WEB_EmptyStop",
+                    stopName = "EmptyStop",
+                    parentStation = "EmptyStop"
+                )
+            )
+            assertTrue(emptyRes.departures.isEmpty())
+            assertEquals("SIRI ne doit pas être interrogé quand stop_monitoring HTTP 200 a déjà répondu", 0, siriCalls.get())
+
+            // 2. ViewModel : sélection d'un nouvel arrêt -> clear immédiat + isLoading = true, puis retour -> cache instantané
+            val vm = com.example.ui.viewmodel.TransitBoardViewModel(repo, prefs)
+            val shadowMainLooper = org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            val d1 = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < d1 && vm.uiState.value.departures.isEmpty()) {
+                shadowMainLooper.idleFor(java.time.Duration.ofMillis(50))
+                Thread.sleep(15L)
+            }
+            assertEquals("F", vm.uiState.value.departures.first().lineRef)
+
+            // Changer pour Gare de Pau (non encore visité) : doit passer immédiatement en chargement et effacer l'ancien arrêt
+            val gareWebStop = com.example.data.model.IdelisWebStop(pole = "Gare de Pau", name = "Gare de Pau")
+            vm.selectWebStop(gareWebStop)
+            assertEquals("Gare de Pau", vm.uiState.value.selectedStop?.stopName)
+            assertTrue("Les anciens bus de Bosquet ne doivent pas rester figés pendant le chargement du nouvel arrêt", vm.uiState.value.departures.isEmpty())
+            assertTrue("isLoading doit être actif immédiatement au changement vers un arrêt non caché", vm.uiState.value.isLoading)
+
+            val d2 = System.currentTimeMillis() + 3_000L
+            while (System.currentTimeMillis() < d2 && vm.uiState.value.departures.none { it.lineRef == "T1" }) {
+                shadowMainLooper.idleFor(java.time.Duration.ofMillis(50))
+                Thread.sleep(15L)
+            }
+            assertEquals("T1", vm.uiState.value.departures.first().lineRef)
+
+            // Revenir sur Pôle Bosquet déjà visité -> affichage instantané sans repasser par l'écran vide
+            vm.selectStop(com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP)
+            assertEquals("F", vm.uiState.value.departures.firstOrNull()?.lineRef)
+            assertFalse("Un arrêt déjà visité récemment doit s'afficher instantanément sans écran de chargement bloquant", vm.uiState.value.isLoading)
+        } finally {
+            cacheManager.clearAll()
+            com.example.data.repository.IdelisRepository.globalLineIconsMap = prevIcons
+            com.example.data.repository.IdelisRepository.globalLineIconsUpdatedAtMs = 0L
+            com.example.data.repository.IdelisRepository.globalOfficialRoutesMap = prevRoutes
+        }
+    }
 }

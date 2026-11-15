@@ -24,7 +24,12 @@ import java.util.concurrent.TimeUnit
  */
 class IdelisSiriService(
     private val xmlParser: SiriXmlParser = SiriXmlParser(),
-    var customEndpoint: String? = null
+    var customEndpoint: String? = null,
+    private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .build()
 ) {
 
     val effectiveEndpoint: String
@@ -36,12 +41,6 @@ class IdelisSiriService(
         const val DEFAULT_REQUESTOR_REF = "IDELIS_MOBILE_CLIENT"
         private const val TIMEOUT_SECONDS = 5L
     }
-
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .build()
 
     fun buildStopMonitoringEnvelope(stopId: String, requestorRef: String = DEFAULT_REQUESTOR_REF): String {
         val isoFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.FRANCE).apply {

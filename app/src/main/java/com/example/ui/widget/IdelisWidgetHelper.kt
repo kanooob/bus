@@ -176,6 +176,26 @@ object IdelisWidgetHelper {
                             return@synchronized fromDisk
                         }
                     }
+                    val sharedAppFile = com.example.ui.components.IdelisLineIconCache.urlCacheFile(context, url)
+                    if (sharedAppFile.exists() && sharedAppFile.length() > 0L) {
+                        val fromAppDisk = BitmapFactory.decodeFile(sharedAppFile.absolutePath)
+                        if (fromAppDisk != null) {
+                            val scaled = if (fromAppDisk.width == 96 && fromAppDisk.height == 96) {
+                                fromAppDisk
+                            } else {
+                                Bitmap.createScaledBitmap(fromAppDisk, 96, 96, true).also {
+                                    fromAppDisk.recycle()
+                                }
+                            }
+                            iconBitmapCache[url] = scaled
+                            try {
+                                FileOutputStream(diskFile).use { out ->
+                                    scaled.compress(Bitmap.CompressFormat.PNG, 100, out)
+                                }
+                            } catch (_: Exception) {}
+                            return@synchronized scaled
+                        }
+                    }
                 } catch (_: Exception) {}
             }
 

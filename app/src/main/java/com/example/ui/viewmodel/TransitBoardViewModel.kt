@@ -27,6 +27,7 @@ import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.IdelisSiriService
 import com.example.data.remote.TrafficAlertNotifier
 import com.example.data.remote.TrafficAlertSyncReceiver
+import com.example.data.repository.DeparturesResult
 import com.example.data.repository.IdelisRepository
 import com.example.ui.widget.IdelisAppWidgetProvider
 import kotlinx.coroutines.Job
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 enum class AppTab(val title: String) {
     DEPARTURES("Départs"),
@@ -191,6 +193,12 @@ class TransitBoardViewModel(
     @Volatile
     private var isTrafficRefreshInProgress: Boolean = false
 
+    private val stopUiCache = ConcurrentHashMap<String, Pair<Long, DeparturesResult>>()
+
+    companion object {
+        private const val STOP_UI_CACHE_TTL_MS = 90_000L
+    }
+
     init {
         // 1. PRIORITÉ ABSOLUE : hydrater les caches disque locaux et afficher immédiatement les prochains bus
         viewModelScope.launch {
@@ -258,10 +266,19 @@ class TransitBoardViewModel(
                 } else {
                     reenriched
                 }
+                val reenrichedNotServed = repository.reenrichNotServedEntriesWithCurrentCaches(current.notServedEntries)
+                current.selectedStop?.stopId?.let { stopId ->
+                    stopUiCache[stopId]?.let { (_, cachedRes) ->
+                        stopUiCache[stopId] = System.currentTimeMillis() to cachedRes.copy(
+                            departures = reenriched,
+                            notServedEntries = reenrichedNotServed
+                        )
+                    }
+                }
                 current.copy(
                     departures = reenriched,
                     filteredDepartures = reenrichedFiltered,
-                    notServedEntries = repository.reenrichNotServedEntriesWithCurrentCaches(current.notServedEntries),
+                    notServedEntries = reenrichedNotServed,
                     isDownloadingData = false,
                     downloadStatus = result.getOrNull() ?: "Données locales actives",
                     activePeriod = repository.getCurrentPeriod(),
@@ -680,7 +697,47 @@ class TransitBoardViewModel(
     fun selectStop(stop: GtfsStop) {
         preferencesManager?.saveLastSelectedStopId(stop.stopId)
         val interval = _uiState.value.inAppRefreshFrequency.intervalSeconds
-        _uiState.update { it.copy(selectedStop = stop, secondsUntilRefresh = interval) }
+        val cachedPair = stopUiCache[stop.stopId]?.takeIf { (ts, _) ->
+            System.currentTimeMillis() - ts < STOP_UI_CACHE_TTL_MS
+        }
+        val cachedResult = cachedPair?.second
+
+        _uiState.update { current ->
+            if (cachedResult != null) {
+                val reenriched = repository.reenrichDeparturesWithCurrentCaches(cachedResult.departures)
+                val reenrichedNotServed = repository.reenrichNotServedEntriesWithCurrentCaches(cachedResult.notServedEntries)
+                current.copy(
+                    selectedStop = stop,
+                    departures = reenriched,
+                    filteredDepartures = reenriched,
+                    availableLines = reenriched.map { it.lineRef }.distinct(),
+                    selectedLineFilter = null,
+                    isLoading = false,
+                    isManualRefreshing = false,
+                    isOfflineFallback = cachedResult.isOfflineFallback,
+                    statusMessage = cachedResult.statusMessage,
+                    isStopNotServed = cachedResult.isStopNotServed,
+                    notServedMessage = cachedResult.notServedMessage,
+                    notServedEntries = reenrichedNotServed,
+                    secondsUntilRefresh = interval
+                )
+            } else {
+                current.copy(
+                    selectedStop = stop,
+                    departures = emptyList(),
+                    filteredDepartures = emptyList(),
+                    availableLines = emptyList(),
+                    selectedLineFilter = null,
+                    isLoading = true,
+                    isManualRefreshing = false,
+                    isStopNotServed = false,
+                    notServedMessage = null,
+                    notServedEntries = emptyList(),
+                    statusMessage = "Chargement des prochains passages...",
+                    secondsUntilRefresh = interval
+                )
+            }
+        }
         viewModelScope.launch {
             repository.ensureStopSaved(stop)
         }
@@ -741,10 +798,8 @@ class TransitBoardViewModel(
      * tout en conservant le texte recherché ET les résultats de recherche.
      */
     fun selectWebStop(webStop: com.example.data.model.IdelisWebStop) {
-        viewModelScope.launch {
-            val stop = repository.saveWebStop(webStop)
-            selectStop(stop)
-        }
+        val stop = IdelisRepository.buildWebStop(webStop)
+        selectStop(stop)
     }
 
     fun clearWebSuggestions() {
@@ -914,26 +969,19 @@ class TransitBoardViewModel(
      * pour voir immédiatement la page des prochains bus qui y arrivent.
      */
     fun selectStopFromRouteDetail(stopName: String) {
-        viewModelScope.launch {
-            val canonical = com.example.data.repository.IdelisRepository.getCanonicalStopName(stopName)
-            var match = _uiState.value.allStops.firstOrNull {
-                it.stopName.equals(stopName, ignoreCase = true) ||
-                        it.stopName.equals(canonical, ignoreCase = true) ||
-                        com.example.data.repository.IdelisRepository.getCanonicalStopName(it.stopName).equals(canonical, ignoreCase = true)
-            }
-            if (match == null) {
-                // Enregistrer dynamiquement l'arrêt cliqué pour ouvrir ses prochains bus
-                val newStop = repository.saveWebStop(
-                    com.example.data.model.IdelisWebStop(
-                        pole = canonical,
-                        name = stopName
-                    )
-                )
-                match = newStop
-            }
-            selectStop(match)
-            clearSelectedRouteDetail()
-        }
+        val canonical = IdelisRepository.getCanonicalStopName(stopName)
+        val match = _uiState.value.allStops.firstOrNull {
+            it.stopName.equals(stopName, ignoreCase = true) ||
+                it.stopName.equals(canonical, ignoreCase = true) ||
+                IdelisRepository.getCanonicalStopName(it.stopName).equals(canonical, ignoreCase = true)
+        } ?: IdelisRepository.buildWebStop(
+            com.example.data.model.IdelisWebStop(
+                pole = canonical,
+                name = stopName
+            )
+        )
+        clearSelectedRouteDetail()
+        selectStop(match)
     }
 
 
@@ -970,8 +1018,11 @@ class TransitBoardViewModel(
             )
 
             if (_uiState.value.selectedStop?.stopId != stop.stopId) {
-                _uiState.update { it.copy(isLoading = false, isManualRefreshing = false) }
                 return@launch
+            }
+
+            if (!result.isOfflineFallback) {
+                stopUiCache[stop.stopId] = System.currentTimeMillis() to result
             }
 
             val lines = result.departures.map { it.lineRef }.distinct()

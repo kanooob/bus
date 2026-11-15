@@ -60,8 +60,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.example.R
 import com.example.data.model.IdelisPeriod
 import com.example.data.model.TrafficAlert
@@ -364,20 +362,11 @@ fun TrafficInfoModal(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        val iconLoader = remember(context) { IdelisLineIconCache.getImageLoader(context) }
                                         alert.affectedLinePictos.forEach { pictoUrl ->
-                                            AsyncImage(
-                                                model = ImageRequest.Builder(context)
-                                                    .data(pictoUrl)
-                                                    .transformations(IdelisLineIconTransformation)
-                                                    .crossfade(false)
-                                                    .build(),
-                                                imageLoader = iconLoader,
+                                            IdelisLinePictoImage(
+                                                iconUrl = pictoUrl,
                                                 contentDescription = "Picto ligne impactée",
-                                                modifier = Modifier
-                                                    .size(28.dp)
-                                                    .clip(RoundedCornerShape(percent = 30)),
-                                                contentScale = ContentScale.Crop
+                                                size = 28.dp
                                             )
                                         }
                                         if (alert.affectedLinePictos.isEmpty()) {

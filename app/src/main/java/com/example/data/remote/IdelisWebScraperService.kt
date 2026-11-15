@@ -10,6 +10,7 @@ import com.example.data.model.IdelisWebTrafficAlert
 import com.example.data.model.NotServedEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,8 +31,9 @@ import java.util.concurrent.TimeUnit
  */
 class IdelisWebScraperService(
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(5, 2, TimeUnit.MINUTES))
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
         .build(),
     var customBaseUrl: String? = null,
     var customQueryParam: String? = null

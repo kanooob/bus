@@ -128,9 +128,8 @@ class IdelisRepository(
         lat: Double = 0.0,
         lon: Double = 0.0
     ): GtfsStop = withContext(Dispatchers.IO) {
-        val cleanPole = webStop.pole.trim()
-        val stopId = "WEB_" + cleanPole.replace(Regex("[^a-zA-Z0-9]"), "_")
-        val existing = database.stopDao().getStopById(stopId)
+        val target = buildWebStop(webStop, lat, lon)
+        val existing = database.stopDao().getStopById(target.stopId)
         if (existing != null) {
             if ((existing.stopLat == 0.0 || existing.stopLon == 0.0) && lat != 0.0 && lon != 0.0) {
                 val updated = existing.copy(stopLat = lat, stopLon = lon)
@@ -140,16 +139,8 @@ class IdelisRepository(
             return@withContext existing
         }
 
-        val newStop = GtfsStop(
-            stopId = stopId,
-            stopName = webStop.name.trim(),
-            stopDesc = "Arrêt réseau idelis.fr (Pôle : $cleanPole)",
-            parentStation = cleanPole,
-            stopLat = lat,
-            stopLon = lon
-        )
-        database.stopDao().insertStops(listOf(newStop))
-        newStop
+        database.stopDao().insertStops(listOf(target))
+        target
     }
 
     /**
@@ -361,6 +352,50 @@ class IdelisRepository(
             parentStation = "Bosquet"
         )
 
+        private val CANONICAL_QUAI_NUM_REGEX = Regex("""(?i)\s+quai[s]?\s+[a-z0-9]+""")
+        private val CANONICAL_QUAI_REGEX = Regex("""(?i)\s+quai[s]?""")
+        private val CANONICAL_CITY_PREFIX_REGEX = Regex(
+            """^(PAU|LESCAR|LONS|BILLERE|BILLÈRE|BIZANOS|JURANÇON|JURANCON|SERRES-CASTET)\s+""",
+            RegexOption.IGNORE_CASE
+        )
+        private val DIR_CITY_PREFIX_REGEX = Regex(
+            """^(pau|lescar|lons|billere|billère|bizanos|jurançon|jurancon|serres-castet|artigueloutan|mazeres|mazères)\s+""",
+            RegexOption.IGNORE_CASE
+        )
+        private val DIR_QUAI_NUM_REGEX = Regex("""\s+quai[s]?\s+[a-z0-9]+""", RegexOption.IGNORE_CASE)
+        private val DIR_QUAI_REGEX = Regex("""\s+quai[s]?""", RegexOption.IGNORE_CASE)
+        private val DIR_NON_ALNUM_REGEX = Regex("""[^a-z0-9]""")
+        private val STOP_ID_SANITIZE_REGEX = Regex("""[^a-zA-Z0-9]""")
+        private val LINES_EXTRACT_REGEX = Regex("""Lignes?\s+([A-Za-z0-9,\s]+)""", RegexOption.IGNORE_CASE)
+        private val SIMPLE_TIME_REGEX = Regex("""(\d{2}:\d{2})""")
+
+        fun buildWebStop(
+            webStop: IdelisWebStop,
+            lat: Double = 0.0,
+            lon: Double = 0.0
+        ): GtfsStop {
+            val cleanPole = webStop.pole.trim()
+            val stopId = "WEB_" + cleanPole.replace(STOP_ID_SANITIZE_REGEX, "_")
+            return GtfsStop(
+                stopId = stopId,
+                stopName = webStop.name.trim(),
+                stopDesc = "Arrêt réseau idelis.fr (Pôle : $cleanPole)",
+                parentStation = cleanPole,
+                stopLat = lat,
+                stopLon = lon
+            )
+        }
+
+        private fun parseHourMinuteFast(timeStr: String): Pair<Int, Int>? {
+            val firstColon = timeStr.indexOf(':')
+            if (firstColon <= 0) return null
+            val h = timeStr.substring(0, firstColon).trim().toIntOrNull() ?: return null
+            val secondColon = timeStr.indexOf(':', firstColon + 1)
+            val minEnd = if (secondColon > firstColon) secondColon else timeStr.length
+            val m = timeStr.substring(firstColon + 1, minEnd).trim().toIntOrNull() ?: return null
+            return h to m
+        }
+
         /**
          * Regroupe les quais d'un même pôle d'arrêt sous un nom unique et canonique.
          * Exemple : 'PAU Bosquet Quai C', 'PAU Bosquet Quai H', 'Pl. d'Espagne - Bosquet' -> 'Pôle Bosquet'
@@ -392,10 +427,10 @@ class IdelisRepository(
             }
 
             // 2. Suppression générique des mentions de quais : 'Quai A', 'Quais B', 'Quai 1', etc.
-            var cleaned = trimmed
-                .replace(Regex("""(?i)\s+quai[s]?\s+[a-z0-9]+"""), "")
-                .replace(Regex("""(?i)\s+quai[s]?"""), "")
-                .replace(Regex("""^(PAU|LESCAR|LONS|BILLERE|BILLÈRE|BIZANOS|JURANÇON|JURANCON|SERRES-CASTET)\s+""", RegexOption.IGNORE_CASE), "")
+            val cleaned = trimmed
+                .replace(CANONICAL_QUAI_NUM_REGEX, "")
+                .replace(CANONICAL_QUAI_REGEX, "")
+                .replace(CANONICAL_CITY_PREFIX_REGEX, "")
                 .trim()
 
             return if (cleaned.isNotBlank()) cleaned else trimmed
@@ -403,15 +438,15 @@ class IdelisRepository(
 
         fun normalizeDirection(raw: String): String {
             return raw.lowercase(Locale.ROOT)
-                .replace(Regex("""^(pau|lescar|lons|billere|billère|bizanos|jurançon|jurancon|serres-castet|artigueloutan|mazeres|mazères)\s+""", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("""\s+quai[s]?\s+[a-z0-9]+""", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("""\s+quai[s]?""", RegexOption.IGNORE_CASE), "")
+                .replace(DIR_CITY_PREFIX_REGEX, "")
+                .replace(DIR_QUAI_NUM_REGEX, "")
+                .replace(DIR_QUAI_REGEX, "")
                 .replace("f.mitterrand", "mitterrand")
                 .replace("f. mitterrand", "mitterrand")
                 .replace("françois mitterrand", "mitterrand")
                 .replace("francois mitterrand", "mitterrand")
                 .replace("ô", "o").replace("é", "e").replace("è", "e").replace("ê", "e").replace("ç", "c").replace("à", "a")
-                .replace(Regex("""[^a-z0-9]"""), "")
+                .replace(DIR_NON_ALNUM_REGEX, "")
                 .trim()
         }
         // Cache global partagé entre toutes les instances du repository et le widget
@@ -532,7 +567,7 @@ class IdelisRepository(
                     if (entry.value.isNotEmpty()) {
                         globalLineIconsMap = entry.value
                         globalLineIconsUpdatedAtMs = entry.savedAtMs
-                        appContext?.let { IdelisLineIconCache.preloadIcons(it, entry.value.values) }
+                        appContext?.let { IdelisLineIconCache.preloadIcons(it, entry.value.values.distinct()) }
                     }
                 }
             }
@@ -607,7 +642,7 @@ class IdelisRepository(
                     if (entry.value.isNotEmpty()) {
                         globalLineIconsMap = entry.value
                         globalLineIconsUpdatedAtMs = entry.savedAtMs
-                        appContext?.let { IdelisLineIconCache.preloadIcons(it, entry.value.values) }
+                        appContext?.let { IdelisLineIconCache.preloadIcons(it, entry.value.values.distinct()) }
                         if (entry.isFresh(METADATA_CACHE_TTL_MS, currentNow)) {
                             return@withLock
                         }
@@ -624,7 +659,7 @@ class IdelisRepository(
                         globalLineIconsUpdatedAtMs = savedAt
                         lastIconsAttemptFailedAtMs = 0L
                         cacheManager?.saveLineIcons(icons, savedAt)
-                        appContext?.let { IdelisLineIconCache.preloadIcons(it, icons.values) }
+                        appContext?.let { IdelisLineIconCache.preloadIcons(it, icons.values.distinct()) }
                         return@withLock
                     }
                 }
@@ -966,7 +1001,7 @@ class IdelisRepository(
         poleName: String,
         requestorRef: String
     ): DeparturesResult = coroutineScope {
-        // 1. Lancer IMMÉDIATEMENT la requête prochains bus + l'hydratation disque locale en parallèle
+        // 1. Lancer IMMÉDIATEMENT la requête prochains bus + l'hydratation disque locale si nécessaire
         val webDeferred = async {
             try {
                 webScraperService.getStopMonitoring(poleName)
@@ -974,25 +1009,39 @@ class IdelisRepository(
                 Result.failure(e)
             }
         }
-        val metaHydrateDeferred = async { hydrateMetadataFromDiskIfNeeded() }
-        val heavyHydrateDeferred = async { hydrateScheduleAndStopsFromDiskIfNeeded() }
-        val iconsDeferred = async {
-            metaHydrateDeferred.await()
-            if (globalLineIconsMap.isEmpty()) {
-                ensureLineIconsLoaded()
+        val needMetaHydrate = globalLineIconsMap.isEmpty() || globalOfficialRoutesMap.isEmpty()
+        val metaHydrateDeferred = if (needMetaHydrate) {
+            async { hydrateMetadataFromDiskIfNeeded() }
+        } else null
+
+        val needHeavyHydrate = GtfsScheduleIndex.current == null || globalDownloadedStopsCache.isEmpty()
+        val heavyHydrateDeferred = if (needHeavyHydrate) {
+            repoIoScope.async { hydrateScheduleAndStopsFromDiskIfNeeded() }
+        } else null
+
+        val iconsDeferred = if (globalLineIconsMap.isEmpty()) {
+            async {
+                metaHydrateDeferred?.await()
+                if (globalLineIconsMap.isEmpty()) {
+                    ensureLineIconsLoaded()
+                }
             }
-        }
+        } else null
 
         val webResult = webDeferred.await()
-        metaHydrateDeferred.await()
+        metaHydrateDeferred?.await()
 
-        // Attendre brièvement les icônes si elles n'étaient pas encore en cache, sans jamais bloquer les horaires
-        withTimeoutOrNull(350L) {
-            iconsDeferred.await()
+        // Si le dictionnaire d'icônes officielles n'était pas encore en RAM, laisser une courte fenêtre
+        // parallèle sans jamais retarder longtemps l'affichage des prochains passages
+        if (globalLineIconsMap.isEmpty() && iconsDeferred != null) {
+            withTimeoutOrNull(450L) {
+                iconsDeferred.await()
+            }
         }
-        // Si le GTFS/arrêts disque est déjà prêt ou rapide, l'inclure pour le calcul précis du retard
-        withTimeoutOrNull(450L) {
-            heavyHydrateDeferred.await()
+        if (GtfsScheduleIndex.current == null && heavyHydrateDeferred != null) {
+            withTimeoutOrNull(60L) {
+                heavyHydrateDeferred.await()
+            }
         }
 
         val theoreticalDepartures = buildTheoreticalDeparturesForStop(stop, stopId)
@@ -1016,8 +1065,8 @@ class IdelisRepository(
                     emptyList()
                 }
 
-                // Précharger dans Coil uniquement les icônes des lignes affichées pour un rendu instantané
-                val iconUrlsToWarm = comparisons.mapNotNull { it.iconUrl }
+                // Précharger de façon unique les icônes distinctes affichées
+                val iconUrlsToWarm = comparisons.mapNotNull { it.iconUrl }.distinct()
                 if (iconUrlsToWarm.isNotEmpty()) {
                     appContext?.let { IdelisLineIconCache.preloadIcons(it, iconUrlsToWarm) }
                 }
@@ -1045,12 +1094,21 @@ class IdelisRepository(
                         statusMessage = "Direct idelis.fr temps réel • ${comparisons.size} bus en approche"
                     )
                 }
+
+                // HTTP 200 idelis.fr déjà reçu avec 0 passage en cours : inutile d'attendre 5s sur SIRI SOAP
+                return@coroutineScope DeparturesResult(
+                    departures = emptyList(),
+                    isOfflineFallback = false,
+                    isSimulation = false,
+                    statusMessage = monitoring.alertMessage
+                        ?: "Aucun passage en temps réel retourné par le réseau pour cet arrêt"
+                )
             }
         } else {
             Log.w(TAG, "Erreur lors de l'appel direct idelis.fr pour '$poleName': ${webResult.exceptionOrNull()?.message}")
         }
 
-        // 2. Repli vers SOAP SIRI
+        // 2. Repli vers SOAP SIRI uniquement en cas d'échec réseau/HTTP du flux web direct
         try {
             val siriResult = siriService.getStopMonitoring(stopId, requestorRef)
             if (siriResult.isSuccess && siriResult.getOrNull()?.isNotEmpty() == true) {
@@ -1119,7 +1177,7 @@ class IdelisRepository(
 
         // 2. Extraction dynamique depuis le descriptif de l'arrêt (ex: "Commune de Pau • Lignes F, 10, 12")
         if (stop != null && !stop.stopDesc.isNullOrBlank()) {
-            val linesMatch = Regex("""Lignes?\s+([A-Za-z0-9,\s]+)""", RegexOption.IGNORE_CASE).find(stop.stopDesc)
+            val linesMatch = LINES_EXTRACT_REGEX.find(stop.stopDesc)
             val extractedLines = linesMatch?.groupValues?.getOrNull(1)
                 ?.split(",")
                 ?.map { it.trim().uppercase() }
@@ -1372,6 +1430,12 @@ class IdelisRepository(
         }
         if (liveDepartures.isEmpty()) return emptyList()
 
+        val normalizedDirCache = HashMap<String, String>(32)
+        fun fastNormalizeDir(raw: String): String =
+            normalizedDirCache.getOrPut(raw) { normalizeDirection(raw) }
+
+        val theoreticalByLine = theoreticalDepartures.groupBy { it.routeShortName.uppercase(Locale.ROOT) }
+
         return liveDepartures.mapIndexed { index, dep ->
             val waitMins = dep.waitMinutes?.toLong() ?: 0L
             val expectedCal = (nowCal.clone() as Calendar).apply {
@@ -1382,17 +1446,17 @@ class IdelisRepository(
             val expectedMinutesOfDay = expectedHour * 60 + expectedMinute
             val expectedTimeFormatted = String.format(Locale.FRANCE, "%02d:%02d", expectedHour, expectedMinute)
 
-            // Filtrer les horaires théoriques de la même ligne
-            val lineMatches = theoreticalDepartures.filter {
-                it.routeShortName.equals(dep.lineRef, ignoreCase = true) ||
-                dep.lineRef.equals(it.routeShortName, ignoreCase = true) ||
-                (dep.lineRef.startsWith("Ligne", true) && it.routeShortName.equals(dep.lineRef.replace("Ligne", "").trim(), true))
-            }
+            val depLineKey = dep.lineRef.trim()
+                .let { if (it.startsWith("Ligne", true)) it.substring(5).trim() else it }
+                .uppercase(Locale.ROOT)
+            val lineMatches = theoreticalByLine[depLineKey]
+                ?: theoreticalByLine[dep.lineRef.uppercase(Locale.ROOT)]
+                ?: emptyList()
 
-            val depDirNorm = normalizeDirection(dep.direction)
-            val dirMatches = if (depDirNorm.isNotEmpty()) {
+            val depDirNorm = fastNormalizeDir(dep.direction)
+            val dirMatches = if (depDirNorm.isNotEmpty() && lineMatches.isNotEmpty()) {
                 lineMatches.filter {
-                    val theoNorm = normalizeDirection(it.tripHeadsign)
+                    val theoNorm = fastNormalizeDir(it.tripHeadsign)
                     theoNorm.isNotEmpty() && (theoNorm.contains(depDirNorm) || depDirNorm.contains(theoNorm))
                 }
             } else {
@@ -1405,11 +1469,13 @@ class IdelisRepository(
             var bestTheo: GtfsTheoreticalDeparture? = null
             var minDiff = Int.MAX_VALUE
             var bestDelay = 0
+            var bestTheoHour = expectedHour
+            var bestTheoMin = expectedMinute
 
             for (theo in candidates) {
-                val parts = theo.departureTime.split(":")
-                val theoHour = parts.getOrNull(0)?.toIntOrNull() ?: continue
-                val theoMin = parts.getOrNull(1)?.toIntOrNull() ?: continue
+                val hm = parseHourMinuteFast(theo.departureTime) ?: continue
+                val theoHour = hm.first
+                val theoMin = hm.second
                 val theoMinutesOfDay = ((theoHour * 60 + theoMin) % 1440 + 1440) % 1440
 
                 // Gestion du franchissement de minuit (y compris horaires GTFS >= 24:00)
@@ -1421,6 +1487,8 @@ class IdelisRepository(
                     minDiff = diff
                     bestTheo = theo
                     bestDelay = diff
+                    bestTheoHour = theoHour
+                    bestTheoMin = theoMin
                 }
             }
 
@@ -1430,10 +1498,7 @@ class IdelisRepository(
             val matchedTheo = if (isPlausibleMatch) bestTheo else null
 
             val aimedTimeFormatted = if (matchedTheo != null) {
-                val p = matchedTheo.departureTime.split(":")
-                val h = (p.getOrNull(0)?.toIntOrNull() ?: expectedHour) % 24
-                val m = p.getOrNull(1)?.toIntOrNull() ?: expectedMinute
-                String.format(Locale.FRANCE, "%02d:%02d", h, m)
+                String.format(Locale.FRANCE, "%02d:%02d", bestTheoHour % 24, bestTheoMin)
             } else {
                 expectedTimeFormatted
             }
@@ -1784,7 +1849,7 @@ class IdelisRepository(
     }
 
     private fun extractSimpleTime(raw: String): String {
-        val match = Regex("""(\d{2}:\d{2})""").find(raw)
+        val match = SIMPLE_TIME_REGEX.find(raw)
         return match?.value ?: raw
     }
 }
