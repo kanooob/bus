@@ -110,7 +110,7 @@ fun IdelisDepartureRow(
     val subStatusColor = when {
         departure.delayMinutes > 0 -> Color(0xFFD32F2F) // Retard en rouge
         departure.delayMinutes < 0 -> Color(0xFF0288D1) // Avance en bleu
-        else -> Color(0xFF2E7D32) // À l'heure en vert ponctuel
+        else -> if (isDarkTheme) Color.White else Color(0xFF111111) // À l'heure en blanc/noir selon le thème
     }
 
     // Calcul de l'heure exacte d'arrivée
