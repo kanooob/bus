@@ -164,38 +164,15 @@ fun RouteStopsModal(
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Badge squircle de la ligne
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(RoundedCornerShape(15.dp))
-                            .background(routeColor),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        var isImageLoaded by remember { mutableStateOf(false) }
-
-                        if (!routeDetail.iconUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = routeDetail.iconUrl,
-                                contentDescription = "Icône ${routeDetail.lineLabel}",
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(15.dp)),
-                                contentScale = ContentScale.Fit,
-                                onSuccess = { isImageLoaded = true },
-                                onError = { isImageLoaded = false }
-                            )
-                        }
-
-                        if (routeDetail.iconUrl.isNullOrBlank() || !isImageLoaded) {
-                            Text(
-                                text = routeDetail.lineCode,
-                                color = routeTextColor,
-                                fontWeight = FontWeight.Black,
-                                fontSize = if (routeDetail.lineCode.length > 3) 13.sp else 18.sp
-                            )
-                        }
-                    }
+                    // Badge de la ligne aux angles arrondis à 30%
+                    IdelisLineIconBadge(
+                        lineRef = routeDetail.lineCode,
+                        iconUrl = routeDetail.iconUrl,
+                        routeColor = routeColor,
+                        routeTextColor = routeTextColor,
+                        size = 46.dp,
+                        contentDescription = "Icône ${routeDetail.lineLabel}"
+                    )
 
                     Spacer(modifier = Modifier.width(12.dp))
 

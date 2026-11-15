@@ -563,40 +563,14 @@ private fun StopNotServedCard(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(RoundedCornerShape(9.dp))
-                                    .background(badgeColor),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                var isImageLoaded by remember(entry.linePictoUrl) { mutableStateOf(false) }
-
-                                if (!entry.linePictoUrl.isNullOrBlank()) {
-                                    AsyncImage(
-                                        model = ImageRequest.Builder(LocalContext.current)
-                                            .data(entry.linePictoUrl)
-                                            .crossfade(true)
-                                            .build(),
-                                        contentDescription = "Icône ligne ${entry.lineRef}",
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .clip(RoundedCornerShape(9.dp)),
-                                        contentScale = ContentScale.Fit,
-                                        onSuccess = { isImageLoaded = true },
-                                        onError = { isImageLoaded = false }
-                                    )
-                                }
-
-                                if (entry.linePictoUrl.isNullOrBlank() || !isImageLoaded) {
-                                    Text(
-                                        text = entry.lineRef,
-                                        color = badgeTextColor,
-                                        fontSize = if (entry.lineRef.length > 3) 9.5.sp else 12.sp,
-                                        fontWeight = FontWeight.Black
-                                    )
-                                }
-                            }
+                            com.example.ui.components.IdelisLineIconBadge(
+                                lineRef = entry.lineRef,
+                                iconUrl = entry.linePictoUrl,
+                                routeColor = badgeColor,
+                                routeTextColor = badgeTextColor,
+                                size = 28.dp,
+                                contentDescription = "Icône ligne ${entry.lineRef}"
+                            )
                             Spacer(modifier = Modifier.width(8.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(

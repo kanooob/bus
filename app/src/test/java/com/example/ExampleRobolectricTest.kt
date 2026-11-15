@@ -969,4 +969,322 @@ class ExampleRobolectricTest {
         assertTrue(prefs.importBackupJson(backup).isSuccess)
         assertFalse(prefs.isWidgetUpdateNotificationsEnabled())
     }
+
+    @Test
+    fun `gtfs download resolves json catalog export to fichier url and imports zip`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        val sampleZip = buildSampleGtfsZipBytes()
+        val catalogUrl = com.example.data.remote.GtfsDownloadService.DEFAULT_GTFS_ZIP_URL
+        val zipFileUrl = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/files/400d7da94eaacb5e52c612f8ac28e420"
+        val catalogJson = """
+            [{"id": "GTFS", "date_de_debut_de_validite": "2026-10-26", "date_de_fin_de_validite": "2027-07-04", "fichier": {"thumbnail": false, "filename": "gtfs.zip", "format": "zip", "width": 300, "id": "400d7da94eaacb5e52c612f8ac28e420", "height": 300, "url": "$zipFileUrl"}}]
+        """.trimIndent()
+        val requestedUrls = mutableListOf<String>()
+
+        val mockClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                requestedUrls.add(url)
+                val builder = okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                when (url) {
+                    catalogUrl -> builder.code(200).message("OK")
+                        .body(okhttp3.ResponseBody.create(null, catalogJson))
+                        .build()
+                    zipFileUrl -> builder.code(200).message("OK")
+                        .body(okhttp3.ResponseBody.create(null, sampleZip))
+                        .build()
+                    else -> builder.code(404).message("Not Found")
+                        .body(okhttp3.ResponseBody.create(null, ""))
+                        .build()
+                }
+            }
+            .build()
+
+        val service = com.example.data.remote.GtfsDownloadService(db, mockClient)
+        val report = service.downloadAndProcessGtfsZip(isFirstSync = true)
+
+        assertTrue("La synchro GTFS via JSON doit réussir : ${report.errorMessage}", report.success)
+        assertFalse(report.usedWaybackFallback)
+        assertEquals("Direct", report.sourceUsed)
+        assertEquals(listOf(catalogUrl, zipFileUrl), requestedUrls)
+        assertEquals(1, report.routesCount)
+        assertEquals(1, report.tripsCount)
+        assertEquals(1, report.stopTimesCount)
+    }
+
+    @Test
+    fun `line icons json export replaces legacy web pictos across departures and traffic alerts`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+
+        val t4IconUrl = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-icones-des-lignes/files/825f6179a80cb12fa46b337cc45beaf7"
+        val fIconUrl = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-icones-des-lignes/files/febus123456"
+        val iconsJson = """
+            [
+              {"ligne": "T4", "dimensions_png": "470x486", "format": "PNG", "fichier_png": {"thumbnail": true, "filename": "t4.png", "format": "PNG", "width": 470, "id": "825f6179a80cb12fa46b337cc45beaf7", "height": 486, "color_summary": [], "url": "$t4IconUrl"}, "format0": "SVG", "fichier_svg": {"thumbnail": true, "filename": "t4.svg", "format": "svg", "width": 300, "id": "955ca3eec8c920b55bb6f1132a156fcb", "height": 300, "url": "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-icones-des-lignes/files/955ca3eec8c920b55bb6f1132a156fcb"}},
+              {"ligne": "F", "dimensions_png": "470x486", "format": "PNG", "fichier_png": {"url": "$fIconUrl"}}
+            ]
+        """.trimIndent()
+
+        val mockExploreClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val builder = okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                when (url) {
+                    com.example.data.remote.IdelisExploreService.URL_EXPORTS_ICONS -> {
+                        builder.code(200).message("OK")
+                            .body(okhttp3.ResponseBody.create(null, iconsJson))
+                            .build()
+                    }
+                    else -> builder.code(404).message("Not Found")
+                        .body(okhttp3.ResponseBody.create(null, ""))
+                        .build()
+                }
+            }
+            .build()
+
+        val mockWebClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val body = chain.request().body as? okhttp3.FormBody
+                val requete = (0 until (body?.size ?: 0)).firstOrNull { body?.name(it) == "requete" }
+                    ?.let { body?.value(it) }
+                val html = if (requete == "infostrafic") {
+                    """
+                    <div class="alert-item">
+                        <div class="alert-pictos">
+                            <img class="picto-ligne" src="/fileadmin/user_upload/pictos/T4.png" alt="Ligne T4" />
+                        </div>
+                        <h4 class="alert-title">Déviation T4</h4>
+                        <p class="alert-description">Travaux avenue de Lons.</p>
+                    </div>
+                    """.trimIndent()
+                } else ""
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, html))
+                    .build()
+            }
+            .build()
+
+        com.example.data.repository.IdelisRepository.globalLineIconsMap = emptyMap()
+        val exploreService = com.example.data.remote.IdelisExploreService(mockExploreClient)
+        val webService = com.example.data.remote.IdelisWebScraperService(client = mockWebClient)
+        val repo = com.example.data.repository.IdelisRepository(
+            database = db,
+            appContext = context,
+            exploreService = exploreService,
+            webScraperService = webService
+        )
+
+        repo.ensureLineIconsLoaded()
+        assertEquals(t4IconUrl, repo.resolveLineIconUrl("T4"))
+        assertEquals(fIconUrl, repo.resolveLineIconUrl("Fébus"))
+
+        val comparisons = repo.compareWebDeparturesWithTheoretical(
+            webDepartures = listOf(
+                com.example.data.model.IdelisWebDeparture(
+                    lineRef = "T4",
+                    lineName = "Ligne T4",
+                    linePictoUrl = "https://www.idelis.fr/fileadmin/user_upload/pictos/T4.png",
+                    direction = "PAU CST Jean Feger",
+                    stopQuai = null,
+                    timeText = "5 min",
+                    isRealTime = true,
+                    waitMinutes = 5
+                )
+            ),
+            theoreticalDepartures = emptyList()
+        )
+        assertEquals(1, comparisons.size)
+        assertEquals(t4IconUrl, comparisons[0].iconUrl)
+
+        val alerts = repo.fetchLiveTrafficAlerts().getOrThrow()
+        assertEquals(1, alerts.size)
+        assertEquals(listOf(t4IconUrl), alerts[0].affectedLinePictos)
+    }
+
+    @Test
+    fun `preferences manager migrates legacy gtfs alternative_exports url to new json export url`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sp = context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE)
+        sp.edit()
+            .putString(
+                "url_gtfs_zip",
+                "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
+            )
+            .commit()
+
+        val prefs = com.example.data.local.PreferencesManager(context)
+        assertEquals(com.example.data.local.PreferencesManager.DEFAULT_GTFS_ZIP_URL, prefs.getGtfsZipUrl())
+    }
+
+    @Test
+    fun `gtfs schedule index selects weekday saturday sunday and calendar date exceptions accurately`() {
+        val baos = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(baos).use { zos ->
+            val files = mapOf(
+                "calendar.txt" to """
+                    service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date
+                    SEM_SCO,1,1,1,1,1,0,0,20260101,20261231
+                    SAMEDI,0,0,0,0,0,1,0,20260101,20261231
+                    DIMANCHE,0,0,0,0,0,0,1,20260101,20261231
+                """.trimIndent() + "\n",
+                "calendar_dates.txt" to """
+                    service_id,date,exception_type
+                    SEM_SCO,20261111,2
+                    DIMANCHE,20261111,1
+                """.trimIndent() + "\n",
+                "routes.txt" to "route_id,route_short_name,route_long_name,route_color,route_text_color\nF,F,Fébus,F18700,121212\n",
+                "stops.txt" to "stop_id,stop_name,stop_lat,stop_lon\nBOS_A,PAU Bosquet Quai A,43.2995,-0.3668\n",
+                // stop_times.txt volontairement avant trips.txt
+                "stop_times.txt" to """
+                    trip_id,arrival_time,departure_time,stop_id,stop_sequence
+                    T_SEM,08:05:00,08:05:00,BOS_A,1
+                    T_SAM,09:20:00,09:20:00,BOS_A,1
+                    T_DIM,10:45:00,10:45:00,BOS_A,1
+                """.trimIndent() + "\n",
+                "trips.txt" to """
+                    trip_id,route_id,service_id,trip_headsign
+                    T_SEM,F,SEM_SCO,PAU Gare de Pau
+                    T_SAM,F,SAMEDI,PAU Gare de Pau
+                    T_DIM,F,DIMANCHE,PAU Gare de Pau
+                """.trimIndent() + "\n"
+            )
+            for ((name, content) in files) {
+                zos.putNextEntry(java.util.zip.ZipEntry(name))
+                zos.write(content.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+        }
+        val zipBytes = baos.toByteArray()
+
+        fun parisCal(year: Int, month: Int, day: Int): java.util.Calendar {
+            return java.util.Calendar.getInstance(com.example.data.remote.GtfsScheduleIndex.PARIS_TZ).apply {
+                set(year, month, day, 12, 0, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }
+        }
+
+        // Vendredi 13 nov 2026 -> Semaine (Orange), 08:05:00
+        val friSnap = com.example.data.remote.GtfsScheduleIndex.buildSnapshotFromZipBytes(zipBytes, parisCal(2026, java.util.Calendar.NOVEMBER, 13))!!
+        assertEquals(com.example.data.model.IdelisPeriod.ORANGE, friSnap.activePeriod)
+        assertEquals(listOf("08:05:00"), friSnap.departuresByCanonicalStop["pôle bosquet"]?.map { it.departureTime })
+
+        // Samedi 14 nov 2026 -> Samedi (Grise), 09:20:00
+        val satSnap = com.example.data.remote.GtfsScheduleIndex.buildSnapshotFromZipBytes(zipBytes, parisCal(2026, java.util.Calendar.NOVEMBER, 14))!!
+        assertEquals(com.example.data.model.IdelisPeriod.GRISE, satSnap.activePeriod)
+        assertEquals(listOf("09:20:00"), satSnap.departuresByCanonicalStop["pôle bosquet"]?.map { it.departureTime })
+
+        // Dimanche 15 nov 2026 -> Dimanche (Verte), 10:45:00
+        val sunSnap = com.example.data.remote.GtfsScheduleIndex.buildSnapshotFromZipBytes(zipBytes, parisCal(2026, java.util.Calendar.NOVEMBER, 15))!!
+        assertEquals(com.example.data.model.IdelisPeriod.VERTE, sunSnap.activePeriod)
+        assertEquals(listOf("10:45:00"), sunSnap.departuresByCanonicalStop["pôle bosquet"]?.map { it.departureTime })
+
+        // Mercredi 11 nov 2026 (jour férié via calendar_dates exception 2 sur SEM_SCO + 1 sur DIMANCHE) -> Verte, 10:45:00
+        val holidaySnap = com.example.data.remote.GtfsScheduleIndex.buildSnapshotFromZipBytes(zipBytes, parisCal(2026, java.util.Calendar.NOVEMBER, 11))!!
+        assertEquals(com.example.data.model.IdelisPeriod.VERTE, holidaySnap.activePeriod)
+        assertEquals(listOf("10:45:00"), holidaySnap.departuresByCanonicalStop["pôle bosquet"]?.map { it.departureTime })
+
+        // Archive expirée (2027) -> fallback sur le même jour de semaine (Samedi -> 09:20:00)
+        val expiredArchiveSnap = com.example.data.remote.GtfsScheduleIndex.buildSnapshotFromZipBytes(zipBytes, parisCal(2027, java.util.Calendar.MAY, 15))!!
+        assertEquals(com.example.data.model.IdelisPeriod.GRISE, expiredArchiveSnap.activePeriod)
+        assertEquals(listOf("09:20:00"), expiredArchiveSnap.departuresByCanonicalStop["pôle bosquet"]?.map { it.departureTime })
+    }
+
+    @Test
+    fun `delay comparison caps implausible 500min offsets and computes realistic delays`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        val repo = com.example.data.repository.IdelisRepository(database = db, appContext = context)
+
+        val parisTz = com.example.data.remote.GtfsScheduleIndex.PARIS_TZ
+        val nowCal = java.util.Calendar.getInstance(parisTz)
+        val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.FRANCE).apply { timeZone = parisTz }
+
+        // Cas 1 : écart énorme (~500 min) entre passage réel (dans 5 min) et un horaire théorique éloigné (+505 min) -> ramené à 0 (À l'heure)
+        val farCal = (nowCal.clone() as java.util.Calendar).apply { add(java.util.Calendar.MINUTE, 505) }
+        val implausibleTheo = listOf(
+            com.example.data.model.GtfsTheoreticalDeparture(
+                stopId = "BOS_1",
+                stopName = "Pôle Bosquet",
+                routeId = "F",
+                routeShortName = "F",
+                routeLongName = "Fébus",
+                routeColor = "F18700",
+                routeTextColor = "121212",
+                tripHeadsign = "PAU Gare de Pau",
+                departureTime = fmt.format(farCal.time)
+            )
+        )
+        val webDep = listOf(
+            com.example.data.model.IdelisWebDeparture(
+                lineRef = "F",
+                lineName = "Fébus",
+                linePictoUrl = null,
+                direction = "PAU Gare de Pau",
+                stopQuai = null,
+                timeText = "5 min",
+                isRealTime = true,
+                waitMinutes = 5
+            )
+        )
+        val guarded = repo.compareWebDeparturesWithTheoretical(webDep, implausibleTheo)
+        assertEquals(1, guarded.size)
+        assertEquals(0, guarded[0].delayMinutes)
+        assertEquals(com.example.data.model.DepartureStatus.ON_TIME, guarded[0].status)
+
+        // Cas 2 : retard réaliste de +4 min par rapport à un horaire GTFS concordant
+        val nearCal = (nowCal.clone() as java.util.Calendar).apply { add(java.util.Calendar.MINUTE, 1) }
+        val plausibleTheo = listOf(
+            implausibleTheo.first().copy(departureTime = fmt.format(nearCal.time))
+        )
+        val delayed = repo.compareWebDeparturesWithTheoretical(webDep, plausibleTheo)
+        assertEquals(1, delayed.size)
+        assertEquals(4, delayed[0].delayMinutes)
+        assertEquals(com.example.data.model.DepartureStatus.DELAYED, delayed[0].status)
+    }
+
+    @Test
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    fun `widget roundCornerSquareBitmap center crops 470x486 icon to 96x96 with 30 percent rounded corners`() {
+        val raw = android.graphics.Bitmap.createBitmap(470, 486, android.graphics.Bitmap.Config.ARGB_8888)
+        raw.eraseColor(android.graphics.Color.rgb(241, 135, 0))
+
+        val rounded = com.example.ui.widget.IdelisWidgetHelper.roundCornerSquareBitmap(raw, targetSize = 96, cornerPercent = 0.30f)
+        assertEquals(96, rounded.width)
+        assertEquals(96, rounded.height)
+
+        // Les angles extrêmes (0,0) et (95,95) doivent être transparents suite à l'arrondi 30%
+        assertEquals(0, android.graphics.Color.alpha(rounded.getPixel(0, 0)))
+        assertEquals(0, android.graphics.Color.alpha(rounded.getPixel(95, 95)))
+        // Le centre de l'icône reste totalement opaque
+        assertEquals(255, android.graphics.Color.alpha(rounded.getPixel(48, 48)))
+        raw.recycle()
+        rounded.recycle()
+
+        // Cas 2 : PNG 470x486 avec une marge transparente de 40px autour d'un carré orange
+        val padded = android.graphics.Bitmap.createBitmap(470, 486, android.graphics.Bitmap.Config.ARGB_8888)
+        padded.eraseColor(android.graphics.Color.TRANSPARENT)
+        val c = android.graphics.Canvas(padded)
+        val p = android.graphics.Paint().apply { color = android.graphics.Color.rgb(241, 135, 0) }
+        c.drawRect(40f, 45f, 430f, 435f, p)
+
+        val trimmedRounded = com.example.ui.widget.IdelisWidgetHelper.roundCornerSquareBitmap(padded, targetSize = 96, cornerPercent = 0.30f)
+        // Après suppression de la marge transparente, les bords milieu (48, 2) et (2, 48) doivent être colorés et opaques
+        assertEquals(255, android.graphics.Color.alpha(trimmedRounded.getPixel(48, 2)))
+        assertEquals(255, android.graphics.Color.alpha(trimmedRounded.getPixel(2, 48)))
+        // Et les angles extrêmes (0,0) et (10,10) à l'extérieur de l'arc 30% doivent être transparents
+        assertEquals(0, android.graphics.Color.alpha(trimmedRounded.getPixel(0, 0)))
+        assertEquals(0, android.graphics.Color.alpha(trimmedRounded.getPixel(4, 4)))
+        padded.recycle()
+        trimmedRounded.recycle()
+    }
 }

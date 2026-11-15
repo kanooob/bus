@@ -563,19 +563,14 @@ fun WidgetConfigureScreen(
                                         .fillMaxWidth()
                                         .padding(vertical = 3.dp)
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(Color(0xFF0288D1))
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    ) {
-                                        Text(
-                                            text = dep.lineRef,
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp
-                                        )
-                                    }
+                                    com.example.ui.components.IdelisLineIconBadge(
+                                        lineRef = dep.lineRef,
+                                        iconUrl = dep.iconUrl,
+                                        routeColor = Color(0xFF0288D1),
+                                        routeTextColor = Color.White,
+                                        size = 24.dp,
+                                        contentDescription = "Icône ligne ${dep.lineRef}"
+                                    )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = dep.destinationName,

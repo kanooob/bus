@@ -107,8 +107,9 @@
 
         <ImageView
             android:id="@+id/row_1_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout
@@ -169,8 +170,9 @@
 
         <ImageView
             android:id="@+id/row_2_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout
@@ -228,8 +230,9 @@
 
         <ImageView
             android:id="@+id/row_3_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout
@@ -287,8 +290,9 @@
 
         <ImageView
             android:id="@+id/row_4_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout
@@ -346,8 +350,9 @@
 
         <ImageView
             android:id="@+id/row_5_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout
@@ -405,8 +410,9 @@
 
         <ImageView
             android:id="@+id/row_6_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout
@@ -464,8 +470,9 @@
 
         <ImageView
             android:id="@+id/row_7_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout
@@ -522,8 +529,9 @@
 
         <ImageView
             android:id="@+id/row_8_badge"
-            android:layout_width="32dp"
-            android:layout_height="20dp"
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:scaleType="fitCenter"
             android:contentDescription="Ligne" />
 
         <LinearLayout

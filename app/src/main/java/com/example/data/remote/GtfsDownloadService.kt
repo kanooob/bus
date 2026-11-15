@@ -24,7 +24,8 @@ import java.util.zip.ZipInputStream
 
 /**
  * Service dédié au téléchargement et à l'analyse complète du fichier ZIP GTFS d'Idelis
- * (https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/)
+ * via l'export JSON OpenDataSoft
+ * (https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/exports/json/?lang=fr&timezone=Europe%2FParis)
  * et des autres jeux de données complémentaires OpenDataSoft (liste des PR, vélos, véhicules, grilles).
  *
  * Extrait et parse en mémoire/streaming :
@@ -43,7 +44,7 @@ class GtfsDownloadService(
 
     companion object {
         private const val TAG = "GtfsDownloadService"
-        const val DEFAULT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
+        const val DEFAULT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/exports/json/?lang=fr&timezone=Europe%2FParis"
         
         // URLs directes des autres fichiers utiles du réseau Idelis
         const val URL_PR_EXPORT = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-pr/exports/json"
@@ -89,20 +90,20 @@ class GtfsDownloadService(
             val sourceLabel = if (usedWayback) "Wayback Machine" else "Direct"
 
             Log.d(TAG, "Archive reçue (${bytes.size / 1024} Ko, source=$sourceLabel). Décompression et analyse...")
-            val nowCal = Calendar.getInstance()
+            val nowCal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ)
             val dayOfWeek = nowCal.get(Calendar.DAY_OF_WEEK)
-            val todayStr = SimpleDateFormat("yyyyMMdd", Locale.FRANCE).format(nowCal.time)
+            val todayStr = SimpleDateFormat("yyyyMMdd", Locale.FRANCE).apply {
+                timeZone = GtfsScheduleIndex.PARIS_TZ
+            }.format(nowCal.time)
+
+            val scheduleSnapshot = GtfsScheduleIndex.updateFromZipBytes(bytes, nowCal)
 
             // Détection de période selon les règles Idelis :
             // - Orange : Lundi au vendredi (scolaire)
             // - Bleue : Lundi au vendredi (non scolaire / vacances)
             // - Grise : Samedi
             // - Verte : Dimanche et jours fériés
-            detectedPeriod = when (dayOfWeek) {
-                Calendar.SATURDAY -> IdelisPeriod.GRISE
-                Calendar.SUNDAY -> IdelisPeriod.VERTE
-                else -> IdelisPeriod.ORANGE // Lundi au vendredi scolaire par défaut
-            }
+            detectedPeriod = scheduleSnapshot?.activePeriod ?: GtfsScheduleIndex.detectDefaultPeriod(nowCal)
 
             val zipStream = ZipInputStream(ByteArrayInputStream(bytes))
             var entry = zipStream.nextEntry

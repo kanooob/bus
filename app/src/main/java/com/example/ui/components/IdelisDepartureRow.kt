@@ -149,42 +149,15 @@ fun IdelisDepartureRow(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 1. Icône en squircle SANS bordure : affiche l'image PNG officielle Idelis ou le badge authentique de la ligne
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(RoundedCornerShape(15.dp))
-                    .background(routeColor),
-                contentAlignment = Alignment.Center
-            ) {
-                var isImageLoaded by remember(departure.iconUrl) { mutableStateOf(false) }
-
-                if (!departure.iconUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = coil.request.ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
-                            .data(departure.iconUrl)
-                            .crossfade(true)
-                            .build(),
-                        contentDescription = "Icône officielle ligne ${departure.lineRef}",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(15.dp)),
-                        contentScale = ContentScale.Fit,
-                        onSuccess = { isImageLoaded = true },
-                        onError = { isImageLoaded = false }
-                    )
-                }
-
-                // Si l'icône distante n'est pas encore chargée ou absente, afficher le badge stylisé officiel avec la typographie Idelis
-                if (departure.iconUrl.isNullOrBlank() || !isImageLoaded) {
-                    Text(
-                        text = departure.lineRef,
-                        color = routeTextColor,
-                        fontWeight = FontWeight.Black,
-                        fontSize = if (departure.lineRef.length > 3) 13.sp else 18.sp
-                    )
-                }
-            }
+            // 1. Icône carrée aux angles arrondis 30% sans marge ni effet biseauté
+            IdelisLineIconBadge(
+                lineRef = departure.lineRef,
+                iconUrl = departure.iconUrl,
+                routeColor = routeColor,
+                routeTextColor = routeTextColor,
+                size = 46.dp,
+                contentDescription = "Icône officielle ligne ${departure.lineRef}"
+            )
 
             Spacer(modifier = Modifier.width(10.dp))
 

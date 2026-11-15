@@ -70,7 +70,8 @@ class PreferencesManager(context: Context) {
 
         const val DEFAULT_WEB_URL = "https://www.idelis.fr/?type=777"
         private const val LEGACY_GTFS_ZIP_URL = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
-        const val DEFAULT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
+        private const val LEGACY_ALT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
+        const val DEFAULT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/exports/json/?lang=fr&timezone=Europe%2FParis"
         const val DEFAULT_SIRI_URL = "https://api.idelis.fr/siri/2.0"
         const val DEFAULT_QUERY_TYPE = "777"
         const val DEFAULT_GITHUB_REPO = "https://github.com/kanooob/bus"
@@ -275,7 +276,12 @@ class PreferencesManager(context: Context) {
 
     fun getGtfsZipUrl(): String {
         val saved = prefs.getString(KEY_URL_GTFS_ZIP, DEFAULT_GTFS_ZIP_URL) ?: DEFAULT_GTFS_ZIP_URL
-        return if (saved.isBlank() || saved == LEGACY_GTFS_ZIP_URL) {
+        return if (
+            saved.isBlank() ||
+            saved == LEGACY_GTFS_ZIP_URL ||
+            saved == LEGACY_ALT_GTFS_ZIP_URL ||
+            saved.contains("/alternative_exports/https_opendata_idelis_fr")
+        ) {
             DEFAULT_GTFS_ZIP_URL
         } else {
             saved

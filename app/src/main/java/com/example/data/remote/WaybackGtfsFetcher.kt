@@ -40,6 +40,8 @@ class WaybackGtfsFetcher(
 
     companion object {
         private const val TAG = "WaybackGtfsFetcher"
+        const val LEGACY_ALT_GTFS_EXPORT_URL =
+            "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
         const val LEGACY_IDELIS_GTFS_URL_ENCODED =
             "https://opendata.idelis.fr/?file=GTFS_MultiRoutes%2FData.GTFS.zip"
         const val LEGACY_IDELIS_GTFS_URL =
@@ -51,6 +53,72 @@ class WaybackGtfsFetcher(
             .followRedirects(true)
             .followSslRedirects(true)
             .build()
+
+        /**
+         * Extrait l'URL directe de téléchargement du fichier `gtfs.zip` depuis le JSON Explore v2.1
+         * (`fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/exports/json`).
+         */
+        fun extractGtfsZipUrlFromJson(jsonText: String?): String? {
+            val trimmed = jsonText?.trim()?.removePrefix("\uFEFF")?.trim() ?: return null
+            if (trimmed.isEmpty()) return null
+
+            fun resolveUrl(raw: String?): String? {
+                val clean = raw?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                    ?: return null
+                return when {
+                    clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) -> clean
+                    clean.startsWith("//") -> "https:$clean"
+                    clean.startsWith("/") -> "https://data.idelis.fr$clean"
+                    else -> null
+                }
+            }
+
+            fun extractFromRecord(obj: JSONObject?): String? {
+                if (obj == null) return null
+                val fichier = obj.optJSONObject("fichier")
+                    ?: obj.optJSONObject("file")
+                    ?: obj.optJSONObject("fields")?.optJSONObject("fichier")
+                return resolveUrl(fichier?.optString("url"))
+            }
+
+            return try {
+                when {
+                    trimmed.startsWith("[") -> {
+                        val array = JSONArray(trimmed)
+                        var fallbackUrl: String? = null
+                        for (i in 0 until array.length()) {
+                            val obj = array.optJSONObject(i) ?: continue
+                            val url = extractFromRecord(obj) ?: continue
+                            if (fallbackUrl == null) fallbackUrl = url
+                            val id = obj.optString("id", "").trim()
+                            val fichier = obj.optJSONObject("fichier")
+                            val format = fichier?.optString("format", "").orEmpty().trim()
+                            val filename = fichier?.optString("filename", "").orEmpty().trim()
+                            if (id.equals("GTFS", ignoreCase = true) ||
+                                format.equals("zip", ignoreCase = true) ||
+                                filename.endsWith(".zip", ignoreCase = true)
+                            ) {
+                                return url
+                            }
+                        }
+                        fallbackUrl
+                    }
+                    trimmed.startsWith("{") -> {
+                        val root = JSONObject(trimmed)
+                        val results = root.optJSONArray("results")
+                        if (results != null && results.length() > 0) {
+                            extractGtfsZipUrlFromJson(results.toString())
+                        } else {
+                            extractFromRecord(root)
+                        }
+                    }
+                    else -> null
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Erreur extraction URL GTFS depuis JSON : ${e.message}")
+                null
+            }
+        }
 
         /**
          * Transforme une URL d'instantané Wayback Machine en URL brute `id_` (sans réécriture HTML/toolbar)
@@ -108,19 +176,26 @@ class WaybackGtfsFetcher(
         }
     }
 
+    private data class ResolvedZipDownload(
+        val bytes: ByteArray,
+        val resolvedSourceUrl: String
+    )
+
     fun fetchGtfsZip(
         primaryUrl: String,
         isFirstSync: Boolean = false
     ): Result<GtfsZipDownloadResult> {
         val cleanPrimaryUrl = primaryUrl.trim()
+        val discoveredZipUrls = mutableListOf<String>()
 
-        // 1. Tentative directe sur l'URL principale
-        val directAttempt = downloadValidZip(cleanPrimaryUrl)
+        // 1. Tentative directe sur l'URL principale (ZIP direct ou JSON Explore v2.1 contenant fichier.url)
+        val directAttempt = downloadValidZipOrCatalog(cleanPrimaryUrl, discoveredZipUrls)
         if (directAttempt.isSuccess) {
+            val downloaded = directAttempt.getOrThrow()
             return Result.success(
                 GtfsZipDownloadResult(
-                    bytes = directAttempt.getOrThrow(),
-                    sourceUrl = cleanPrimaryUrl,
+                    bytes = downloaded.bytes,
+                    sourceUrl = downloaded.resolvedSourceUrl,
                     usedWaybackMachine = false
                 )
             )
@@ -134,7 +209,9 @@ class WaybackGtfsFetcher(
 
         // 2. Candidats à rechercher dans la Wayback Machine
         val candidates = buildList {
+            addAll(discoveredZipUrls)
             if (cleanPrimaryUrl.isNotBlank()) add(cleanPrimaryUrl)
+            add(LEGACY_ALT_GTFS_EXPORT_URL)
             add(LEGACY_IDELIS_GTFS_URL_ENCODED)
             add(LEGACY_IDELIS_GTFS_URL)
         }.distinct()
@@ -317,6 +394,13 @@ class WaybackGtfsFetcher(
     }
 
     private fun downloadValidZip(url: String): Result<ByteArray> {
+        return downloadValidZipOrCatalog(url, mutableListOf()).map { it.bytes }
+    }
+
+    private fun downloadValidZipOrCatalog(
+        url: String,
+        discoveredZipUrls: MutableList<String>
+    ): Result<ResolvedZipDownload> {
         return try {
             val request = Request.Builder()
                 .url(url)
@@ -333,10 +417,40 @@ class WaybackGtfsFetcher(
             if (bytes == null || bytes.isEmpty()) {
                 return Result.failure(IllegalStateException("Archive GTFS reçue vide"))
             }
-            if (!isValidGtfsZip(bytes)) {
-                return Result.failure(IllegalStateException("Contenu reçu invalide (pas une archive GTFS ZIP)"))
+            if (isValidGtfsZip(bytes)) {
+                return Result.success(ResolvedZipDownload(bytes = bytes, resolvedSourceUrl = url))
             }
-            Result.success(bytes)
+
+            val text = bytes.toString(Charsets.UTF_8).trim().removePrefix("\uFEFF").trim()
+            if (text.startsWith("[") || text.startsWith("{")) {
+                val extractedZipUrl = extractGtfsZipUrlFromJson(text)
+                if (!extractedZipUrl.isNullOrBlank() && extractedZipUrl != url) {
+                    Log.d(TAG, "URL gtfs.zip extraite du JSON OpenDataSoft : $extractedZipUrl")
+                    if (!discoveredZipUrls.contains(extractedZipUrl)) {
+                        discoveredZipUrls.add(extractedZipUrl)
+                    }
+                    val zipReq = Request.Builder()
+                        .url(extractedZipUrl)
+                        .addHeader("User-Agent", userAgent())
+                        .build()
+
+                    val zipBytes = okHttpClient.newCall(zipReq).execute().use { zipRes ->
+                        if (!zipRes.isSuccessful) {
+                            return Result.failure(IllegalStateException("HTTP ${zipRes.code} sur $extractedZipUrl"))
+                        }
+                        zipRes.body?.bytes()
+                    }
+                    if (zipBytes == null || zipBytes.isEmpty()) {
+                        return Result.failure(IllegalStateException("Archive gtfs.zip reçue vide"))
+                    }
+                    if (!isValidGtfsZip(zipBytes)) {
+                        return Result.failure(IllegalStateException("Fichier téléchargé depuis $extractedZipUrl invalide (pas un ZIP GTFS)"))
+                    }
+                    return Result.success(ResolvedZipDownload(bytes = zipBytes, resolvedSourceUrl = extractedZipUrl))
+                }
+            }
+
+            Result.failure(IllegalStateException("Contenu reçu invalide (pas une archive GTFS ZIP)"))
         } catch (e: Exception) {
             Result.failure(e)
         }

@@ -21,6 +21,7 @@ import com.example.data.model.TrafficAlert
 import com.example.data.model.GtfsSyncReport
 import com.example.data.remote.GitHubUpdaterService
 import com.example.data.remote.GtfsDownloadService
+import com.example.data.remote.GtfsScheduleIndex
 import com.example.data.remote.IdelisExploreService
 import com.example.data.remote.IdelisSiriService
 import com.example.data.remote.IdelisWebScraperService
@@ -397,10 +398,49 @@ class IdelisRepository(
         var globalServingsByStopName: Map<String, List<StopServing>> = emptyMap()
 
         @Volatile
-        var globalCurrentPeriod: IdelisPeriod = IdelisPeriod.VERTE
+        var globalCurrentPeriod: IdelisPeriod = GtfsScheduleIndex.detectDefaultPeriod()
 
         @Volatile
         var globalWorksAlerts: List<String> = emptyList()
+
+        const val MAX_PLAUSIBLE_DELAY_MINUTES = 45
+
+        fun resolveLineIconUrl(
+            lineRef: String,
+            iconsMap: Map<String, String> = globalLineIconsMap
+        ): String? {
+            if (iconsMap.isEmpty() || lineRef.isBlank()) return null
+            val upper = lineRef.trim().uppercase(Locale.ROOT)
+            val clean = upper
+                .removePrefix("LIGNE ")
+                .removePrefix("CHRONOBUS ")
+                .trim()
+            val candidates = buildList {
+                add(upper)
+                if (clean.isNotBlank()) add(clean)
+                val strippedZeros = clean.trimStart('0')
+                if (strippedZeros.isNotBlank() && clean.all { it.isDigit() }) {
+                    add(strippedZeros)
+                }
+                when (clean) {
+                    "F", "FÉBUS", "FEBUS" -> {
+                        add("F")
+                        add("FÉBUS")
+                        add("FEBUS")
+                    }
+                    "COXI", "COXITIS" -> {
+                        add("COXI")
+                        add("COXITIS")
+                    }
+                }
+            }.distinct()
+
+            for (key in candidates) {
+                val found = iconsMap[key]
+                if (!found.isNullOrBlank()) return found
+            }
+            return null
+        }
     }
 
     var officialRoutesMap: Map<String, OfficialRouteGtfs>
@@ -419,7 +459,27 @@ class IdelisRepository(
         get() = globalServingsByStopName
         set(value) { globalServingsByStopName = value }
 
+    fun resolveLineIconUrl(lineRef: String): String? {
+        return resolveLineIconUrl(lineRef, globalLineIconsMap).takeIf { !it.isNullOrBlank() }
+            ?: resolveLineIconUrl(lineRef, lineIconsMap)
+    }
+
+    suspend fun ensureLineIconsLoaded() = withContext(Dispatchers.IO) {
+        if (globalLineIconsMap.isEmpty()) {
+            try {
+                val iconsRes = exploreService.downloadLineIcons()
+                if (iconsRes.isSuccess) {
+                    val icons = iconsRes.getOrNull().orEmpty()
+                    if (icons.isNotEmpty()) {
+                        globalLineIconsMap = icons
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     suspend fun ensureStopsAndRoutesLoaded() = withContext(Dispatchers.IO) {
+        ensureLineIconsLoaded()
         if (globalDownloadedStopsCache.isEmpty()) {
             try {
                 val stopsRes = exploreService.downloadStopsByLineAndDirection()
@@ -595,8 +655,8 @@ class IdelisRepository(
                         val enrichedNotServed = monitoring.notServedEntries.map { entry ->
                             val officialColor = (globalOfficialRoutesMap[entry.lineRef.uppercase()] ?: officialRoutesMap[entry.lineRef.uppercase()])
                                 ?.colorHex?.takeIf { it.isNotBlank() }
-                            val officialIcon = entry.linePictoUrl
-                                ?: (globalLineIconsMap[entry.lineRef.uppercase()] ?: lineIconsMap[entry.lineRef.uppercase()])
+                            val officialIcon = resolveLineIconUrl(entry.lineRef)
+                                ?: entry.linePictoUrl
                             entry.copy(
                                 lineColorHex = officialColor ?: entry.lineColorHex,
                                 linePictoUrl = officialIcon
@@ -666,6 +726,18 @@ class IdelisRepository(
         stopId: String
     ): List<GtfsTheoreticalDeparture> {
         val stopName = stop?.stopName ?: "Pôle Bosquet"
+        val poleName = stop?.parentStation
+
+        // 0. Priorité absolue aux horaires GTFS réels de la journée active
+        // (Semaine scolaire Orange, Vacances Bleue, Samedi Grise, Dimanche/Férié Verte)
+        val realGtfsDepartures = GtfsScheduleIndex.getDeparturesForStop(
+            stopName = stopName,
+            poleName = poleName
+        )
+        if (realGtfsDepartures.isNotEmpty()) {
+            return realGtfsDepartures
+        }
+
         val canonicalName = getCanonicalStopName(stopName).lowercase()
 
         // 1. Recherche dans le cache global téléchargé depuis data.idelis.fr
@@ -821,26 +893,29 @@ class IdelisRepository(
         servings: List<StopServing>
     ): List<GtfsTheoreticalDeparture> {
         val stopName = stop?.stopName ?: "Pôle Bosquet"
-        val nowCal = Calendar.getInstance()
+        val parisTz = GtfsScheduleIndex.PARIS_TZ
+        val nowCal = Calendar.getInstance(parisTz)
         val currentHour = nowCal.get(Calendar.HOUR_OF_DAY)
         val currentMinute = nowCal.get(Calendar.MINUTE)
         val currentSecond = nowCal.get(Calendar.SECOND)
+
+        val effectivePeriod = GtfsScheduleIndex.current?.activePeriod
+            ?: GtfsScheduleIndex.detectDefaultPeriod(nowCal)
 
         val distinctServings = servings.distinctBy {
             "${it.lineRef.uppercase()}:${it.direction.uppercase()}"
         }
 
         val departures = mutableListOf<GtfsTheoreticalDeparture>()
-        val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
+        val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.FRANCE).apply {
+            timeZone = parisTz
+        }
+        val candidateHours = (-1..2).map { (currentHour + it + 24) % 24 }.distinct()
 
         for (serving in distinctServings) {
             val line = serving.lineRef.uppercase()
             // Fréquence adaptée rigoureusement à la période officielle Idelis :
-            // - Orange (Lundi au vendredi scolaire) : Fréquence maximale (F/COXI: 8 min, Chronobus: 10 min, Urbaines: 15 min)
-            // - Bleue (Lundi au vendredi non scolaire) : Fréquence intermédiaire (F/COXI: 10 min, Chronobus: 12 min, Urbaines: 20 min)
-            // - Grise (Samedi) : Fréquence modérée (F/COXI: 12 min, Chronobus: 15 min, Urbaines: 25 min)
-            // - Verte (Dimanche & Fériés) : Fréquence dominicale (F/COXI: 20 min, Chronobus: 30 min, Urbaines: 45 min)
-            val intervalMin = when (globalCurrentPeriod) {
+            val intervalMin = when (effectivePeriod) {
                 IdelisPeriod.ORANGE -> when {
                     line == "F" || line == "COXI" -> 8
                     line.startsWith("T") -> 10
@@ -869,23 +944,20 @@ class IdelisRepository(
 
             // Décalage déterministe pour chaque ligne/direction afin de répartir harmonieusement les passages
             val lineOffset = (abs(serving.lineRef.hashCode() * 31 + serving.direction.hashCode()) % intervalMin)
+            val perServing = mutableListOf<GtfsTheoreticalDeparture>()
 
-            // On génère sur l'heure actuelle et l'heure suivante
-            for (h in listOf(currentHour, (currentHour + 1) % 24)) {
+            for (h in candidateHours) {
+                // Les bus Idelis ne circulent pas au cœur de la nuit (01h00 - 05h45)
+                if (h in 1..5) continue
                 for (m in lineOffset until 60 step intervalMin) {
-                    // Si l'horaire est déjà passé de plus de 30 secondes, on passe au suivant
-                    if (h == currentHour && (m < currentMinute || (m == currentMinute && currentSecond > 30))) {
-                        continue
-                    }
+                    if (h == 6 && m < 15 && effectivePeriod == IdelisPeriod.VERTE) continue
+                    if (h == 0 && m > 30) continue
 
-                    val depCal = Calendar.getInstance().apply {
+                    val depCal = Calendar.getInstance(parisTz).apply {
                         set(Calendar.HOUR_OF_DAY, h)
                         set(Calendar.MINUTE, m)
                         set(Calendar.SECOND, 0)
                         set(Calendar.MILLISECOND, 0)
-                        if (h < currentHour) {
-                            add(Calendar.DAY_OF_YEAR, 1)
-                        }
                     }
 
                     val timeStr = timeFormat.format(depCal.time)
@@ -894,7 +966,7 @@ class IdelisRepository(
                     val textHex = if (colorHex.equals("FFC107", true) || colorHex.equals("FFCC00", true)) "121212" else "FFFFFF"
                     val longName = route?.descriptif ?: "Ligne ${serving.lineRef}"
 
-                    departures.add(
+                    perServing.add(
                         GtfsTheoreticalDeparture(
                             stopId = stop?.stopId ?: stopId,
                             stopName = stopName,
@@ -909,11 +981,12 @@ class IdelisRepository(
                     )
                 }
             }
+            departures.addAll(perServing.take(8))
         }
 
-        // Tri rigoureux et chronologique par heure de passage pour des temps d'attente croissants et précis
+        // Tri chronologique sans tronquer les lignes à 15 passages globaux
         departures.sortBy { parseTimeToMinutesFromNow(it.departureTime, nowCal) }
-        return departures.take(15)
+        return departures
     }
 
     /**
@@ -956,9 +1029,13 @@ class IdelisRepository(
             }
 
             val depDirNorm = normalizeDirection(dep.direction)
-            val dirMatches = lineMatches.filter {
-                val theoNorm = normalizeDirection(it.tripHeadsign)
-                theoNorm.contains(depDirNorm) || depDirNorm.contains(theoNorm)
+            val dirMatches = if (depDirNorm.isNotEmpty()) {
+                lineMatches.filter {
+                    val theoNorm = normalizeDirection(it.tripHeadsign)
+                    theoNorm.isNotEmpty() && (theoNorm.contains(depDirNorm) || depDirNorm.contains(theoNorm))
+                }
+            } else {
+                emptyList()
             }
 
             val candidates = if (dirMatches.isNotEmpty()) dirMatches else lineMatches
@@ -972,9 +1049,9 @@ class IdelisRepository(
                 val parts = theo.departureTime.split(":")
                 val theoHour = parts.getOrNull(0)?.toIntOrNull() ?: continue
                 val theoMin = parts.getOrNull(1)?.toIntOrNull() ?: continue
-                val theoMinutesOfDay = theoHour * 60 + theoMin
+                val theoMinutesOfDay = ((theoHour * 60 + theoMin) % 1440 + 1440) % 1440
 
-                // Gestion du franchissement de minuit
+                // Gestion du franchissement de minuit (y compris horaires GTFS >= 24:00)
                 var diff = expectedMinutesOfDay - theoMinutesOfDay
                 if (diff > 720) diff -= 1440
                 if (diff < -720) diff += 1440
@@ -986,16 +1063,21 @@ class IdelisRepository(
                 }
             }
 
-            val aimedTimeFormatted = if (bestTheo != null) {
-                val p = bestTheo.departureTime.split(":")
-                val h = p.getOrNull(0)?.toIntOrNull() ?: expectedHour
+            // Garde-fou : un bus urbain n'a jamais un retard de +500min ; un écart > MAX_PLAUSIBLE_DELAY_MINUTES
+            // signifie qu'aucun passage théorique correspondant n'était disponible pour cette course/journée.
+            val isPlausibleMatch = bestTheo != null && abs(bestDelay) <= MAX_PLAUSIBLE_DELAY_MINUTES
+            val matchedTheo = if (isPlausibleMatch) bestTheo else null
+
+            val aimedTimeFormatted = if (matchedTheo != null) {
+                val p = matchedTheo.departureTime.split(":")
+                val h = (p.getOrNull(0)?.toIntOrNull() ?: expectedHour) % 24
                 val m = p.getOrNull(1)?.toIntOrNull() ?: expectedMinute
                 String.format(Locale.FRANCE, "%02d:%02d", h, m)
             } else {
                 expectedTimeFormatted
             }
 
-            val delayMinutes = if (bestTheo != null) bestDelay else 0
+            val delayMinutes = if (matchedTheo != null) bestDelay else 0
             val status = when {
                 delayMinutes > 0 -> DepartureStatus.DELAYED
                 delayMinutes < 0 -> DepartureStatus.EARLY
@@ -1012,7 +1094,7 @@ class IdelisRepository(
             val route = globalOfficialRoutesMap[dep.lineRef.uppercase()] ?: officialRoutesMap[dep.lineRef.uppercase()]
             val colorHex = route?.colorHex?.removePrefix("#") ?: getRouteColors(dep.lineRef).first
             val textHex = if (colorHex.equals("FFC107", true) || colorHex.equals("FFCC00", true)) "121212" else "FFFFFF"
-            val iconUrl = dep.linePictoUrl ?: (globalLineIconsMap[dep.lineRef.uppercase()] ?: lineIconsMap[dep.lineRef.uppercase()])
+            val iconUrl = resolveLineIconUrl(dep.lineRef) ?: dep.linePictoUrl
 
             DepartureComparison(
                 id = "live_${dep.lineRef}_${dep.direction}_${index}_${dep.timeText}",
@@ -1059,11 +1141,16 @@ class IdelisRepository(
 
             // Si diffMinutes == 0 et que l'heure théorique n'était pas fournie par SIRI, chercher dans le GTFS
             if (aimedTimeMs <= 0 && gtfsList.isNotEmpty() && expectedTimeMs > 0) {
-                val expCal = Calendar.getInstance().apply { timeInMillis = expectedTimeMs }
+                val expCal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ).apply { timeInMillis = expectedTimeMs }
                 val expMinOfDay = expCal.get(Calendar.HOUR_OF_DAY) * 60 + expCal.get(Calendar.MINUTE)
                 val lineMatches = gtfsList.filter { it.routeShortName.equals(visit.lineRef, ignoreCase = true) }
                 val dirNorm = normalizeDirection(visit.destinationName)
-                val dirMatches = lineMatches.filter { normalizeDirection(it.tripHeadsign).contains(dirNorm) }
+                val dirMatches = if (dirNorm.isNotEmpty()) {
+                    lineMatches.filter {
+                        val theoNorm = normalizeDirection(it.tripHeadsign)
+                        theoNorm.isNotEmpty() && (theoNorm.contains(dirNorm) || dirNorm.contains(theoNorm))
+                    }
+                } else emptyList()
                 val candidates = if (dirMatches.isNotEmpty()) dirMatches else lineMatches
 
                 var bestDiff = Int.MAX_VALUE
@@ -1072,15 +1159,16 @@ class IdelisRepository(
                     val parts = theo.departureTime.split(":")
                     val h = parts.getOrNull(0)?.toIntOrNull() ?: continue
                     val m = parts.getOrNull(1)?.toIntOrNull() ?: continue
-                    var d = expMinOfDay - (h * 60 + m)
+                    val theoMod = ((h * 60 + m) % 1440 + 1440) % 1440
+                    var d = expMinOfDay - theoMod
                     if (d > 720) d -= 1440
                     if (d < -720) d += 1440
                     if (abs(d) < abs(bestDiff)) {
                         bestDiff = d
-                        bestAimed = String.format(Locale.FRANCE, "%02d:%02d", h, m)
+                        bestAimed = String.format(Locale.FRANCE, "%02d:%02d", h % 24, m)
                     }
                 }
-                if (bestDiff != Int.MAX_VALUE) {
+                if (bestDiff != Int.MAX_VALUE && abs(bestDiff) <= MAX_PLAUSIBLE_DELAY_MINUTES) {
                     diffMinutes = bestDiff
                     aimedFormatted = bestAimed
                 }
@@ -1106,7 +1194,7 @@ class IdelisRepository(
             val route = officialRoutesMap[visit.lineRef.uppercase()]
             val colorHex = route?.colorHex?.removePrefix("#") ?: getRouteColors(visit.lineRef).first
             val textHex = if (colorHex.equals("FFC107", true) || colorHex.equals("FFCC00", true)) "121212" else "FFFFFF"
-            val iconUrl = lineIconsMap[visit.lineRef.uppercase()]
+            val iconUrl = resolveLineIconUrl(visit.lineRef)
 
             comparisons.add(
                 DepartureComparison(
@@ -1136,17 +1224,19 @@ class IdelisRepository(
     private fun buildTheoreticalOnlyDepartures(
         gtfsList: List<GtfsTheoreticalDeparture>
     ): List<DepartureComparison> {
-        val nowCal = Calendar.getInstance()
+        val parisTz = GtfsScheduleIndex.PARIS_TZ
+        val nowCal = Calendar.getInstance(parisTz)
         val nowMs = nowCal.timeInMillis
 
         val list = gtfsList.mapIndexed { index, theo ->
             val timeParts = theo.departureTime.split(":")
-            val depCal = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, timeParts.getOrNull(0)?.toIntOrNull() ?: nowCal.get(Calendar.HOUR_OF_DAY))
+            val rawHour = timeParts.getOrNull(0)?.toIntOrNull() ?: nowCal.get(Calendar.HOUR_OF_DAY)
+            val depCal = Calendar.getInstance(parisTz).apply {
+                set(Calendar.HOUR_OF_DAY, rawHour % 24)
                 set(Calendar.MINUTE, timeParts.getOrNull(1)?.toIntOrNull() ?: nowCal.get(Calendar.MINUTE))
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
-                if (get(Calendar.HOUR_OF_DAY) < nowCal.get(Calendar.HOUR_OF_DAY)) {
+                if (rawHour >= 24 || get(Calendar.HOUR_OF_DAY) < nowCal.get(Calendar.HOUR_OF_DAY)) {
                     add(Calendar.DAY_OF_YEAR, 1)
                 }
             }
@@ -1155,7 +1245,7 @@ class IdelisRepository(
 
             val formattedTime = String.format(Locale.FRANCE, "%02d:%02d", depCal.get(Calendar.HOUR_OF_DAY), depCal.get(Calendar.MINUTE))
             val comparisonLabel = "$formattedTime (À l'heure)"
-            val iconUrl = globalLineIconsMap[theo.routeShortName.uppercase()] ?: lineIconsMap[theo.routeShortName.uppercase()]
+            val iconUrl = resolveLineIconUrl(theo.routeShortName)
 
             DepartureComparison(
                 id = "gtfs_${theo.routeShortName}_${index}_${theo.tripHeadsign}_$formattedTime",
@@ -1180,16 +1270,19 @@ class IdelisRepository(
 
     private fun parseTimeToMinutesFromNow(timeStr: String, nowCal: Calendar): Long {
         val parts = timeStr.split(":")
-        val h = parts.getOrNull(0)?.toIntOrNull() ?: nowCal.get(Calendar.HOUR_OF_DAY)
+        val parisTz = GtfsScheduleIndex.PARIS_TZ
+        val rawH = parts.getOrNull(0)?.toIntOrNull() ?: nowCal.get(Calendar.HOUR_OF_DAY)
+        val h = rawH % 24
         val m = parts.getOrNull(1)?.toIntOrNull() ?: nowCal.get(Calendar.MINUTE)
         val s = parts.getOrNull(2)?.toIntOrNull() ?: 0
 
-        val depCal = Calendar.getInstance().apply {
+        val depCal = Calendar.getInstance(parisTz).apply {
+            timeInMillis = nowCal.timeInMillis
             set(Calendar.HOUR_OF_DAY, h)
             set(Calendar.MINUTE, m)
             set(Calendar.SECOND, s)
             set(Calendar.MILLISECOND, 0)
-            if (h < nowCal.get(Calendar.HOUR_OF_DAY)) {
+            if (rawH >= 24 || h < nowCal.get(Calendar.HOUR_OF_DAY)) {
                 add(Calendar.DAY_OF_YEAR, 1)
             }
         }
@@ -1209,9 +1302,17 @@ class IdelisRepository(
      * (requete=infostrafic&requete_val%5Blignesfav%5D=0), parsées avec Jsoup.
      */
     suspend fun fetchLiveTrafficAlerts(): Result<List<TrafficAlert>> = withContext(Dispatchers.IO) {
+        ensureLineIconsLoaded()
         val result = webScraperService.getInfosTrafic()
         result.map { webAlerts ->
             webAlerts.map { item ->
+                val resolvedPictos = if (item.affectedLines.isNotEmpty()) {
+                    item.affectedLines.mapIndexedNotNull { idx, line ->
+                        resolveLineIconUrl(line) ?: item.affectedLinePictos.getOrNull(idx)
+                    }.distinct().ifEmpty { item.affectedLinePictos }
+                } else {
+                    item.affectedLinePictos
+                }
                 TrafficAlert(
                     id = item.id,
                     title = item.title,
@@ -1219,7 +1320,7 @@ class IdelisRepository(
                     affectedLines = item.affectedLines,
                     severity = "WARNING",
                     publishedDate = item.publishedDate.ifBlank { "En cours • idelis.fr" },
-                    affectedLinePictos = item.affectedLinePictos,
+                    affectedLinePictos = resolvedPictos,
                     deviationLink = item.deviationLink
                 )
             }
@@ -1257,11 +1358,12 @@ class IdelisRepository(
 
     private fun parseTimestampToMillis(isoString: String): Long {
         if (isoString.isBlank()) return 0L
+        val parisTz = GtfsScheduleIndex.PARIS_TZ
         val formats = listOf(
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.FRANCE),
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.FRANCE),
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.FRANCE).apply { timeZone = TimeZone.getTimeZone("UTC") },
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.FRANCE)
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.FRANCE).apply { timeZone = parisTz }
         )
         for (format in formats) {
             try {
@@ -1273,8 +1375,8 @@ class IdelisRepository(
         try {
             val parts = isoString.split(":")
             if (parts.size >= 2) {
-                val cal = Calendar.getInstance().apply {
-                    set(Calendar.HOUR_OF_DAY, parts[0].trim().toInt())
+                val cal = Calendar.getInstance(parisTz).apply {
+                    set(Calendar.HOUR_OF_DAY, parts[0].trim().toInt() % 24)
                     set(Calendar.MINUTE, parts[1].trim().toInt())
                     set(Calendar.SECOND, if (parts.size > 2) parts[2].trim().toInt() else 0)
                 }
@@ -1287,7 +1389,9 @@ class IdelisRepository(
 
     private fun formatMillisToTime(timeMs: Long): String {
         if (timeMs <= 0L) return ""
-        val format = SimpleDateFormat("HH:mm", Locale.FRANCE)
+        val format = SimpleDateFormat("HH:mm", Locale.FRANCE).apply {
+            timeZone = GtfsScheduleIndex.PARIS_TZ
+        }
         return format.format(Date(timeMs))
     }
 

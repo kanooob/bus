@@ -53,7 +53,9 @@ data class StopServing(
 /**
  * Client pour l'API Explore v2.1 d'OpenDataSoft du portail Open Data Idelis (https://data.idelis.fr/).
  */
-class IdelisExploreService {
+class IdelisExploreService(
+    private val okHttpClient: OkHttpClient = defaultClient()
+) {
 
     companion object {
         private const val TAG = "IdelisExploreService"
@@ -63,19 +65,19 @@ class IdelisExploreService {
         const val DATASET_STOPS_BY_LINE = "liste-des-arrets-par-ligne-et-par-sens-du-reseau-idelis"
         const val DATASET_LINE_ICONS = "liste-des-icones-des-lignes"
 
-        const val URL_GTFS_ZIP = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
+        const val URL_GTFS_ZIP = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/exports/json/?lang=fr&timezone=Europe%2FParis"
 
         const val URL_EXPORTS_ROUTES = "$BASE_EXPLORE_URL/$DATASET_ROUTES_GTFS/exports/json"
         const val URL_EXPORTS_STOPS = "$BASE_EXPLORE_URL/$DATASET_STOPS_BY_LINE/exports/json"
-        const val URL_EXPORTS_ICONS = "$BASE_EXPLORE_URL/$DATASET_LINE_ICONS/exports/json"
+        const val URL_EXPORTS_ICONS = "$BASE_EXPLORE_URL/$DATASET_LINE_ICONS/exports/json/?lang=fr&timezone=Europe%2FParis"
+
+        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .build()
     }
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build()
-
-    private val waybackGtfsFetcher = WaybackGtfsFetcher()
+    private val waybackGtfsFetcher = WaybackGtfsFetcher(okHttpClient)
 
     private fun JSONObject.optNullableString(key: String): String? {
         if (isNull(key)) return null
@@ -194,7 +196,7 @@ class IdelisExploreService {
 
     /**
      * Télécharge les icônes officielles des lignes :
-     * URL : https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-icones-des-lignes/exports/json
+     * URL : https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-icones-des-lignes/exports/json/?lang=fr&timezone=Europe%2FParis
      */
     suspend fun downloadLineIcons(): Result<Map<String, String>> = withContext(Dispatchers.IO) {
         val request = Request.Builder()
@@ -215,16 +217,51 @@ class IdelisExploreService {
                 return@withContext Result.failure(Exception("Réponse JSON vide"))
             }
 
-            val iconsMap = mutableMapOf<String, String>()
-            val jsonArray = JSONArray(jsonString)
+            val trimmed = jsonString.trim().removePrefix("\uFEFF").trim()
+            val jsonArray = when {
+                trimmed.startsWith("[") -> JSONArray(trimmed)
+                trimmed.startsWith("{") -> JSONObject(trimmed).optJSONArray("results") ?: JSONArray()
+                else -> JSONArray()
+            }
 
+            val iconsMap = mutableMapOf<String, String>()
             for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val lineCode = obj.optString("ligne", "").trim()
+                val obj = jsonArray.optJSONObject(i) ?: continue
+                val rawLineCode = obj.optString("ligne", "").trim()
                 val fileObj = obj.optJSONObject("fichier_png")
-                val iconUrl = fileObj?.optNullableString("url")
-                if (lineCode.isNotBlank() && !iconUrl.isNullOrBlank()) {
-                    iconsMap[lineCode.uppercase()] = iconUrl
+                val rawUrl = fileObj?.optNullableString("url")
+                val iconUrl = when {
+                    rawUrl == null -> null
+                    rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true) -> rawUrl
+                    rawUrl.startsWith("//") -> "https:$rawUrl"
+                    rawUrl.startsWith("/") -> "https://data.idelis.fr$rawUrl"
+                    else -> null
+                }
+                if (rawLineCode.isNotBlank() && !iconUrl.isNullOrBlank()) {
+                    val upperRaw = rawLineCode.uppercase(Locale.ROOT)
+                    val cleanCode = upperRaw
+                        .removePrefix("LIGNE ")
+                        .removePrefix("CHRONOBUS ")
+                        .trim()
+                    iconsMap[upperRaw] = iconUrl
+                    if (cleanCode.isNotBlank()) {
+                        iconsMap[cleanCode] = iconUrl
+                        val strippedZeros = cleanCode.trimStart('0')
+                        if (strippedZeros.isNotBlank() && strippedZeros != cleanCode && cleanCode.all { it.isDigit() }) {
+                            if (!iconsMap.containsKey(strippedZeros)) {
+                                iconsMap[strippedZeros] = iconUrl
+                            }
+                        }
+                        when (cleanCode) {
+                            "FÉBUS", "FEBUS" -> if (!iconsMap.containsKey("F")) iconsMap["F"] = iconUrl
+                            "F" -> {
+                                if (!iconsMap.containsKey("FÉBUS")) iconsMap["FÉBUS"] = iconUrl
+                                if (!iconsMap.containsKey("FEBUS")) iconsMap["FEBUS"] = iconUrl
+                            }
+                            "COXITIS" -> if (!iconsMap.containsKey("COXI")) iconsMap["COXI"] = iconUrl
+                            "COXI" -> if (!iconsMap.containsKey("COXITIS")) iconsMap["COXITIS"] = iconUrl
+                        }
+                    }
                 }
             }
 
@@ -303,77 +340,23 @@ class IdelisExploreService {
     }
 
     /**
-     * Télécharge le GTFS complet (https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/)
+     * Télécharge le GTFS complet (https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/exports/json/?lang=fr&timezone=Europe%2FParis)
      * et analyse calendar.txt et calendar_dates.txt pour déterminer la période actuelle
      * (Bleue, Orange, Verte, Grise) ainsi que les travaux ou perturbations du jour.
      */
     suspend fun downloadGtfsZipAndDetectPeriod(): Result<Pair<IdelisPeriod, List<String>>> = withContext(Dispatchers.IO) {
-        val nowCal = Calendar.getInstance()
-        val dayOfWeek = nowCal.get(Calendar.DAY_OF_WEEK)
-        val todayStr = SimpleDateFormat("yyyyMMdd", Locale.FRANCE).format(nowCal.time)
-
-        // Période de base selon les règles Idelis :
-        // - Orange : Lundi au vendredi (scolaire)
-        // - Bleue : Lundi au vendredi (non scolaire / vacances)
-        // - Grise : Samedi
-        // - Verte : Dimanche et jours fériés
-        var detectedPeriod = when (dayOfWeek) {
-            Calendar.SATURDAY -> IdelisPeriod.GRISE
-            Calendar.SUNDAY -> IdelisPeriod.VERTE
-            else -> IdelisPeriod.ORANGE // Semaine normale scolaire par défaut
-        }
-
+        val nowCal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ)
+        var detectedPeriod = GtfsScheduleIndex.detectDefaultPeriod(nowCal)
         val worksNotes = mutableListOf<String>()
 
         try {
             val fetched = waybackGtfsFetcher.fetchGtfsZip(URL_GTFS_ZIP).getOrNull()
             val bytes = fetched?.bytes
             if (bytes != null && bytes.isNotEmpty()) {
-                val zipStream = ZipInputStream(ByteArrayInputStream(bytes))
-                    var entry = zipStream.nextEntry
-                    var calendarContent: String? = null
-                    var calendarDatesContent: String? = null
-
-                    while (entry != null) {
-                        if (entry.name == "calendar.txt") {
-                            calendarContent = zipStream.bufferedReader(Charsets.UTF_8).readText()
-                        } else if (entry.name == "calendar_dates.txt") {
-                            calendarDatesContent = zipStream.bufferedReader(Charsets.UTF_8).readText()
-                        }
-                        zipStream.closeEntry()
-                        entry = zipStream.nextEntry
-                    }
-                    zipStream.close()
-
-                    // Analyse de calendar.txt pour les vacances scolaires (PVS = Petites Vacances Scolaires -> Période Bleue non scolaire)
-                    if (dayOfWeek != Calendar.SATURDAY && dayOfWeek != Calendar.SUNDAY && calendarContent != null) {
-                        for (line in calendarContent.lineSequence()) {
-                            val parts = line.split(",")
-                            if (parts.size >= 10) {
-                                val serviceId = parts[0]
-                                val startDate = parts[8]
-                                val endDate = parts[9]
-                                if (serviceId.contains("PVS", ignoreCase = true) && todayStr >= startDate && todayStr <= endDate) {
-                                    detectedPeriod = IdelisPeriod.BLEUE
-                                    break
-                                }
-                            }
-                        }
-                    }
-
-                    // Analyse de calendar_dates.txt pour les travaux et suppressions de service
-                    if (calendarDatesContent != null) {
-                        for (line in calendarDatesContent.lineSequence()) {
-                            val parts = line.split(",")
-                            if (parts.size >= 3) {
-                                val serviceId = parts[0]
-                                val date = parts[1]
-                                val exceptionType = parts[2].trim()
-                                if (date == todayStr && exceptionType == "2") {
-                                    worksNotes.add("Alerte travaux / déviation : service $serviceId adapté")
-                                }
-                            }
-                    }
+                val snapshot = GtfsScheduleIndex.updateFromZipBytes(bytes, nowCal)
+                if (snapshot != null) {
+                    detectedPeriod = snapshot.activePeriod
+                    worksNotes.addAll(snapshot.worksNotes)
                 }
             }
             Result.success(Pair(detectedPeriod, worksNotes))

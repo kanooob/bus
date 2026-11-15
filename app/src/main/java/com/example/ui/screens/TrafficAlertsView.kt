@@ -132,20 +132,21 @@ fun TrafficAlertCard(
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(pictoUrl)
+                                .transformations(com.example.ui.components.IdelisLineIconTransformation)
                                 .crossfade(true)
                                 .build(),
                             contentDescription = "Picto ligne impactée",
                             modifier = Modifier
                                 .size(28.dp)
-                                .clip(RoundedCornerShape(6.dp)),
-                            contentScale = ContentScale.Fit
+                                .clip(RoundedCornerShape(percent = 30)),
+                            contentScale = ContentScale.Crop
                         )
                     }
                     if (alert.affectedLinePictos.isEmpty()) {
                         alert.affectedLines.forEach { line ->
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .clip(RoundedCornerShape(percent = 30))
                                     .background(IdelisGold.copy(alpha = 0.2f))
                                     .padding(horizontal = 8.dp, vertical = 2.dp)
                             ) {

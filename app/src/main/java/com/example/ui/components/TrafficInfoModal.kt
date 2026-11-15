@@ -368,20 +368,21 @@ fun TrafficInfoModal(
                                             AsyncImage(
                                                 model = ImageRequest.Builder(context)
                                                     .data(pictoUrl)
+                                                    .transformations(IdelisLineIconTransformation)
                                                     .crossfade(true)
                                                     .build(),
                                                 contentDescription = "Picto ligne impactée",
                                                 modifier = Modifier
                                                     .size(28.dp)
-                                                    .clip(RoundedCornerShape(8.dp)),
-                                                contentScale = ContentScale.Fit
+                                                    .clip(RoundedCornerShape(percent = 30)),
+                                                contentScale = ContentScale.Crop
                                             )
                                         }
                                         if (alert.affectedLinePictos.isEmpty()) {
                                             alert.affectedLines.forEach { line ->
                                                 Box(
                                                     modifier = Modifier
-                                                        .clip(RoundedCornerShape(6.dp))
+                                                        .clip(RoundedCornerShape(percent = 30))
                                                         .background(StatusDelayed.copy(alpha = 0.16f))
                                                         .padding(horizontal = 8.dp, vertical = 3.dp)
                                                 ) {

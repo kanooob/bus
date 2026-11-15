@@ -92,20 +92,14 @@ fun DepartureCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(routeColor)
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = departure.lineRef,
-                            color = routeTextColor,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 18.sp
-                        )
-                    }
+                    IdelisLineIconBadge(
+                        lineRef = departure.lineRef,
+                        iconUrl = departure.iconUrl,
+                        routeColor = routeColor,
+                        routeTextColor = routeTextColor,
+                        size = 44.dp,
+                        contentDescription = "Icône ligne ${departure.lineRef}"
+                    )
 
                     Spacer(modifier = Modifier.width(12.dp))
 

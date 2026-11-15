@@ -622,7 +622,8 @@ class IdelisWebScraperService(
                 isRealTime = dep.isRealTime,
                 minutesUntilDeparture = waitMins,
                 comparisonLabel = if (dep.isRealTime) "Temps réel idelis.fr (direct)" else "Horaire prévu",
-                iconUrl = dep.linePictoUrl
+                iconUrl = com.example.data.repository.IdelisRepository.resolveLineIconUrl(dep.lineRef)
+                    ?: dep.linePictoUrl
             )
         }
     }

@@ -104,9 +104,9 @@ fun VehicleCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(percent = 30))
                             .background(if (vehicle.lineRef == "F") IdelisGold else IdelisT1Blue)
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Text(
                             text = vehicle.lineRef,
