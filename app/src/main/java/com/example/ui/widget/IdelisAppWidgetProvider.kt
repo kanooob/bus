@@ -236,8 +236,8 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                                 val dep = departures[i]
                                 views.setViewVisibility(def.rowId, View.VISIBLE)
 
-                                // Icône officielle de la ligne (liste-des-icones-des-lignes) avec repli bitmap
-                                val badgeBitmap = IdelisWidgetHelper.loadLineIconBitmap(dep.iconUrl)
+                                // Icône officielle de la ligne (liste-des-icones-des-lignes) avec cache RAM/disque et repli bitmap
+                                val badgeBitmap = IdelisWidgetHelper.loadLineIconBitmap(dep.iconUrl, context)
                                     ?: IdelisWidgetHelper.createLineBadgeBitmap(
                                         lineRef = dep.lineRef,
                                         routeColorHex = dep.routeColorHex,

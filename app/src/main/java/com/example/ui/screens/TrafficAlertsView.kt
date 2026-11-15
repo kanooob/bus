@@ -128,13 +128,17 @@ fun TrafficAlertCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    val iconLoader = androidx.compose.runtime.remember(context) {
+                        com.example.ui.components.IdelisLineIconCache.getImageLoader(context)
+                    }
                     alert.affectedLinePictos.forEach { pictoUrl ->
                         AsyncImage(
                             model = ImageRequest.Builder(context)
                                 .data(pictoUrl)
                                 .transformations(com.example.ui.components.IdelisLineIconTransformation)
-                                .crossfade(true)
+                                .crossfade(false)
                                 .build(),
+                            imageLoader = iconLoader,
                             contentDescription = "Picto ligne impactée",
                             modifier = Modifier
                                 .size(28.dp)

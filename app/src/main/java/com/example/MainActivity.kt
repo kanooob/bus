@@ -59,10 +59,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var isInitialResume = true
+    private var lastWidgetResumeRefreshMs = 0L
+
     override fun onResume() {
         super.onResume()
-        // Rafraîchit les widgets à l'ouverture / reprise de l'application sans notification
-        IdelisAppWidgetProvider.refreshAllWidgets(applicationContext, postSilentNotification = false)
+        val now = System.currentTimeMillis()
+        if (isInitialResume) {
+            isInitialResume = false
+            lastWidgetResumeRefreshMs = now
+            return
+        }
+        // Rafraîchit les widgets uniquement lors d'une reprise ultérieure (espacée d'au moins 30s)
+        if (now - lastWidgetResumeRefreshMs >= 30_000L) {
+            lastWidgetResumeRefreshMs = now
+            IdelisAppWidgetProvider.refreshAllWidgets(applicationContext, postSilentNotification = false)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

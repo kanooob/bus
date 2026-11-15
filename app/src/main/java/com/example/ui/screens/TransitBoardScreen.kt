@@ -426,7 +426,7 @@ fun TransitBoardScreen(
                 activePeriod = uiState.activePeriod,
                 isLoading = uiState.isTrafficLoading,
                 errorMessage = uiState.trafficErrorMessage,
-                onRefresh = { viewModel.refreshTrafficAlerts(notifyIfNew = false) },
+                onRefresh = { viewModel.refreshTrafficAlerts(notifyIfNew = false, forceRefresh = true) },
                 onDismissRequest = { isTrafficInfoOpen = false },
                 isDarkTheme = effectiveDarkTheme
             )

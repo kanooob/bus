@@ -364,13 +364,15 @@ fun TrafficInfoModal(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                                         verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
+                                        val iconLoader = remember(context) { IdelisLineIconCache.getImageLoader(context) }
                                         alert.affectedLinePictos.forEach { pictoUrl ->
                                             AsyncImage(
                                                 model = ImageRequest.Builder(context)
                                                     .data(pictoUrl)
                                                     .transformations(IdelisLineIconTransformation)
-                                                    .crossfade(true)
+                                                    .crossfade(false)
                                                     .build(),
+                                                imageLoader = iconLoader,
                                                 contentDescription = "Picto ligne impactée",
                                                 modifier = Modifier
                                                     .size(28.dp)

@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.util.Log
 import com.example.data.local.GtfsDatabaseSeeder
 import com.example.data.local.IdelisDatabase
+import com.example.data.local.OpenDataCacheManager
 import com.example.data.model.BusVehicle
 import com.example.data.model.DepartureComparison
 import com.example.data.model.DepartureStatus
@@ -28,14 +29,24 @@ import com.example.data.remote.IdelisWebScraperService
 import com.example.data.remote.OfficialRouteGtfs
 import com.example.data.remote.StopServing
 import com.example.data.remote.UsageStatsPingService
+import com.example.ui.components.IdelisLineIconCache
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.roundToLong
 
@@ -72,6 +83,25 @@ class IdelisRepository(
     val updaterService: GitHubUpdaterService = GitHubUpdaterService(),
     val usageStatsPingService: UsageStatsPingService = UsageStatsPingService()
 ) {
+
+    private val cacheManager: OpenDataCacheManager? by lazy {
+        appContext?.let { OpenDataCacheManager(it) }
+    }
+    private val repoIoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val departuresMutex = Mutex()
+    private val inFlightDepartures = ConcurrentHashMap<String, Deferred<DeparturesResult>>()
+    private val recentDeparturesCache = ConcurrentHashMap<String, Pair<Long, DeparturesResult>>()
+
+    private val trafficMutex = Mutex()
+    @Volatile
+    private var cachedTrafficAlerts: Pair<Long, List<TrafficAlert>>? = null
+
+    @Volatile
+    private var lastIconsAttemptFailedAtMs: Long = 0L
+    @Volatile
+    private var lastRoutesAttemptFailedAtMs: Long = 0L
+    @Volatile
+    private var lastStopsAttemptFailedAtMs: Long = 0L
 
     init {
         preferencesManager?.let { pm ->
@@ -404,6 +434,30 @@ class IdelisRepository(
         var globalWorksAlerts: List<String> = emptyList()
 
         const val MAX_PLAUSIBLE_DELAY_MINUTES = 45
+        const val METADATA_CACHE_TTL_MS = OpenDataCacheManager.DEFAULT_METADATA_TTL_MS
+        private const val DEPARTURES_COALESCE_WINDOW_MS = 3_500L
+        private const val TRAFFIC_COALESCE_WINDOW_MS = 10_000L
+        private const val FAILED_FETCH_COOLDOWN_MS = 15_000L
+
+        @Volatile
+        var globalLineIconsUpdatedAtMs: Long = 0L
+
+        @Volatile
+        var globalOfficialRoutesUpdatedAtMs: Long = 0L
+
+        @Volatile
+        var globalDownloadedStopsUpdatedAtMs: Long = 0L
+
+        @Volatile
+        var globalGtfsUpdatedAtMs: Long = 0L
+
+        private val iconsMutex = Mutex()
+        private val routesMutex = Mutex()
+        private val stopsMutex = Mutex()
+        private val openDataMutex = Mutex()
+        private val gtfsSyncMutex = Mutex()
+        private val diskHydrateMetaMutex = Mutex()
+        private val diskHydrateHeavyMutex = Mutex()
 
         fun resolveLineIconUrl(
             lineRef: String,
@@ -464,45 +518,244 @@ class IdelisRepository(
             ?: resolveLineIconUrl(lineRef, lineIconsMap)
     }
 
-    suspend fun ensureLineIconsLoaded() = withContext(Dispatchers.IO) {
-        if (globalLineIconsMap.isEmpty()) {
+    /**
+     * Charge depuis le disque les métadonnées légères (icônes et fiches lignes) si absentes de la RAM.
+     * Aucun appel réseau : s'exécute en quelques millisecondes.
+     */
+    suspend fun hydrateMetadataFromDiskIfNeeded() = withContext(Dispatchers.IO) {
+        val cm = cacheManager ?: return@withContext
+        if (globalLineIconsMap.isNotEmpty() && globalOfficialRoutesMap.isNotEmpty()) return@withContext
+
+        diskHydrateMetaMutex.withLock {
+            if (globalLineIconsMap.isEmpty()) {
+                cm.loadLineIcons()?.let { entry ->
+                    if (entry.value.isNotEmpty()) {
+                        globalLineIconsMap = entry.value
+                        globalLineIconsUpdatedAtMs = entry.savedAtMs
+                        appContext?.let { IdelisLineIconCache.preloadIcons(it, entry.value.values) }
+                    }
+                }
+            }
+            if (globalOfficialRoutesMap.isEmpty()) {
+                cm.loadOfficialRoutes()?.let { entry ->
+                    if (entry.value.isNotEmpty()) {
+                        globalOfficialRoutesMap = entry.value.associateBy { it.lineCode.uppercase() }
+                        globalOfficialRoutesUpdatedAtMs = entry.savedAtMs
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Charge depuis le disque les caches plus volumineux (arrêts par ligne et archive GTFS ZIP) si absents de la RAM.
+     */
+    suspend fun hydrateScheduleAndStopsFromDiskIfNeeded() = withContext(Dispatchers.IO) {
+        val cm = cacheManager ?: return@withContext
+        if (globalDownloadedStopsCache.isNotEmpty() && GtfsScheduleIndex.current != null) return@withContext
+
+        diskHydrateHeavyMutex.withLock {
+            if (globalDownloadedStopsCache.isEmpty()) {
+                cm.loadStopsByLine()?.let { entry ->
+                    if (entry.value.isNotEmpty()) {
+                        globalDownloadedStopsCache = entry.value
+                        globalServingsByStopName = entry.value.groupBy { getCanonicalStopName(it.stopName).lowercase() }
+                        globalDownloadedStopsUpdatedAtMs = entry.savedAtMs
+                    }
+                }
+            }
+            if (GtfsScheduleIndex.current == null) {
+                cm.loadGtfsZipBytes()?.let { entry ->
+                    val snapshot = GtfsScheduleIndex.updateFromZipBytes(entry.value)
+                    if (snapshot != null) {
+                        globalCurrentPeriod = snapshot.activePeriod
+                        if (snapshot.worksNotes.isNotEmpty()) {
+                            globalWorksAlerts = snapshot.worksNotes
+                        }
+                        globalGtfsUpdatedAtMs = entry.savedAtMs
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun hydrateCachesFromDiskIfNeeded() {
+        hydrateMetadataFromDiskIfNeeded()
+        hydrateScheduleAndStopsFromDiskIfNeeded()
+    }
+
+    suspend fun ensureLineIconsLoaded(forceRefresh: Boolean = false) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && globalLineIconsMap.isNotEmpty() &&
+            (globalLineIconsUpdatedAtMs == 0L || now - globalLineIconsUpdatedAtMs < METADATA_CACHE_TTL_MS)
+        ) {
+            return@withContext
+        }
+        if (!forceRefresh && lastIconsAttemptFailedAtMs > 0L && now - lastIconsAttemptFailedAtMs < FAILED_FETCH_COOLDOWN_MS) {
+            return@withContext
+        }
+
+        iconsMutex.withLock {
+            val currentNow = System.currentTimeMillis()
+            if (!forceRefresh && globalLineIconsMap.isNotEmpty() &&
+                (globalLineIconsUpdatedAtMs == 0L || currentNow - globalLineIconsUpdatedAtMs < METADATA_CACHE_TTL_MS)
+            ) {
+                return@withLock
+            }
+            if (!forceRefresh && globalLineIconsMap.isEmpty()) {
+                cacheManager?.loadLineIcons()?.let { entry ->
+                    if (entry.value.isNotEmpty()) {
+                        globalLineIconsMap = entry.value
+                        globalLineIconsUpdatedAtMs = entry.savedAtMs
+                        appContext?.let { IdelisLineIconCache.preloadIcons(it, entry.value.values) }
+                        if (entry.isFresh(METADATA_CACHE_TTL_MS, currentNow)) {
+                            return@withLock
+                        }
+                    }
+                }
+            }
             try {
                 val iconsRes = exploreService.downloadLineIcons()
                 if (iconsRes.isSuccess) {
                     val icons = iconsRes.getOrNull().orEmpty()
                     if (icons.isNotEmpty()) {
+                        val savedAt = System.currentTimeMillis()
                         globalLineIconsMap = icons
+                        globalLineIconsUpdatedAtMs = savedAt
+                        lastIconsAttemptFailedAtMs = 0L
+                        cacheManager?.saveLineIcons(icons, savedAt)
+                        appContext?.let { IdelisLineIconCache.preloadIcons(it, icons.values) }
+                        return@withLock
                     }
                 }
-            } catch (_: Exception) {}
+                lastIconsAttemptFailedAtMs = System.currentTimeMillis()
+            } catch (_: Exception) {
+                lastIconsAttemptFailedAtMs = System.currentTimeMillis()
+            }
         }
     }
 
-    suspend fun ensureStopsAndRoutesLoaded() = withContext(Dispatchers.IO) {
-        ensureLineIconsLoaded()
-        if (globalDownloadedStopsCache.isEmpty()) {
-            try {
-                val stopsRes = exploreService.downloadStopsByLineAndDirection()
-                if (stopsRes.isSuccess) {
-                    val records = stopsRes.getOrNull().orEmpty()
-                    if (records.isNotEmpty()) {
-                        globalDownloadedStopsCache = records
-                        globalServingsByStopName = records.groupBy { getCanonicalStopName(it.stopName).lowercase() }
+    suspend fun ensureOfficialRoutesLoaded(forceRefresh: Boolean = false) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && globalOfficialRoutesMap.isNotEmpty() &&
+            (globalOfficialRoutesUpdatedAtMs == 0L || now - globalOfficialRoutesUpdatedAtMs < METADATA_CACHE_TTL_MS)
+        ) {
+            return@withContext
+        }
+        if (!forceRefresh && lastRoutesAttemptFailedAtMs > 0L && now - lastRoutesAttemptFailedAtMs < FAILED_FETCH_COOLDOWN_MS) {
+            return@withContext
+        }
+
+        routesMutex.withLock {
+            val currentNow = System.currentTimeMillis()
+            if (!forceRefresh && globalOfficialRoutesMap.isNotEmpty() &&
+                (globalOfficialRoutesUpdatedAtMs == 0L || currentNow - globalOfficialRoutesUpdatedAtMs < METADATA_CACHE_TTL_MS)
+            ) {
+                return@withLock
+            }
+            if (!forceRefresh && globalOfficialRoutesMap.isEmpty()) {
+                cacheManager?.loadOfficialRoutes()?.let { entry ->
+                    if (entry.value.isNotEmpty()) {
+                        globalOfficialRoutesMap = entry.value.associateBy { it.lineCode.uppercase() }
+                        globalOfficialRoutesUpdatedAtMs = entry.savedAtMs
+                        if (entry.isFresh(METADATA_CACHE_TTL_MS, currentNow)) {
+                            return@withLock
+                        }
                     }
                 }
-            } catch (_: Exception) {}
-        }
-        if (globalOfficialRoutesMap.isEmpty()) {
+            }
             try {
                 val routesRes = exploreService.downloadOfficialRoutesGtfs()
                 if (routesRes.isSuccess) {
                     val routes = routesRes.getOrNull().orEmpty()
                     if (routes.isNotEmpty()) {
+                        val savedAt = System.currentTimeMillis()
                         globalOfficialRoutesMap = routes.associateBy { it.lineCode.uppercase() }
+                        globalOfficialRoutesUpdatedAtMs = savedAt
+                        lastRoutesAttemptFailedAtMs = 0L
+                        cacheManager?.saveOfficialRoutes(routes, savedAt)
+                        val gtfsRoutes = routes.map { r ->
+                            val colorClean = r.colorHex.removePrefix("#")
+                            val textHex = if (colorClean.equals("FFC107", true) || colorClean.equals("FFCC00", true)) "121212" else "FFFFFF"
+                            GtfsRoute(
+                                routeId = r.lineCode,
+                                routeShortName = r.lineCode,
+                                routeLongName = r.descriptif,
+                                routeColor = colorClean,
+                                routeTextColor = textHex
+                            )
+                        }
+                        try {
+                            database.routeDao().insertRoutes(gtfsRoutes)
+                        } catch (_: Exception) {}
+                        return@withLock
                     }
                 }
-            } catch (_: Exception) {}
+                lastRoutesAttemptFailedAtMs = System.currentTimeMillis()
+            } catch (_: Exception) {
+                lastRoutesAttemptFailedAtMs = System.currentTimeMillis()
+            }
         }
+    }
+
+    suspend fun ensureStopsCacheLoaded(forceRefresh: Boolean = false) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && globalDownloadedStopsCache.isNotEmpty() &&
+            (globalDownloadedStopsUpdatedAtMs == 0L || now - globalDownloadedStopsUpdatedAtMs < METADATA_CACHE_TTL_MS)
+        ) {
+            return@withContext
+        }
+        if (!forceRefresh && lastStopsAttemptFailedAtMs > 0L && now - lastStopsAttemptFailedAtMs < FAILED_FETCH_COOLDOWN_MS) {
+            return@withContext
+        }
+
+        stopsMutex.withLock {
+            val currentNow = System.currentTimeMillis()
+            if (!forceRefresh && globalDownloadedStopsCache.isNotEmpty() &&
+                (globalDownloadedStopsUpdatedAtMs == 0L || currentNow - globalDownloadedStopsUpdatedAtMs < METADATA_CACHE_TTL_MS)
+            ) {
+                return@withLock
+            }
+            if (!forceRefresh && globalDownloadedStopsCache.isEmpty()) {
+                cacheManager?.loadStopsByLine()?.let { entry ->
+                    if (entry.value.isNotEmpty()) {
+                        globalDownloadedStopsCache = entry.value
+                        globalServingsByStopName = entry.value.groupBy { getCanonicalStopName(it.stopName).lowercase() }
+                        globalDownloadedStopsUpdatedAtMs = entry.savedAtMs
+                        if (entry.isFresh(METADATA_CACHE_TTL_MS, currentNow)) {
+                            return@withLock
+                        }
+                    }
+                }
+            }
+            try {
+                val stopsRes = exploreService.downloadStopsByLineAndDirection()
+                if (stopsRes.isSuccess) {
+                    val records = stopsRes.getOrNull().orEmpty()
+                    if (records.isNotEmpty()) {
+                        val savedAt = System.currentTimeMillis()
+                        globalDownloadedStopsCache = records
+                        globalServingsByStopName = records.groupBy { getCanonicalStopName(it.stopName).lowercase() }
+                        globalDownloadedStopsUpdatedAtMs = savedAt
+                        lastStopsAttemptFailedAtMs = 0L
+                        cacheManager?.saveStopsByLine(records, savedAt)
+                        return@withLock
+                    }
+                }
+                lastStopsAttemptFailedAtMs = System.currentTimeMillis()
+            } catch (_: Exception) {
+                lastStopsAttemptFailedAtMs = System.currentTimeMillis()
+            }
+        }
+    }
+
+    suspend fun ensureStopsAndRoutesLoaded(forceRefresh: Boolean = false) = coroutineScope {
+        val iconsJob = async { ensureLineIconsLoaded(forceRefresh) }
+        val stopsJob = async { ensureStopsCacheLoaded(forceRefresh) }
+        val routesJob = async { ensureOfficialRoutesLoaded(forceRefresh) }
+        iconsJob.await()
+        stopsJob.await()
+        routesJob.await()
     }
 
     fun getAllStops(): Flow<List<GtfsStop>> = database.stopDao().getAllStops()
@@ -516,20 +769,27 @@ class IdelisRepository(
 
     /**
      * Télécharge et analyse le fichier ZIP GTFS complet (stops, routes, trips, stop_times, calendar, calendar_dates)
-     * pour constituer et rafraîchir le référentiel Room local.
+     * pour constituer et rafraîchir le référentiel Room local, avec déduplication et mise en cache disque.
      */
     suspend fun syncGtfsZipArchive(
         zipUrl: String = GtfsDownloadService.DEFAULT_GTFS_ZIP_URL,
         isFirstSync: Boolean = false
     ): GtfsSyncReport = withContext(Dispatchers.IO) {
-        val report = gtfsDownloadService.downloadAndProcessGtfsZip(zipUrl, isFirstSync = isFirstSync)
-        if (report.success) {
-            globalCurrentPeriod = report.activePeriod
-            if (report.detectedWorks.isNotEmpty()) {
-                globalWorksAlerts = report.detectedWorks
+        gtfsSyncMutex.withLock {
+            val report = gtfsDownloadService.downloadAndProcessGtfsZip(zipUrl, isFirstSync = isFirstSync)
+            if (report.success) {
+                val now = System.currentTimeMillis()
+                globalCurrentPeriod = report.activePeriod
+                if (report.detectedWorks.isNotEmpty()) {
+                    globalWorksAlerts = report.detectedWorks
+                }
+                globalGtfsUpdatedAtMs = now
+                GtfsScheduleIndex.getCachedZipBytes()?.let { bytes ->
+                    cacheManager?.saveGtfsZipBytes(bytes, now)
+                }
             }
+            report
         }
-        report
     }
 
     /**
@@ -540,83 +800,109 @@ class IdelisRepository(
     }
 
     /**
-     * Télécharge automatiquement les données au lancement de l'application :
+     * Télécharge en parallèle les référentiels OpenData manquants ou expirés (> 24h) :
      * 1. Lignes officielles GTFS avec couleurs et terminus (lignes-du-reseau-idelis-gtfs)
      * 2. Icônes officielles des lignes (liste-des-icones-des-lignes)
-     * 3. Arrêts avec regroupement automatique des quais (liste-des-arrets-par-ligne-et-par-sens-du-reseau-idelis)
+     * 3. Arrêts par ligne et par sens (liste-des-arrets-par-ligne-et-par-sens-du-reseau-idelis)
+     * 4. GTFS ZIP si absent du cache / expiré et non déjà géré par triggerGtfsZipSync.
      */
-    suspend fun downloadOpenDataOnLaunch(): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            // 0. Téléchargement et analyse du calendrier GTFS Zip (Périodes Bleue, Orange, Verte, Grise et Travaux)
-            val periodResult = exploreService.downloadGtfsZipAndDetectPeriod()
-            if (periodResult.isSuccess) {
-                val (period, works) = periodResult.getOrNull() ?: Pair(IdelisPeriod.VERTE, emptyList())
-                globalCurrentPeriod = period
-                globalWorksAlerts = works
-                Log.d(TAG, "Période Idelis active : ${period.label} (${period.colorName}) - ${works.size} travaux détectés")
-            }
+    suspend fun downloadOpenDataOnLaunch(
+        forceRefresh: Boolean = false,
+        skipGtfsZip: Boolean = false
+    ): Result<String> = withContext(Dispatchers.IO) {
+        openDataMutex.withLock {
+            try {
+                hydrateCachesFromDiskIfNeeded()
 
-            // 1. Téléchargement des lignes GTFS officielles
-            val routesResult = exploreService.downloadOfficialRoutesGtfs()
-            if (routesResult.isSuccess) {
-                val routes = routesResult.getOrNull().orEmpty()
-                officialRoutesMap = routes.associateBy { it.lineCode.uppercase() }
-                Log.d(TAG, "${officialRoutesMap.size} lignes GTFS officielles chargées")
+                coroutineScope {
+                    val routesJob = async { ensureOfficialRoutesLoaded(forceRefresh) }
+                    val iconsJob = async { ensureLineIconsLoaded(forceRefresh) }
+                    val stopsJob = async { ensureStopsCacheLoaded(forceRefresh) }
 
-                val gtfsRoutes = routes.map { r ->
-                    val colorClean = r.colorHex.removePrefix("#")
-                    val textHex = if (colorClean.equals("FFC107", true) || colorClean.equals("FFCC00", true)) "121212" else "FFFFFF"
-                    GtfsRoute(
-                        routeId = r.lineCode,
-                        routeShortName = r.lineCode,
-                        routeLongName = r.descriptif,
-                        routeColor = colorClean,
-                        routeTextColor = textHex
-                    )
+                    val shouldDownloadGtfsPeriod = !skipGtfsZip && (
+                        forceRefresh ||
+                            GtfsScheduleIndex.current == null ||
+                            (System.currentTimeMillis() - globalGtfsUpdatedAtMs >= METADATA_CACHE_TTL_MS)
+                        )
+                    val gtfsJob = if (shouldDownloadGtfsPeriod) {
+                        async {
+                            val periodResult = exploreService.downloadGtfsZipAndDetectPeriod()
+                            if (periodResult.isSuccess) {
+                                val (period, works) = periodResult.getOrNull() ?: Pair(IdelisPeriod.VERTE, emptyList())
+                                globalCurrentPeriod = period
+                                globalWorksAlerts = works
+                                val now = System.currentTimeMillis()
+                                globalGtfsUpdatedAtMs = now
+                                GtfsScheduleIndex.getCachedZipBytes()?.let { bytes ->
+                                    cacheManager?.saveGtfsZipBytes(bytes, now)
+                                }
+                                Log.d(TAG, "Période Idelis active : ${period.label} (${period.colorName}) - ${works.size} travaux détectés")
+                            }
+                        }
+                    } else null
+
+                    routesJob.await()
+                    iconsJob.await()
+                    stopsJob.await()
+                    gtfsJob?.await()
                 }
-                database.routeDao().insertRoutes(gtfsRoutes)
-            }
 
-            // 2. Téléchargement des icônes officielles des lignes
-            val iconsResult = exploreService.downloadLineIcons()
-            if (iconsResult.isSuccess) {
-                lineIconsMap = iconsResult.getOrNull().orEmpty()
-                Log.d(TAG, "${lineIconsMap.size} icônes de lignes mémorisées")
+                Result.success("Données Idelis actives (${globalCurrentPeriod.label})")
+            } catch (e: Exception) {
+                Log.w(TAG, "Erreur téléchargement initial : ${e.message}")
+                Result.failure(e)
             }
-
-            // 3. Téléchargement des correspondances en mémoire (sans insérer d'arrêts théoriques dans la base locale)
-            val stopsResult = exploreService.downloadStopsByLineAndDirection()
-            if (stopsResult.isSuccess) {
-                val records = stopsResult.getOrNull().orEmpty()
-                downloadedStopsCache = records
-                servingsByStopName = records.groupBy { getCanonicalStopName(it.stopName).lowercase() }
-                Log.d(TAG, "${records.size} correspondances mémorisées en cache")
-            }
-
-            Result.success("Données Idelis actives (${globalCurrentPeriod.label})")
-        } catch (e: Exception) {
-            Log.w(TAG, "Erreur téléchargement initial : ${e.message}")
-            Result.failure(e)
         }
     }
 
     /**
-     * Récupère les prochains passages pour l'arrêt spécifié avec des temps d'attente exacts et réalistes.
+     * Ré-enrichit localement les départs déjà affichés avec les icônes et couleurs officielles
+     * récemment chargées, sans refaire d'appel réseau stop_monitoring.
+     */
+    fun reenrichDeparturesWithCurrentCaches(departures: List<DepartureComparison>): List<DepartureComparison> {
+        if (departures.isEmpty()) return departures
+        return departures.map { dep ->
+            val route = globalOfficialRoutesMap[dep.lineRef.uppercase()] ?: officialRoutesMap[dep.lineRef.uppercase()]
+            val colorHex = route?.colorHex?.removePrefix("#")?.takeIf { it.isNotBlank() } ?: dep.routeColorHex
+            val textHex = if (colorHex.equals("FFC107", true) || colorHex.equals("FFCC00", true)) "121212" else dep.routeTextColorHex
+            val resolvedIcon = resolveLineIconUrl(dep.lineRef) ?: dep.iconUrl
+            dep.copy(
+                routeColorHex = colorHex,
+                routeTextColorHex = textHex,
+                iconUrl = resolvedIcon
+            )
+        }
+    }
+
+    fun reenrichNotServedEntriesWithCurrentCaches(entries: List<NotServedEntry>): List<NotServedEntry> {
+        if (entries.isEmpty()) return entries
+        return entries.map { entry ->
+            val officialColor = (globalOfficialRoutesMap[entry.lineRef.uppercase()] ?: officialRoutesMap[entry.lineRef.uppercase()])
+                ?.colorHex?.takeIf { it.isNotBlank() }
+            val officialIcon = resolveLineIconUrl(entry.lineRef) ?: entry.linePictoUrl
+            entry.copy(
+                lineColorHex = officialColor ?: entry.lineColorHex,
+                linePictoUrl = officialIcon
+            )
+        }
+    }
+
+    /**
+     * Récupère les prochains passages en PRIORITÉ ABSOLUE :
+     * la requête temps réel `stop_monitoring` part immédiatement sans attendre les gros fichiers OpenData,
+     * tout en hydratant les caches locaux (disque/RAM) en parallèle et en dédupliquant les appels rapprochés.
      */
     suspend fun getDeparturesForStop(
         stopId: String,
         useSimulationMode: Boolean = false,
         forceOffline: Boolean = false,
         requestorRef: String = IdelisSiriService.DEFAULT_REQUESTOR_REF,
-        stopOverride: GtfsStop? = null
+        stopOverride: GtfsStop? = null,
+        forceRefresh: Boolean = false
     ): DeparturesResult = withContext(Dispatchers.IO) {
-        ensureStopsAndRoutesLoaded()
-
         val stop = database.stopDao().getStopById(stopId)
             ?: stopOverride
             ?: GtfsDatabaseSeeder.INITIAL_STOPS.firstOrNull { it.stopId == stopId }
-
-        val theoreticalDepartures = buildTheoreticalDeparturesForStop(stop, stopId)
 
         if (forceOffline) {
             return@withContext DeparturesResult(
@@ -627,65 +913,141 @@ class IdelisRepository(
             )
         }
 
-        // 1. Tenter le flux direct officiel temps réel idelis.fr (?type=777)
         val poleName = getPoleNameForStop(stop)
-        try {
-            val webResult = webScraperService.getStopMonitoring(poleName)
-            if (webResult.isSuccess) {
-                val monitoring = webResult.getOrNull()
-                if (monitoring != null) {
-                    val cleanWebDeps = monitoring.departures.filterNot { dep ->
-                        webScraperService.containsNotServedText(dep.direction) ||
-                            webScraperService.containsNotServedText(dep.timeText) ||
-                            webScraperService.containsNotServedText(dep.lineName) ||
-                            webScraperService.containsNotServedText(dep.stopQuai)
-                    }
+        val requestKey = "${stopId}|${poleName}|${requestorRef}"
 
-                    val comparisons = if (cleanWebDeps.isNotEmpty()) {
-                        compareWebDeparturesWithTheoretical(
-                            webDepartures = cleanWebDeps,
-                            theoreticalDepartures = theoreticalDepartures
-                        )
-                    } else {
-                        emptyList()
-                    }
+        if (!forceRefresh) {
+            recentDeparturesCache[requestKey]?.let { (cachedAtMs, cachedResult) ->
+                if (System.currentTimeMillis() - cachedAtMs < DEPARTURES_COALESCE_WINDOW_MS) {
+                    return@withContext cachedResult
+                }
+            }
+        }
 
-                    if (monitoring.isStopNotServed) {
-                        Log.d(TAG, "Arrêt '$poleName' signalé non desservi (${comparisons.size} autres passages valides)")
-                        val enrichedNotServed = monitoring.notServedEntries.map { entry ->
-                            val officialColor = (globalOfficialRoutesMap[entry.lineRef.uppercase()] ?: officialRoutesMap[entry.lineRef.uppercase()])
-                                ?.colorHex?.takeIf { it.isNotBlank() }
-                            val officialIcon = resolveLineIconUrl(entry.lineRef)
-                                ?: entry.linePictoUrl
-                            entry.copy(
-                                lineColorHex = officialColor ?: entry.lineColorHex,
-                                linePictoUrl = officialIcon
-                            )
-                        }
-                        return@withContext DeparturesResult(
-                            departures = comparisons,
-                            isOfflineFallback = false,
-                            isSimulation = false,
-                            statusMessage = monitoring.notServedMessage ?: "Cet arrêt n'est pas desservi",
-                            isStopNotServed = true,
-                            notServedMessage = monitoring.notServedMessage,
-                            notServedEntries = enrichedNotServed
-                        )
-                    }
-
-                    if (comparisons.isNotEmpty()) {
-                        Log.d(TAG, "Flux idelis.fr direct actif pour '$poleName': ${comparisons.size} passages temps réel")
-                        return@withContext DeparturesResult(
-                            departures = comparisons,
-                            isOfflineFallback = false,
-                            isSimulation = false,
-                            statusMessage = "Direct idelis.fr temps réel • ${comparisons.size} bus en approche"
-                        )
+        val deferred = departuresMutex.withLock {
+            if (!forceRefresh) {
+                recentDeparturesCache[requestKey]?.let { (cachedAtMs, cachedResult) ->
+                    if (System.currentTimeMillis() - cachedAtMs < DEPARTURES_COALESCE_WINDOW_MS) {
+                        return@withContext cachedResult
                     }
                 }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Erreur lors de l'appel direct idelis.fr pour '$poleName': ${e.message}")
+            val existing = inFlightDepartures[requestKey]
+            if (existing != null && existing.isActive) {
+                existing
+            } else {
+                val created = repoIoScope.async {
+                    try {
+                        val result = fetchDeparturesUncached(
+                            stopId = stopId,
+                            stop = stop,
+                            poleName = poleName,
+                            requestorRef = requestorRef
+                        )
+                        if (result.departures.isNotEmpty() || result.isStopNotServed) {
+                            recentDeparturesCache[requestKey] = System.currentTimeMillis() to result
+                        }
+                        result
+                    } finally {
+                        inFlightDepartures.remove(requestKey)
+                    }
+                }
+                inFlightDepartures[requestKey] = created
+                created
+            }
+        }
+
+        deferred.await()
+    }
+
+    private suspend fun fetchDeparturesUncached(
+        stopId: String,
+        stop: GtfsStop?,
+        poleName: String,
+        requestorRef: String
+    ): DeparturesResult = coroutineScope {
+        // 1. Lancer IMMÉDIATEMENT la requête prochains bus + l'hydratation disque locale en parallèle
+        val webDeferred = async {
+            try {
+                webScraperService.getStopMonitoring(poleName)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+        val metaHydrateDeferred = async { hydrateMetadataFromDiskIfNeeded() }
+        val heavyHydrateDeferred = async { hydrateScheduleAndStopsFromDiskIfNeeded() }
+        val iconsDeferred = async {
+            metaHydrateDeferred.await()
+            if (globalLineIconsMap.isEmpty()) {
+                ensureLineIconsLoaded()
+            }
+        }
+
+        val webResult = webDeferred.await()
+        metaHydrateDeferred.await()
+
+        // Attendre brièvement les icônes si elles n'étaient pas encore en cache, sans jamais bloquer les horaires
+        withTimeoutOrNull(350L) {
+            iconsDeferred.await()
+        }
+        // Si le GTFS/arrêts disque est déjà prêt ou rapide, l'inclure pour le calcul précis du retard
+        withTimeoutOrNull(450L) {
+            heavyHydrateDeferred.await()
+        }
+
+        val theoreticalDepartures = buildTheoreticalDeparturesForStop(stop, stopId)
+
+        if (webResult.isSuccess) {
+            val monitoring = webResult.getOrNull()
+            if (monitoring != null) {
+                val cleanWebDeps = monitoring.departures.filterNot { dep ->
+                    webScraperService.containsNotServedText(dep.direction) ||
+                        webScraperService.containsNotServedText(dep.timeText) ||
+                        webScraperService.containsNotServedText(dep.lineName) ||
+                        webScraperService.containsNotServedText(dep.stopQuai)
+                }
+
+                val comparisons = if (cleanWebDeps.isNotEmpty()) {
+                    compareWebDeparturesWithTheoretical(
+                        webDepartures = cleanWebDeps,
+                        theoreticalDepartures = theoreticalDepartures
+                    )
+                } else {
+                    emptyList()
+                }
+
+                // Précharger dans Coil uniquement les icônes des lignes affichées pour un rendu instantané
+                val iconUrlsToWarm = comparisons.mapNotNull { it.iconUrl }
+                if (iconUrlsToWarm.isNotEmpty()) {
+                    appContext?.let { IdelisLineIconCache.preloadIcons(it, iconUrlsToWarm) }
+                }
+
+                if (monitoring.isStopNotServed) {
+                    Log.d(TAG, "Arrêt '$poleName' signalé non desservi (${comparisons.size} autres passages valides)")
+                    val enrichedNotServed = reenrichNotServedEntriesWithCurrentCaches(monitoring.notServedEntries)
+                    return@coroutineScope DeparturesResult(
+                        departures = comparisons,
+                        isOfflineFallback = false,
+                        isSimulation = false,
+                        statusMessage = monitoring.notServedMessage ?: "Cet arrêt n'est pas desservi",
+                        isStopNotServed = true,
+                        notServedMessage = monitoring.notServedMessage,
+                        notServedEntries = enrichedNotServed
+                    )
+                }
+
+                if (comparisons.isNotEmpty()) {
+                    Log.d(TAG, "Flux idelis.fr direct actif pour '$poleName': ${comparisons.size} passages temps réel")
+                    return@coroutineScope DeparturesResult(
+                        departures = comparisons,
+                        isOfflineFallback = false,
+                        isSimulation = false,
+                        statusMessage = "Direct idelis.fr temps réel • ${comparisons.size} bus en approche"
+                    )
+                }
+            }
+        } else {
+            Log.w(TAG, "Erreur lors de l'appel direct idelis.fr pour '$poleName': ${webResult.exceptionOrNull()?.message}")
         }
 
         // 2. Repli vers SOAP SIRI
@@ -695,7 +1057,7 @@ class IdelisRepository(
                 val visits = siriResult.getOrNull()!!
                 val comparisons = compareSiriAndGtfs(visits, theoreticalDepartures)
                 if (comparisons.isNotEmpty()) {
-                    return@withContext DeparturesResult(
+                    return@coroutineScope DeparturesResult(
                         departures = comparisons,
                         isOfflineFallback = false,
                         isSimulation = false,
@@ -707,8 +1069,7 @@ class IdelisRepository(
             Log.w(TAG, "Erreur réseau SIRI SOAP: ${e.message}")
         }
 
-        // 3. Aucun départ temps réel reçu des requêtes :
-        // Conformément à la consigne utilisateur, afficher QUE ce qui vient des requêtes (NE PAS afficher le théorique).
+        // 3. Aucun passage temps réel retourné
         DeparturesResult(
             departures = emptyList(),
             isOfflineFallback = false,
@@ -1299,30 +1660,57 @@ class IdelisRepository(
 
     /**
      * Récupère les alertes info trafic en direct depuis la requête POST https://www.idelis.fr/?type=777
-     * (requete=infostrafic&requete_val%5Blignesfav%5D=0), parsées avec Jsoup.
+     * avec déduplication et court cache anti-spam.
      */
-    suspend fun fetchLiveTrafficAlerts(): Result<List<TrafficAlert>> = withContext(Dispatchers.IO) {
-        ensureLineIconsLoaded()
-        val result = webScraperService.getInfosTrafic()
-        result.map { webAlerts ->
-            webAlerts.map { item ->
-                val resolvedPictos = if (item.affectedLines.isNotEmpty()) {
-                    item.affectedLines.mapIndexedNotNull { idx, line ->
-                        resolveLineIconUrl(line) ?: item.affectedLinePictos.getOrNull(idx)
-                    }.distinct().ifEmpty { item.affectedLinePictos }
-                } else {
-                    item.affectedLinePictos
+    suspend fun fetchLiveTrafficAlerts(forceRefresh: Boolean = false): Result<List<TrafficAlert>> = withContext(Dispatchers.IO) {
+        if (!forceRefresh) {
+            cachedTrafficAlerts?.let { (ts, alerts) ->
+                if (System.currentTimeMillis() - ts < TRAFFIC_COALESCE_WINDOW_MS) {
+                    return@withContext Result.success(alerts)
                 }
-                TrafficAlert(
-                    id = item.id,
-                    title = item.title,
-                    messageText = item.description,
-                    affectedLines = item.affectedLines,
-                    severity = "WARNING",
-                    publishedDate = item.publishedDate.ifBlank { "En cours • idelis.fr" },
-                    affectedLinePictos = resolvedPictos,
-                    deviationLink = item.deviationLink
-                )
+            }
+        }
+
+        trafficMutex.withLock {
+            if (!forceRefresh) {
+                cachedTrafficAlerts?.let { (ts, alerts) ->
+                    if (System.currentTimeMillis() - ts < TRAFFIC_COALESCE_WINDOW_MS) {
+                        return@withLock Result.success(alerts)
+                    }
+                }
+            }
+
+            coroutineScope {
+                val iconsJob = async { ensureLineIconsLoaded() }
+                val alertsDeferred = async { webScraperService.getInfosTrafic() }
+                val result = alertsDeferred.await()
+                withTimeoutOrNull(350L) { iconsJob.await() }
+
+                val mapped = result.map { webAlerts ->
+                    webAlerts.map { item ->
+                        val resolvedPictos = if (item.affectedLines.isNotEmpty()) {
+                            item.affectedLines.mapIndexedNotNull { idx, line ->
+                                resolveLineIconUrl(line) ?: item.affectedLinePictos.getOrNull(idx)
+                            }.distinct().ifEmpty { item.affectedLinePictos }
+                        } else {
+                            item.affectedLinePictos
+                        }
+                        TrafficAlert(
+                            id = item.id,
+                            title = item.title,
+                            messageText = item.description,
+                            affectedLines = item.affectedLines,
+                            severity = "WARNING",
+                            publishedDate = item.publishedDate.ifBlank { "En cours • idelis.fr" },
+                            affectedLinePictos = resolvedPictos,
+                            deviationLink = item.deviationLink
+                        )
+                    }
+                }
+                mapped.getOrNull()?.let { alerts ->
+                    cachedTrafficAlerts = System.currentTimeMillis() to alerts
+                }
+                mapped
             }
         }
     }

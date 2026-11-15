@@ -59,6 +59,8 @@ object GtfsScheduleIndex {
     @Volatile
     private var cachedZipBytes: ByteArray? = null
 
+    fun getCachedZipBytes(): ByteArray? = cachedZipBytes
+
     fun currentDateString(cal: Calendar = Calendar.getInstance(PARIS_TZ)): String {
         return SimpleDateFormat("yyyyMMdd", Locale.FRANCE).apply {
             timeZone = PARIS_TZ

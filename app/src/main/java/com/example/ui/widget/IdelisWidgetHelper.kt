@@ -1,5 +1,6 @@
 package com.example.ui.widget
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapShader
@@ -12,12 +13,16 @@ import android.graphics.Typeface
 import com.example.data.model.DepartureComparison
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 object IdelisWidgetHelper {
 
     private val iconBitmapCache = ConcurrentHashMap<String, Bitmap>()
+    private val inFlightIconLocks = ConcurrentHashMap<String, Any>()
     private val iconClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)
@@ -134,30 +139,71 @@ object IdelisWidgetHelper {
         return output
     }
 
+    private fun urlCacheFile(context: Context, url: String): File {
+        val dir = File(context.applicationContext.cacheDir, "widget_line_icons").apply {
+            if (!exists()) mkdirs()
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(url.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return File(dir, "$digest.png")
+    }
+
     /**
-     * Télécharge et met en cache en mémoire l'icône PNG officielle de la ligne (liste-des-icones-des-lignes)
-     * recadrée en carré 96x96 avec angles arrondis à 30% pour le widget.
+     * Télécharge et met en cache (RAM + disque si context fourni) l'icône PNG officielle de la ligne
+     * recadrée en carré 96x96 avec angles arrondis à 30% pour le widget, avec déduplication par URL.
      */
-    fun loadLineIconBitmap(iconUrl: String?): Bitmap? {
+    @JvmOverloads
+    fun loadLineIconBitmap(iconUrl: String?, context: Context? = null): Bitmap? {
         val url = iconUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null
         iconBitmapCache[url]?.let { cached ->
             if (!cached.isRecycled) return cached
         }
 
-        return try {
-            val req = Request.Builder().url(url).build()
-            val bytes = iconClient.newCall(req).execute().use { res ->
-                if (!res.isSuccessful) return null
-                res.body?.bytes()
-            } ?: return null
+        val lock = inFlightIconLocks.getOrPut(url) { Any() }
+        return synchronized(lock) {
+            iconBitmapCache[url]?.let { cached ->
+                if (!cached.isRecycled) return@synchronized cached
+            }
 
-            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
-            val finalBitmap = roundCornerSquareBitmap(decoded, targetSize = 96, cornerPercent = 0.30f)
-            decoded.recycle()
-            iconBitmapCache[url] = finalBitmap
-            finalBitmap
-        } catch (_: Exception) {
-            null
+            if (context != null) {
+                try {
+                    val diskFile = urlCacheFile(context, url)
+                    if (diskFile.exists() && diskFile.length() > 0L) {
+                        val fromDisk = BitmapFactory.decodeFile(diskFile.absolutePath)
+                        if (fromDisk != null) {
+                            iconBitmapCache[url] = fromDisk
+                            return@synchronized fromDisk
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            try {
+                val req = Request.Builder().url(url).build()
+                val bytes = iconClient.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) return@synchronized null
+                    res.body?.bytes()
+                } ?: return@synchronized null
+
+                val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: return@synchronized null
+                val finalBitmap = roundCornerSquareBitmap(decoded, targetSize = 96, cornerPercent = 0.30f)
+                decoded.recycle()
+                iconBitmapCache[url] = finalBitmap
+
+                if (context != null) {
+                    try {
+                        val diskFile = urlCacheFile(context, url)
+                        FileOutputStream(diskFile).use { out ->
+                            finalBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        }
+                    } catch (_: Exception) {}
+                }
+                finalBitmap
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 

@@ -175,18 +175,41 @@ class TransitBoardViewModel(
     private var webSearchJob: Job? = null
     private var updateJob: Job? = null
     private var refreshJob: Job? = null
+    private var downloadDataJob: Job? = null
+    private var gtfsSyncJob: Job? = null
     private var usageStatsPingJob: Job? = null
 
+    @Volatile
+    private var initialDeparturesRequested: Boolean = false
+
+    @Volatile
+    private var initialPurgeScheduled: Boolean = false
+
+    @Volatile
+    private var lastComplementaryLoadAtMs: Long = 0L
+
+    @Volatile
+    private var isTrafficRefreshInProgress: Boolean = false
+
     init {
+        // 1. PRIORITÉ ABSOLUE : hydrater les caches disque locaux et afficher immédiatement les prochains bus
+        viewModelScope.launch {
+            repository.hydrateCachesFromDiskIfNeeded()
+        }
         loadStops()
+        // 2. Télécharger uniquement les référentiels OpenData manquants/expirés après départ des prochains bus
         downloadDataOnLaunch()
-        loadComplementaryData()
         startAutoRefreshTicker()
         startPeriodicSyncJob()
         startTrafficRefreshJob()
         syncTrafficBackgroundSchedule()
-        checkForAppUpdateOnLaunch()
-        sendDailyUsageStatsPingOnLaunch()
+        // 3. Différer les tâches secondaires pour ne pas concurrencer la requête des prochains passages
+        viewModelScope.launch {
+            delay(1_200L)
+            loadComplementaryData(includeTrafficAutoRefresh = true)
+            checkForAppUpdateOnLaunch()
+            sendDailyUsageStatsPingOnLaunch()
+        }
     }
 
     private fun sendDailyUsageStatsPingOnLaunch() {
@@ -209,38 +232,65 @@ class TransitBoardViewModel(
     }
 
     private fun downloadDataOnLaunch() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isDownloadingData = true, downloadStatus = "Téléchargement des arrêts et données...") }
-            val result = repository.downloadOpenDataOnLaunch()
-            _uiState.update {
-                it.copy(
+        downloadDataJob?.cancel()
+        downloadDataJob = viewModelScope.launch {
+            // Laisser la requête stop_monitoring partir en premier sans saturation réseau/CPU
+            delay(300L)
+
+            val gtfsFreq = _uiState.value.gtfsSyncFrequency
+            val lastDownload = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L
+            val isFirstDownload = lastDownload == 0L
+            val now = System.currentTimeMillis()
+            val shouldSyncGtfsNow = isFirstDownload ||
+                (gtfsFreq != GtfsSyncFrequency.NEVER && gtfsFreq.intervalMs > 0L && now - lastDownload >= gtfsFreq.intervalMs)
+
+            _uiState.update { it.copy(isDownloadingData = true, downloadStatus = "Vérification des données Idelis...") }
+            // Éviter de télécharger gtfs.zip deux fois si triggerGtfsZipSync va s'en charger juste après
+            val result = repository.downloadOpenDataOnLaunch(
+                forceRefresh = false,
+                skipGtfsZip = shouldSyncGtfsNow
+            )
+            _uiState.update { current ->
+                val reenriched = repository.reenrichDeparturesWithCurrentCaches(current.departures)
+                val currentFilter = current.selectedLineFilter
+                val reenrichedFiltered = if (currentFilter != null) {
+                    reenriched.filter { it.lineRef.equals(currentFilter, ignoreCase = true) }
+                } else {
+                    reenriched
+                }
+                current.copy(
+                    departures = reenriched,
+                    filteredDepartures = reenrichedFiltered,
+                    notServedEntries = repository.reenrichNotServedEntriesWithCurrentCaches(current.notServedEntries),
                     isDownloadingData = false,
                     downloadStatus = result.getOrNull() ?: "Données locales actives",
                     activePeriod = repository.getCurrentPeriod(),
                     worksNotes = repository.getWorksAlerts()
                 )
             }
-            refreshDepartures()
 
-            val gtfsFreq = _uiState.value.gtfsSyncFrequency
-            val lastDownload = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L
-            val isFirstDownload = lastDownload == 0L
-            val now = System.currentTimeMillis()
-            if (isFirstDownload || (gtfsFreq != GtfsSyncFrequency.NEVER && gtfsFreq.intervalMs > 0L && now - lastDownload >= gtfsFreq.intervalMs)) {
-                triggerGtfsZipSync(isFirstSync = isFirstDownload)
+            // Ne re-déclencher stop_monitoring que si aucun départ n'a encore été chargé au démarrage
+            val stateAfter = _uiState.value
+            if (stateAfter.departures.isEmpty() &&
+                !stateAfter.isStopNotServed &&
+                stateAfter.lastUpdatedFormatted.isBlank() &&
+                refreshJob?.isActive != true
+            ) {
+                refreshDepartures(isManual = false, forceRefresh = false)
+            }
+
+            if (shouldSyncGtfsNow) {
+                triggerGtfsZipSync(isFirstSync = isFirstDownload, refreshAfter = false)
             }
         }
     }
 
     private fun loadStops() {
         viewModelScope.launch {
-            // Purger les anciens arrêts théoriques pour ne garder QUE les arrêts reçus par requêtes / favoris
-            repository.purgeTheoreticalStops(preferencesManager?.getFavoriteStopIds() ?: emptySet())
-
             repository.getAllStops().collectLatest { stops ->
                 _uiState.update { current ->
                     val savedStopId = preferencesManager?.getLastSelectedStopId()
-                    val defaultStop = current.selectedStop 
+                    val defaultStop = current.selectedStop
                         ?: stops.firstOrNull { it.stopId == savedStopId }
                         ?: stops.firstOrNull { current.favoriteStopIds.contains(it.stopId) }
                         ?: stops.firstOrNull { it.stopId == "WEB_Bosquet" }
@@ -253,94 +303,130 @@ class TransitBoardViewModel(
                         activePeriod = repository.getCurrentPeriod()
                     )
                 }
-                if (_uiState.value.departures.isEmpty() && _uiState.value.selectedStop != null && refreshJob?.isActive != true) {
-                    refreshDepartures()
+
+                // Déclencher immédiatement le premier chargement des prochains bus (avant toute purge DB)
+                if (!initialDeparturesRequested && _uiState.value.selectedStop != null) {
+                    initialDeparturesRequested = true
+                    refreshDepartures(isManual = false, forceRefresh = false)
+                }
+
+                if (!initialPurgeScheduled) {
+                    initialPurgeScheduled = true
+                    val favs = preferencesManager?.getFavoriteStopIds() ?: emptySet()
+                    if (stops.any { !it.stopId.startsWith("WEB_") && !favs.contains(it.stopId) }) {
+                        launch {
+                            repository.purgeTheoreticalStops(favs)
+                        }
+                    }
                 }
             }
         }
     }
 
-    private fun loadComplementaryData() {
-        viewModelScope.launch {
-            val pr = repository.getParkAndRide()
-            val bikes = repository.getIdeCycleStations()
-            val fleet = repository.getFleetVehicles()
+    private fun loadComplementaryData(
+        includeTrafficAutoRefresh: Boolean = true,
+        forceReload: Boolean = false
+    ) {
+        val now = System.currentTimeMillis()
+        if (forceReload || _uiState.value.parkAndRides.isEmpty() || now - lastComplementaryLoadAtMs >= 60_000L) {
+            lastComplementaryLoadAtMs = now
+            viewModelScope.launch {
+                val pr = repository.getParkAndRide()
+                val bikes = repository.getIdeCycleStations()
+                val fleet = repository.getFleetVehicles()
 
-            _uiState.update {
-                it.copy(
-                    parkAndRides = pr,
-                    ideCycleStations = bikes,
-                    fleetVehicles = fleet,
-                    activePeriod = repository.getCurrentPeriod(),
-                    worksNotes = repository.getWorksAlerts()
-                )
+                _uiState.update {
+                    it.copy(
+                        parkAndRides = pr,
+                        ideCycleStations = bikes,
+                        fleetVehicles = fleet,
+                        activePeriod = repository.getCurrentPeriod(),
+                        worksNotes = repository.getWorksAlerts()
+                    )
+                }
             }
         }
-        val trafficFreq = _uiState.value.trafficRefreshFrequency
-        if (trafficFreq != TrafficRefreshFrequency.NEVER && trafficFreq.intervalMs > 0L) {
-            val lastCheck = preferencesManager?.getLastTrafficRefreshTimestamp() ?: 0L
-            val now = System.currentTimeMillis()
-            if (now - lastCheck >= trafficFreq.intervalMs) {
-                refreshTrafficAlerts(notifyIfNew = true)
+        if (includeTrafficAutoRefresh) {
+            val trafficFreq = _uiState.value.trafficRefreshFrequency
+            if (trafficFreq != TrafficRefreshFrequency.NEVER && trafficFreq.intervalMs > 0L) {
+                val lastCheck = preferencesManager?.getLastTrafficRefreshTimestamp() ?: 0L
+                if (now - lastCheck >= trafficFreq.intervalMs) {
+                    refreshTrafficAlerts(notifyIfNew = true, forceRefresh = false)
+                }
             }
         }
     }
 
     /**
      * Exécute la requête POST https://www.idelis.fr/?type=777 (requete=infostrafic&requete_val[lignesfav]=0)
-     * et remplace le contenu de la catégorie info par les alertes parsées.
+     * et remplace le contenu de la catégorie info par les alertes parsées (avec anti-spam).
      */
-    fun refreshTrafficAlerts(notifyIfNew: Boolean = false) {
+    fun refreshTrafficAlerts(notifyIfNew: Boolean = false, forceRefresh: Boolean = false) {
+        if (isTrafficRefreshInProgress) return
+        if (!forceRefresh) {
+            val current = _uiState.value
+            val ageMs = System.currentTimeMillis() - current.lastTrafficRefreshTimestamp
+            if (current.trafficAlerts.isNotEmpty() && current.lastTrafficRefreshTimestamp > 0L && ageMs in 0L..60_000L) {
+                return
+            }
+        }
+
+        isTrafficRefreshInProgress = true
         viewModelScope.launch {
-            _uiState.update { it.copy(isTrafficLoading = true, trafficErrorMessage = null) }
-            val result = repository.fetchLiveTrafficAlerts()
-            if (result.isSuccess) {
-                val alerts = result.getOrNull().orEmpty()
-                val now = System.currentTimeMillis()
-                preferencesManager?.saveLastTrafficRefreshTimestamp(now)
-                TrafficAlertNotifier.processAlerts(
-                    context = repository.appContext,
-                    prefs = preferencesManager,
-                    alerts = alerts,
-                    allowNotification = notifyIfNew
-                )
-                _uiState.update {
-                    it.copy(
-                        trafficAlerts = alerts,
-                        isTrafficLoading = false,
-                        trafficErrorMessage = null,
-                        lastTrafficRefreshTimestamp = now
+            try {
+                _uiState.update { it.copy(isTrafficLoading = true, trafficErrorMessage = null) }
+                val result = repository.fetchLiveTrafficAlerts(forceRefresh = forceRefresh)
+                if (result.isSuccess) {
+                    val alerts = result.getOrNull().orEmpty()
+                    val now = System.currentTimeMillis()
+                    preferencesManager?.saveLastTrafficRefreshTimestamp(now)
+                    TrafficAlertNotifier.processAlerts(
+                        context = repository.appContext,
+                        prefs = preferencesManager,
+                        alerts = alerts,
+                        allowNotification = notifyIfNew
                     )
+                    _uiState.update {
+                        it.copy(
+                            trafficAlerts = alerts,
+                            isTrafficLoading = false,
+                            trafficErrorMessage = null,
+                            lastTrafficRefreshTimestamp = now
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isTrafficLoading = false,
+                            trafficErrorMessage = result.exceptionOrNull()?.localizedMessage
+                                ?: "Impossible de récupérer les infos trafic idelis.fr"
+                        )
+                    }
                 }
-            } else {
-                _uiState.update {
-                    it.copy(
-                        trafficAlerts = emptyList(),
-                        isTrafficLoading = false,
-                        trafficErrorMessage = result.exceptionOrNull()?.localizedMessage
-                            ?: "Impossible de récupérer les infos trafic idelis.fr"
-                    )
-                }
+            } finally {
+                isTrafficRefreshInProgress = false
             }
         }
     }
 
     fun selectTab(tab: AppTab) {
         _uiState.update { it.copy(currentTab = tab) }
-        if (tab == AppTab.FLEET || tab == AppTab.MOBILITY || tab == AppTab.ALERTS) {
-            loadComplementaryData()
+        if (tab == AppTab.FLEET || tab == AppTab.MOBILITY) {
+            loadComplementaryData(includeTrafficAutoRefresh = false)
+        } else if (tab == AppTab.ALERTS) {
+            refreshTrafficAlerts(notifyIfNew = false, forceRefresh = false)
         }
     }
 
     fun setRequestorRef(newRef: String) {
         _uiState.update { it.copy(requestorRef = newRef.trim()) }
-        refreshDepartures()
+        refreshDepartures(isManual = false, forceRefresh = true)
     }
 
     fun syncStopsFromExploreApi() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, syncSuccessMessage = null) }
-            val result = repository.downloadOpenDataOnLaunch()
+            val result = repository.downloadOpenDataOnLaunch(forceRefresh = true)
             _uiState.update {
                 it.copy(
                     isLoading = false,
@@ -349,7 +435,7 @@ class TransitBoardViewModel(
                     worksNotes = repository.getWorksAlerts()
                 )
             }
-            refreshDepartures()
+            refreshDepartures(isManual = false, forceRefresh = true)
         }
     }
 
@@ -598,7 +684,7 @@ class TransitBoardViewModel(
         viewModelScope.launch {
             repository.ensureStopSaved(stop)
         }
-        refreshDepartures()
+        refreshDepartures(isManual = false, forceRefresh = true)
     }
 
     fun selectStopById(stopId: String) {
@@ -855,7 +941,7 @@ class TransitBoardViewModel(
         val next = !_uiState.value.isSimulationMode
         preferencesManager?.setSimulationModeEnabled(next)
         _uiState.update { it.copy(isSimulationMode = next) }
-        refreshDepartures()
+        refreshDepartures(isManual = false, forceRefresh = true)
     }
 
     fun toggleAutoRefresh() {
@@ -864,7 +950,7 @@ class TransitBoardViewModel(
         _uiState.update { it.copy(isAutoRefreshPaused = next) }
     }
 
-    fun refreshDepartures(isManual: Boolean = false) {
+    fun refreshDepartures(isManual: Boolean = false, forceRefresh: Boolean = isManual) {
         val stop = _uiState.value.selectedStop ?: return
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
@@ -879,7 +965,8 @@ class TransitBoardViewModel(
                 useSimulationMode = false,
                 forceOffline = false,
                 requestorRef = _uiState.value.requestorRef,
-                stopOverride = stop
+                stopOverride = stop,
+                forceRefresh = forceRefresh
             )
 
             if (_uiState.value.selectedStop?.stopId != stop.stopId) {
@@ -935,7 +1022,7 @@ class TransitBoardViewModel(
                     val remaining = _uiState.value.secondsUntilRefresh - 1
                     if (remaining <= 0) {
                         _uiState.update { it.copy(secondsUntilRefresh = currentFreq.intervalSeconds) }
-                        refreshDepartures(isManual = false)
+                        refreshDepartures(isManual = false, forceRefresh = true)
                     } else {
                         _uiState.update { it.copy(secondsUntilRefresh = remaining) }
                     }
@@ -948,8 +1035,14 @@ class TransitBoardViewModel(
     /**
      * Déclenche manuellement ou via le bouton le téléchargement et l'analyse du ZIP GTFS Idelis.
      */
-    fun triggerGtfsZipSync(customUrl: String? = null, isFirstSync: Boolean = false) {
-        viewModelScope.launch {
+    fun triggerGtfsZipSync(
+        customUrl: String? = null,
+        isFirstSync: Boolean = false,
+        refreshAfter: Boolean = true
+    ) {
+        if (gtfsSyncJob?.isActive == true && customUrl == null) return
+        gtfsSyncJob?.cancel()
+        gtfsSyncJob = viewModelScope.launch {
             _uiState.update { it.copy(isGtfsSyncing = true, syncSuccessMessage = null) }
             val effectiveUrl = customUrl?.takeIf { it.isNotBlank() } ?: _uiState.value.gtfsZipUrl
             val firstSync = isFirstSync || (preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L) == 0L
@@ -962,7 +1055,17 @@ class TransitBoardViewModel(
             }
 
             _uiState.update { current ->
+                val reenriched = repository.reenrichDeparturesWithCurrentCaches(current.departures)
+                val currentFilter = current.selectedLineFilter
+                val reenrichedFiltered = if (currentFilter != null) {
+                    reenriched.filter { it.lineRef.equals(currentFilter, ignoreCase = true) }
+                } else {
+                    reenriched
+                }
                 current.copy(
+                    departures = reenriched,
+                    filteredDepartures = reenrichedFiltered,
+                    notServedEntries = repository.reenrichNotServedEntriesWithCurrentCaches(current.notServedEntries),
                     isGtfsSyncing = false,
                     gtfsSyncReport = report,
                     activePeriod = repository.getCurrentPeriod(),
@@ -975,7 +1078,9 @@ class TransitBoardViewModel(
                     }
                 )
             }
-            refreshDepartures()
+            if (refreshAfter || (_uiState.value.departures.isEmpty() && !_uiState.value.isStopNotServed && _uiState.value.lastUpdatedFormatted.isBlank())) {
+                refreshDepartures(isManual = false, forceRefresh = refreshAfter)
+            }
         }
     }
 
@@ -1013,7 +1118,7 @@ class TransitBoardViewModel(
                 syncSuccessMessage = "Paramètres avancés sauvegardés"
             )
         }
-        refreshDepartures()
+        refreshDepartures(isManual = false, forceRefresh = true)
     }
 
     /**
@@ -1039,7 +1144,7 @@ class TransitBoardViewModel(
                 syncSuccessMessage = "URLs réinitialisées par défaut"
             )
         }
-        refreshDepartures()
+        refreshDepartures(isManual = false, forceRefresh = true)
     }
 
     /**
@@ -1304,8 +1409,11 @@ class TransitBoardViewModel(
         tickerJob?.cancel()
         periodicSyncJob?.cancel()
         trafficRefreshJob?.cancel()
+        webSearchJob?.cancel()
         updateJob?.cancel()
         refreshJob?.cancel()
+        downloadDataJob?.cancel()
+        gtfsSyncJob?.cancel()
         usageStatsPingJob?.cancel()
     }
 }

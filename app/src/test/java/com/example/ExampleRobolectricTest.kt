@@ -3,6 +3,7 @@ package com.example
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.remote.SiriXmlParser
+import kotlinx.coroutines.async
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -1286,5 +1287,287 @@ class ExampleRobolectricTest {
         assertEquals(0, android.graphics.Color.alpha(trimmedRounded.getPixel(4, 4)))
         padded.recycle()
         trimmedRounded.recycle()
+    }
+
+    @Test
+    fun `getDeparturesForStop prioritizes stop_monitoring without blocking on heavy opendata and coalesces calls`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        val cacheManager = com.example.data.local.OpenDataCacheManager(context)
+        cacheManager.clearAll()
+
+        val prevIcons = com.example.data.repository.IdelisRepository.globalLineIconsMap
+        val prevRoutes = com.example.data.repository.IdelisRepository.globalOfficialRoutesMap
+        val prevStops = com.example.data.repository.IdelisRepository.globalDownloadedStopsCache
+        val prevServings = com.example.data.repository.IdelisRepository.globalServingsByStopName
+
+        com.example.data.repository.IdelisRepository.globalLineIconsMap = emptyMap()
+        com.example.data.repository.IdelisRepository.globalLineIconsUpdatedAtMs = 0L
+        com.example.data.repository.IdelisRepository.globalOfficialRoutesMap = emptyMap()
+        com.example.data.repository.IdelisRepository.globalOfficialRoutesUpdatedAtMs = 0L
+        com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = emptyList()
+        com.example.data.repository.IdelisRepository.globalDownloadedStopsUpdatedAtMs = 0L
+        com.example.data.repository.IdelisRepository.globalServingsByStopName = emptyMap()
+
+        try {
+            val iconCalls = java.util.concurrent.atomic.AtomicInteger(0)
+            val stopsJsonCalls = java.util.concurrent.atomic.AtomicInteger(0)
+            val routesJsonCalls = java.util.concurrent.atomic.AtomicInteger(0)
+            val stopMonitoringCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+            val fIconUrl = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/liste-des-icones-des-lignes/files/febus_cached"
+            val iconsJson = """[{"ligne": "F", "fichier_png": {"url": "$fIconUrl"}}]"""
+
+            val mockExploreClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val url = chain.request().url.toString()
+                    val builder = okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                    when (url) {
+                        com.example.data.remote.IdelisExploreService.URL_EXPORTS_ICONS -> {
+                            iconCalls.incrementAndGet()
+                            builder.code(200).message("OK")
+                                .body(okhttp3.ResponseBody.create(null, iconsJson))
+                                .build()
+                        }
+                        com.example.data.remote.IdelisExploreService.URL_EXPORTS_STOPS -> {
+                            stopsJsonCalls.incrementAndGet()
+                            builder.code(500).message("Should not block departures")
+                                .body(okhttp3.ResponseBody.create(null, ""))
+                                .build()
+                        }
+                        com.example.data.remote.IdelisExploreService.URL_EXPORTS_ROUTES -> {
+                            routesJsonCalls.incrementAndGet()
+                            builder.code(500).message("Should not block departures")
+                                .body(okhttp3.ResponseBody.create(null, ""))
+                                .build()
+                        }
+                        else -> builder.code(404).message("Not Found")
+                            .body(okhttp3.ResponseBody.create(null, ""))
+                            .build()
+                    }
+                }
+                .build()
+
+            val mockWebClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val body = chain.request().body as? okhttp3.FormBody
+                    val requete = (0 until (body?.size ?: 0)).firstOrNull { body?.name(it) == "requete" }
+                        ?.let { body?.value(it) }
+                    if (requete == "stop_monitoring") {
+                        stopMonitoringCalls.incrementAndGet()
+                        Thread.sleep(25)
+                    }
+                    val html = """
+                        <div class="ligne-group">
+                            <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" /></div></div>
+                            <div class="row"><div class="col-12"><span class="text-black-50">Direction: PAU Gare de Pau - Arrêt: Bosquet</span></div></div>
+                            <div class="row"><div class="col-3 pr-1"><div class="p-1 text-center border rounded text-white bg-primary">3 min</div></div></div>
+                        </div>
+                    """.trimIndent()
+                    okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(okhttp3.ResponseBody.create(null, html))
+                        .build()
+                }
+                .build()
+
+            val repo = com.example.data.repository.IdelisRepository(
+                database = db,
+                appContext = context,
+                exploreService = com.example.data.remote.IdelisExploreService(mockExploreClient),
+                webScraperService = com.example.data.remote.IdelisWebScraperService(client = mockWebClient)
+            )
+
+            // 1. Deux appels concurrents + un appel immédiat dans la foulée -> 1 seule requête stop_monitoring et 1 seul appel icônes
+            val (r1, r2) = kotlinx.coroutines.coroutineScope {
+                val r1Async = async { repo.getDeparturesForStop("WEB_Bosquet") }
+                val r2Async = async { repo.getDeparturesForStop("WEB_Bosquet") }
+                r1Async.await() to r2Async.await()
+            }
+            val r3 = repo.getDeparturesForStop("WEB_Bosquet")
+
+            assertEquals(1, r1.departures.size)
+            assertEquals(1, r2.departures.size)
+            assertEquals(1, r3.departures.size)
+            assertEquals(fIconUrl, r1.departures.first().iconUrl)
+            assertEquals("stop_monitoring ne doit pas être spammé lors d'appels rapprochés", 1, stopMonitoringCalls.get())
+            assertEquals("downloadLineIcons ne doit être appelé qu'une fois", 1, iconCalls.get())
+            assertEquals("stops_by_line ne doit jamais bloquer getDeparturesForStop", 0, stopsJsonCalls.get())
+            assertEquals("official_routes ne doit jamais bloquer getDeparturesForStop", 0, routesJsonCalls.get())
+
+            // 2. Simuler un redémarrage à froid (RAM vidée) : les icônes sont restaurées depuis le disque sans appel réseau
+            com.example.data.repository.IdelisRepository.globalLineIconsMap = emptyMap()
+            com.example.data.repository.IdelisRepository.globalLineIconsUpdatedAtMs = 0L
+            val coldRepo = com.example.data.repository.IdelisRepository(
+                database = db,
+                appContext = context,
+                exploreService = com.example.data.remote.IdelisExploreService(mockExploreClient),
+                webScraperService = com.example.data.remote.IdelisWebScraperService(client = mockWebClient)
+            )
+            coldRepo.ensureLineIconsLoaded()
+            assertEquals(fIconUrl, coldRepo.resolveLineIconUrl("F"))
+            assertEquals("Aucune requête réseau si le cache disque des icônes est frais", 1, iconCalls.get())
+        } finally {
+            cacheManager.clearAll()
+            com.example.data.repository.IdelisRepository.globalLineIconsMap = prevIcons
+            com.example.data.repository.IdelisRepository.globalLineIconsUpdatedAtMs = 0L
+            com.example.data.repository.IdelisRepository.globalOfficialRoutesMap = prevRoutes
+            com.example.data.repository.IdelisRepository.globalOfficialRoutesUpdatedAtMs = 0L
+            com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = prevStops
+            com.example.data.repository.IdelisRepository.globalDownloadedStopsUpdatedAtMs = 0L
+            com.example.data.repository.IdelisRepository.globalServingsByStopName = prevServings
+        }
+    }
+
+    @Test
+    fun `startup viewmodel skips double gtfs download and avoids spamming stop_monitoring`() = kotlinx.coroutines.runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        db.stopDao().clearAllStops()
+        db.stopDao().insertStops(listOf(com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP))
+
+        val cacheManager = com.example.data.local.OpenDataCacheManager(context)
+        cacheManager.clearAll()
+
+        val prevIcons = com.example.data.repository.IdelisRepository.globalLineIconsMap
+        val prevRoutes = com.example.data.repository.IdelisRepository.globalOfficialRoutesMap
+        val prevStops = com.example.data.repository.IdelisRepository.globalDownloadedStopsCache
+        val prevServings = com.example.data.repository.IdelisRepository.globalServingsByStopName
+
+        com.example.data.repository.IdelisRepository.globalLineIconsMap = emptyMap()
+        com.example.data.repository.IdelisRepository.globalLineIconsUpdatedAtMs = 0L
+        com.example.data.repository.IdelisRepository.globalOfficialRoutesMap = emptyMap()
+        com.example.data.repository.IdelisRepository.globalOfficialRoutesUpdatedAtMs = 0L
+        com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = emptyList()
+        com.example.data.repository.IdelisRepository.globalDownloadedStopsUpdatedAtMs = 0L
+        com.example.data.repository.IdelisRepository.globalServingsByStopName = emptyMap()
+
+        try {
+            val sampleZip = buildSampleGtfsZipBytes()
+            val gtfsCatalogUrl = com.example.data.remote.GtfsDownloadService.DEFAULT_GTFS_ZIP_URL
+            val gtfsZipFileUrl = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/files/400d7da94eaacb5e52c612f8ac28e420"
+            val gtfsCatalogJson = """
+                [{"id": "GTFS", "fichier": {"url": "$gtfsZipFileUrl"}}]
+            """.trimIndent()
+            val iconsJson = """[{"ligne": "F", "fichier_png": {"url": "https://data.idelis.fr/files/f.png"}}]"""
+            val routesJson = """[{"ndeg_de_ligne": "F", "descriptif": "Fébus", "couleur_de_ligne": "#F18700", "sens": 1}]"""
+            val stopsJson = """[{"timeo": 1, "nom": "Bosquet", "pole": "Bosquet", "ligne": "F", "direction": "Gare de Pau", "sens": 1, "code_commune": "Pau", "geo_point_2d": {"lat": 43.2995, "lon": -0.3668}}]"""
+
+            val stopMonitoringCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val gtfsZipDownloadCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+            val mockExploreClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val url = chain.request().url.toString()
+                    val builder = okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                    when (url) {
+                        com.example.data.remote.IdelisExploreService.URL_EXPORTS_ICONS ->
+                            builder.code(200).message("OK").body(okhttp3.ResponseBody.create(null, iconsJson)).build()
+                        com.example.data.remote.IdelisExploreService.URL_EXPORTS_ROUTES ->
+                            builder.code(200).message("OK").body(okhttp3.ResponseBody.create(null, routesJson)).build()
+                        com.example.data.remote.IdelisExploreService.URL_EXPORTS_STOPS ->
+                            builder.code(200).message("OK").body(okhttp3.ResponseBody.create(null, stopsJson)).build()
+                        gtfsCatalogUrl -> {
+                            gtfsZipDownloadCount.incrementAndGet()
+                            builder.code(200).message("OK").body(okhttp3.ResponseBody.create(null, gtfsCatalogJson)).build()
+                        }
+                        gtfsZipFileUrl ->
+                            builder.code(200).message("OK").body(okhttp3.ResponseBody.create(null, sampleZip)).build()
+                        else ->
+                            builder.code(404).message("Not Found").body(okhttp3.ResponseBody.create(null, "")).build()
+                    }
+                }
+                .build()
+
+            val mockWebClient = okhttp3.OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val body = chain.request().body as? okhttp3.FormBody
+                    val requete = (0 until (body?.size ?: 0)).firstOrNull { body?.name(it) == "requete" }
+                        ?.let { body?.value(it) }
+                    if (requete == "stop_monitoring") {
+                        stopMonitoringCount.incrementAndGet()
+                    }
+                    val html = when (requete) {
+                        "stop_monitoring" -> """
+                            <div class="ligne-group">
+                                <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" /></div></div>
+                                <div class="row"><div class="col-12"><span class="text-black-50">Direction: PAU Gare de Pau - Arrêt: Bosquet</span></div></div>
+                                <div class="row"><div class="col-3 pr-1"><div class="p-1 text-center border rounded text-white bg-primary">2 min</div></div></div>
+                            </div>
+                        """.trimIndent()
+                        else -> ""
+                    }
+                    okhttp3.Response.Builder()
+                        .request(chain.request())
+                        .protocol(okhttp3.Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(okhttp3.ResponseBody.create(null, html))
+                        .build()
+                }
+                .build()
+
+            val repo = com.example.data.repository.IdelisRepository(
+                database = db,
+                appContext = context,
+                preferencesManager = prefs,
+                exploreService = com.example.data.remote.IdelisExploreService(mockExploreClient),
+                gtfsDownloadService = com.example.data.remote.GtfsDownloadService(db, mockExploreClient),
+                webScraperService = com.example.data.remote.IdelisWebScraperService(client = mockWebClient)
+            )
+            // Désactiver le ping/update GitHub réseau pour ce test isolé
+            prefs.setUsageStatsEnabled(false)
+            prefs.saveAppUpdateCheckFrequency(com.example.data.model.AppUpdateCheckFrequency.NEVER)
+            prefs.saveTrafficRefreshFrequency(com.example.data.model.TrafficRefreshFrequency.NEVER)
+
+            val viewModel = com.example.ui.viewmodel.TransitBoardViewModel(repo, prefs)
+
+            // Pomper le Looper principal Robolectric + attendre les coroutines IO de démarrage
+            val shadowMainLooper = org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+            val deadline = System.currentTimeMillis() + 5_000L
+            while (System.currentTimeMillis() < deadline &&
+                (viewModel.uiState.value.departures.isEmpty() ||
+                    viewModel.uiState.value.isDownloadingData ||
+                    viewModel.uiState.value.isGtfsSyncing ||
+                    prefs.getLastGtfsSyncTimestamp() == 0L)
+            ) {
+                shadowMainLooper.idleFor(java.time.Duration.ofMillis(100))
+                Thread.sleep(25L)
+            }
+            shadowMainLooper.idle()
+
+            assertTrue(
+                "Les prochains bus doivent être chargés au démarrage (departures=${viewModel.uiState.value.departures.size}, status=${viewModel.uiState.value.statusMessage})",
+                viewModel.uiState.value.departures.isNotEmpty()
+            )
+            assertEquals(
+                "stop_monitoring ne doit être appelé qu'une seule fois au démarrage",
+                1,
+                stopMonitoringCount.get()
+            )
+            assertEquals(
+                "gtfs.zip ne doit être téléchargé qu'une seule fois au démarrage",
+                1,
+                gtfsZipDownloadCount.get()
+            )
+        } finally {
+            cacheManager.clearAll()
+            com.example.data.repository.IdelisRepository.globalLineIconsMap = prevIcons
+            com.example.data.repository.IdelisRepository.globalLineIconsUpdatedAtMs = 0L
+            com.example.data.repository.IdelisRepository.globalOfficialRoutesMap = prevRoutes
+            com.example.data.repository.IdelisRepository.globalOfficialRoutesUpdatedAtMs = 0L
+            com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = prevStops
+            com.example.data.repository.IdelisRepository.globalDownloadedStopsUpdatedAtMs = 0L
+            com.example.data.repository.IdelisRepository.globalServingsByStopName = prevServings
+        }
     }
 }
