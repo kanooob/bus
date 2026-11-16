@@ -1769,4 +1769,23 @@ class ExampleRobolectricTest {
             com.example.data.repository.IdelisRepository.globalOfficialRoutesMap = prevRoutes
         }
     }
+
+    @Test
+    fun `recent stop history is limited to 5 most recent stops`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+
+        val ids = listOf("WEB_S1", "WEB_S2", "WEB_S3", "WEB_S4", "WEB_S5", "WEB_S6", "WEB_S2")
+        ids.forEach { prefs.addRecentStopId(it) }
+
+        val history = prefs.getRecentStopIds()
+        assertEquals(5, history.size)
+        assertEquals(listOf("WEB_S2", "WEB_S6", "WEB_S5", "WEB_S4", "WEB_S3"), history)
+
+        val json = prefs.exportBackupJson()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        assertTrue(prefs.importBackupJson(json).isSuccess)
+        assertEquals(listOf("WEB_S2", "WEB_S6", "WEB_S5", "WEB_S4", "WEB_S3"), prefs.getRecentStopIds())
+    }
 }

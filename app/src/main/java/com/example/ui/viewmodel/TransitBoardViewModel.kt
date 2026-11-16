@@ -102,6 +102,7 @@ data class TransitBoardUiState(
     val isPeriodicSyncEnabled: Boolean = true,
     val periodicSyncIntervalMinutes: Int = 120,
     val favoriteStopIds: Set<String> = emptySet(),
+    val recentStopIds: List<String> = emptyList(),
     // Détail d'itinéraire et liste des arrêts ordonnés de la ligne
     val selectedDepartureForRouteDetail: DepartureComparison? = null,
     val selectedRouteDetail: com.example.data.model.RouteLineDetail? = null,
@@ -163,6 +164,7 @@ class TransitBoardViewModel(
             isAutoRefreshPaused = preferencesManager?.isAutoRefreshPaused() ?: false,
             isPeriodicSyncEnabled = preferencesManager?.isPeriodicSyncEnabled() ?: true,
             favoriteStopIds = preferencesManager?.getFavoriteStopIds() ?: emptySet(),
+            recentStopIds = preferencesManager?.getRecentStopIds() ?: emptyList(),
             webMonitoringUrl = preferencesManager?.getWebMonitoringUrl() ?: com.example.data.local.PreferencesManager.DEFAULT_WEB_URL,
             gtfsZipUrl = preferencesManager?.getGtfsZipUrl() ?: com.example.data.local.PreferencesManager.DEFAULT_GTFS_ZIP_URL,
             siriSoapUrl = preferencesManager?.getSiriSoapUrl() ?: com.example.data.local.PreferencesManager.DEFAULT_SIRI_URL,
@@ -337,9 +339,11 @@ class TransitBoardViewModel(
                 if (!initialPurgeScheduled) {
                     initialPurgeScheduled = true
                     val favs = preferencesManager?.getFavoriteStopIds() ?: emptySet()
-                    if (stops.any { !it.stopId.startsWith("WEB_") && !favs.contains(it.stopId) }) {
+                    val recents = preferencesManager?.getRecentStopIds()?.toSet() ?: emptySet()
+                    val keepIds = favs + recents
+                    if (stops.any { !it.stopId.startsWith("WEB_") && !keepIds.contains(it.stopId) }) {
                         launch {
-                            repository.purgeTheoreticalStops(favs)
+                            repository.purgeTheoreticalStops(keepIds)
                         }
                     }
                 }
@@ -646,6 +650,7 @@ class TransitBoardViewModel(
                     githubRepo = ghRepo,
                     githubTag = ghTag,
                     favoriteStopIds = favs,
+                    recentStopIds = pm.getRecentStopIds(),
                     usageStatsEnabled = pm.isUsageStatsEnabled(),
                     backupRestoreMessage = "Sauvegarde restaurée ($count favori(s), paramètres appliqués)",
                     isBackupError = false
@@ -703,6 +708,10 @@ class TransitBoardViewModel(
 
     fun selectStop(stop: GtfsStop) {
         preferencesManager?.saveLastSelectedStopId(stop.stopId)
+        val updatedRecentIds = preferencesManager?.addRecentStopId(stop.stopId)
+            ?: (listOf(stop.stopId) + _uiState.value.recentStopIds)
+                .distinct()
+                .take(PreferencesManager.MAX_RECENT_STOPS)
         val interval = _uiState.value.inAppRefreshFrequency.intervalSeconds
         val cachedPair = stopUiCache[stop.stopId]?.takeIf { (ts, _) ->
             System.currentTimeMillis() - ts < STOP_UI_CACHE_TTL_MS
@@ -715,6 +724,7 @@ class TransitBoardViewModel(
                 val reenrichedNotServed = repository.reenrichNotServedEntriesWithCurrentCaches(cachedResult.notServedEntries)
                 current.copy(
                     selectedStop = stop,
+                    recentStopIds = updatedRecentIds,
                     departures = reenriched,
                     filteredDepartures = reenriched,
                     availableLines = reenriched.map { it.lineRef }.distinct(),
@@ -731,6 +741,7 @@ class TransitBoardViewModel(
             } else {
                 current.copy(
                     selectedStop = stop,
+                    recentStopIds = updatedRecentIds,
                     departures = emptyList(),
                     filteredDepartures = emptyList(),
                     availableLines = emptyList(),

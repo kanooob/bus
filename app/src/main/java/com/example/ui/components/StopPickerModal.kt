@@ -20,8 +20,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -54,8 +52,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -101,6 +97,21 @@ private fun formatDistance(meters: Double): String {
 private fun cleanStopIdForWeb(pole: String): String {
     return "WEB_" + pole.trim().replace(Regex("[^a-zA-Z0-9]"), "_")
 }
+
+private data class RecentStopDisplayItem(
+    val stopId: String,
+    val stopName: String,
+    val stop: GtfsStop? = null,
+    val webStop: IdelisWebStop? = null
+)
+
+private val DEFAULT_SUGGESTED_STOPS = listOf(
+    IdelisWebStop(pole = "Bosquet", name = "Pôle Bosquet"),
+    IdelisWebStop(pole = "Gare de Pau", name = "Gare de Pau"),
+    IdelisWebStop(pole = "Place Verdun", name = "Place de Verdun"),
+    IdelisWebStop(pole = "Université", name = "Université"),
+    IdelisWebStop(pole = "Hôpital François Mitterrand", name = "Hôpital François Mitterrand")
+)
 
 @SuppressLint("MissingPermission")
 private fun getLastKnownLocation(context: Context): Location? {
@@ -176,12 +187,13 @@ private suspend fun fetchBestLocation(context: Context): Location? {
  * - Possibilité de mettre en favori (⭐) n'importe quel arrêt reçu par requête directement depuis les résultats.
  * - Affichage prioritaire de "Mes arrêts favoris" avec désélection / suppression aisée.
  */
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StopPickerModal(
     stops: List<GtfsStop>,
     selectedStop: GtfsStop?,
     favoriteStopIds: Set<String> = emptySet(),
+    recentStopIds: List<String> = emptyList(),
     searchQuery: String = "",
     onSearchQueryChange: (String) -> Unit = {},
     onToggleFavorite: (String) -> Unit = {},
@@ -219,8 +231,48 @@ fun StopPickerModal(
         stops.filter { favoriteStopIds.contains(it.stopId) }
     }
 
-    val nonFavoriteRecentStops = remember(stops, favoriteStopIds) {
-        stops.filter { !favoriteStopIds.contains(it.stopId) }
+    val actualRecentStops = remember(stops, favoriteStopIds, recentStopIds) {
+        val ordered = if (recentStopIds.isNotEmpty()) {
+            recentStopIds.mapNotNull { id -> stops.firstOrNull { it.stopId == id } }
+        } else {
+            stops
+        }
+        ordered
+            .filter { !favoriteStopIds.contains(it.stopId) }
+            .distinctBy { it.stopId }
+            .take(5)
+    }
+
+    val recentDisplayItems = remember(actualRecentStops, favoriteStopIds) {
+        val items = actualRecentStops.map { stop ->
+            RecentStopDisplayItem(
+                stopId = stop.stopId,
+                stopName = stop.stopName,
+                stop = stop
+            )
+        }.toMutableList()
+
+        if (items.size < 5) {
+            for (suggested in DEFAULT_SUGGESTED_STOPS) {
+                if (items.size >= 5) break
+                val suggestedId = cleanStopIdForWeb(suggested.pole)
+                val alreadyPresent = favoriteStopIds.contains(suggestedId) ||
+                    items.any {
+                        it.stopId.equals(suggestedId, ignoreCase = true) ||
+                            it.stopName.equals(suggested.name, ignoreCase = true)
+                    }
+                if (!alreadyPresent) {
+                    items.add(
+                        RecentStopDisplayItem(
+                            stopId = suggestedId,
+                            stopName = suggested.name,
+                            webStop = suggested
+                        )
+                    )
+                }
+            }
+        }
+        items.take(5)
     }
 
     // Système de localisation de l'arrêt de bus le plus proche via recherche officielle idelis.fr
@@ -429,7 +481,7 @@ fun StopPickerModal(
                     },
                     placeholder = {
                         Text(
-                            "Rechercher un arrêt en direct (ex: Bosquet, Gare, Verdun)...",
+                            "Rechercher un arrêt",
                             fontSize = 12.sp,
                             color = mutedColor,
                             maxLines = 1,
@@ -437,7 +489,7 @@ fun StopPickerModal(
                         )
                     },
                     leadingIcon = {
-                        Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = primaryColor)
+                        Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = contentColor)
                     },
                     trailingIcon = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -483,42 +535,6 @@ fun StopPickerModal(
                 ) {
                     // CAS 1 : RECHERCHE ACTIVE -> Affiche EXCLUSIVEMENT les arrêts reçus par requête idelis.fr
                     if (isSearching) {
-                        item(key = "web_suggestions_header") {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF2E7D32))
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "ARRÊTS REÇUS PAR REQUÊTE (${webSuggestions.size})",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Black,
-                                            color = primaryColor,
-                                            letterSpacing = 0.5.sp
-                                        )
-                                    )
-                                }
-
-                                Text(
-                                    text = "⭐ Toucher l'étoile pour ajouter en favori",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = mutedColor,
-                                        fontSize = 10.sp
-                                    )
-                                )
-                            }
-                        }
-
                         if (webSuggestions.isEmpty() && !isWebSearching && searchQuery.trim().length >= 2) {
                             item(key = "no_web_results") {
                                 Box(
@@ -602,31 +618,16 @@ fun StopPickerModal(
 
                                     Spacer(modifier = Modifier.width(10.dp))
 
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = webStop.name,
-                                            style = MaterialTheme.typography.bodyMedium.copy(
-                                                fontWeight = FontWeight.Black,
-                                                color = if (isSelected) onPrimaryContainerColor else contentColor
-                                            ),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "Pôle requête : ${webStop.pole}",
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                color = when {
-                                                    isSelected -> onPrimaryContainerColor.copy(alpha = 0.85f)
-                                                    isFav -> Color(0xFFD97706)
-                                                    else -> primaryColor
-                                                },
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 11.sp
-                                            ),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                                    Text(
+                                        text = webStop.name,
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Black,
+                                            color = if (isSelected) onPrimaryContainerColor else contentColor
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -636,20 +637,6 @@ fun StopPickerModal(
                                             contentDescription = "Sélectionné",
                                             tint = onPrimaryContainerColor,
                                             modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                    } else {
-                                        Text(
-                                            text = "En direct",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                color = Color(0xFF2E7D32),
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 10.sp
-                                            ),
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0xFF2E7D32).copy(alpha = 0.12f))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                     }
@@ -675,28 +662,15 @@ fun StopPickerModal(
                         // CAS 2 : PAS DE RECHERCHE -> Affiche les arrêts mis en favoris par l'utilisateur
                         if (favoriteStops.isNotEmpty()) {
                             item(key = "favorites_header") {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 2.dp, bottom = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Star,
-                                        contentDescription = null,
-                                        tint = Color(0xFFFFB300),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "MES ARRÊTS FAVORIS (${favoriteStops.size})",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Black,
-                                            color = Color(0xFFD97706),
-                                            letterSpacing = 0.5.sp
-                                        )
-                                    )
-                                }
+                                Text(
+                                    text = "MES ARRÊTS FAVORIS",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = mutedColor,
+                                        letterSpacing = 0.5.sp
+                                    ),
+                                    modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+                                )
                             }
 
                             items(favoriteStops, key = { "fav_${it.stopId}" }) { stop ->
@@ -736,7 +710,7 @@ fun StopPickerModal(
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.Star,
+                                                imageVector = Icons.Default.DirectionsBus,
                                                 contentDescription = null,
                                                 tint = if (isSelected) onPrimaryColor else Color.White,
                                                 modifier = Modifier.size(18.dp)
@@ -745,26 +719,16 @@ fun StopPickerModal(
 
                                         Spacer(modifier = Modifier.width(10.dp))
 
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = stop.stopName,
-                                                style = MaterialTheme.typography.bodyMedium.copy(
-                                                    fontWeight = FontWeight.Black,
-                                                    color = if (isSelected) onPrimaryContainerColor else contentColor
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = stop.stopDesc ?: (stop.parentStation?.let { "Pôle : $it" } ?: "Arrêt réseau"),
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = if (isSelected) onPrimaryContainerColor.copy(alpha = 0.8f) else mutedColor,
-                                                    fontSize = 11.sp
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
+                                        Text(
+                                            text = stop.stopName,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = FontWeight.Black,
+                                                color = if (isSelected) onPrimaryContainerColor else contentColor
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
                                     }
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -831,68 +795,13 @@ fun StopPickerModal(
                                                 color = contentColor
                                             )
                                         )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "Recherchez un arrêt ci-dessus et appuyez sur l'étoile ⭐ pour l'ajouter à vos favoris.",
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                color = mutedColor,
-                                                fontSize = 11.5.sp
-                                            ),
-                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                        )
                                     }
                                 }
                             }
                         }
 
-                        // Suggestions rapides de recherche en 1 clic (masquées dès qu'il y a des arrêts en favoris)
-                        if (favoriteStops.isEmpty()) {
-                            item(key = "quick_search_suggestions") {
-                                Column(modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                                    Text(
-                                        text = "SUGGESTIONS RAPIDES DE RECHERCHE",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            color = mutedColor,
-                                            letterSpacing = 0.5.sp
-                                        )
-                                    )
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    FlowRow(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        val quickPoles = listOf(
-                                            "Bosquet",
-                                            "Gare de Pau",
-                                            "Verdun",
-                                            "Université",
-                                            "Hôpital"
-                                        )
-                                        for (pole in quickPoles) {
-                                            SuggestionChip(
-                                                onClick = {
-                                                    onSearchQueryChange(pole)
-                                                },
-                                                label = { Text(pole, fontSize = 12.sp, fontWeight = FontWeight.Bold) },
-                                                colors = SuggestionChipDefaults.suggestionChipColors(
-                                                    containerColor = surfaceColor,
-                                                    labelColor = contentColor
-                                                ),
-                                                border = SuggestionChipDefaults.suggestionChipBorder(
-                                                    enabled = true,
-                                                    borderColor = primaryColor.copy(alpha = 0.35f)
-                                                )
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Autres arrêts récemment consultés (non favoris)
-                        if (nonFavoriteRecentStops.isNotEmpty()) {
+                        // Arrêts récemment consultés (limités à 5, avec suggestions intégrées si aucun favori)
+                        if (recentDisplayItems.isNotEmpty()) {
                             item(key = "recent_stops_header") {
                                 Text(
                                     text = "ARRÊTS RÉCENTS",
@@ -905,19 +814,24 @@ fun StopPickerModal(
                                 )
                             }
 
-                            items(nonFavoriteRecentStops, key = { "recent_${it.stopId}" }) { stop ->
-                                val isSelected = stop.stopId == selectedStop?.stopId
+                            items(recentDisplayItems, key = { "recent_${it.stopId}" }) { item ->
+                                val isSelected = item.stopId == selectedStop?.stopId ||
+                                    (item.webStop != null && selectedStop?.parentStation.equals(item.webStop.pole, ignoreCase = true))
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
                                         .background(if (isSelected) primaryContainerColor else surfaceColor)
                                         .clickable {
-                                            onStopSelected(stop)
+                                            if (item.stop != null) {
+                                                onStopSelected(item.stop)
+                                            } else if (item.webStop != null) {
+                                                onWebStopSelected(item.webStop)
+                                            }
                                             onDismissRequest()
                                         }
                                         .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 6.dp)
-                                        .testTag("recent_stop_${stop.stopId}"),
+                                        .testTag("recent_stop_${item.stopId}"),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
@@ -942,40 +856,48 @@ fun StopPickerModal(
 
                                         Spacer(modifier = Modifier.width(10.dp))
 
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = stop.stopName,
-                                                style = MaterialTheme.typography.bodyMedium.copy(
-                                                    fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
-                                                    color = if (isSelected) onPrimaryContainerColor else contentColor
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = stop.parentStation?.let { "Pôle : $it" } ?: "Arrêt consulté",
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    color = if (isSelected) onPrimaryContainerColor.copy(alpha = 0.8f) else mutedColor,
-                                                    fontSize = 11.sp
-                                                ),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
+                                        Text(
+                                            text = item.stopName,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
+                                                color = if (isSelected) onPrimaryContainerColor else contentColor
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
                                     }
 
-                                    IconButton(
-                                        onClick = { onToggleFavorite(stop.stopId) },
-                                        modifier = Modifier
-                                            .size(36.dp)
-                                            .testTag("fav_recent_button_${stop.stopId}")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.StarBorder,
-                                            contentDescription = "Ajouter aux favoris",
-                                            tint = mutedColor,
-                                            modifier = Modifier.size(20.dp)
-                                        )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Sélectionné",
+                                                tint = onPrimaryContainerColor,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                if (item.stop != null) {
+                                                    onToggleFavorite(item.stop.stopId)
+                                                } else if (item.webStop != null) {
+                                                    onToggleFavoriteWebStop(item.webStop)
+                                                }
+                                            },
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .testTag("fav_recent_button_${item.stopId}")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.StarBorder,
+                                                contentDescription = "Ajouter aux favoris",
+                                                tint = mutedColor,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }

@@ -33,6 +33,8 @@ class PreferencesManager(context: Context) {
         private const val KEY_AUTO_REFRESH_PAUSED = "auto_refresh_paused"
         private const val KEY_PERIODIC_SYNC = "periodic_sync_enabled"
         private const val KEY_FAVORITE_STOP_IDS = "favorite_stop_ids"
+        private const val KEY_RECENT_STOP_IDS = "recent_stop_ids"
+        const val MAX_RECENT_STOPS = 5
         private const val KEY_LAST_GTFS_SYNC_TIME = "last_gtfs_sync_timestamp"
         private const val KEY_LAST_APP_UPDATE_CHECK_TIME = "last_app_update_check_timestamp"
         private const val KEY_LAST_NOTIFIED_UPDATE_TAG = "last_notified_update_tag"
@@ -242,6 +244,45 @@ class PreferencesManager(context: Context) {
         prefs.edit().putStringSet(KEY_FAVORITE_STOP_IDS, ids).apply()
     }
 
+    fun getRecentStopIds(): List<String> {
+        val raw = prefs.getString(KEY_RECENT_STOP_IDS, null) ?: return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            buildList {
+                for (i in 0 until array.length()) {
+                    val id = array.optString(i, "").trim()
+                    if (id.isNotBlank() && !contains(id)) {
+                        add(id)
+                    }
+                    if (size >= MAX_RECENT_STOPS) break
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun saveRecentStopIds(ids: List<String>) {
+        val limited = ids.map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(MAX_RECENT_STOPS)
+        val array = JSONArray().apply {
+            limited.forEach { put(it) }
+        }
+        prefs.edit().putString(KEY_RECENT_STOP_IDS, array.toString()).apply()
+    }
+
+    fun addRecentStopId(stopId: String): List<String> {
+        val clean = stopId.trim()
+        if (clean.isBlank()) return getRecentStopIds()
+        val updated = (listOf(clean) + getRecentStopIds())
+            .distinct()
+            .take(MAX_RECENT_STOPS)
+        saveRecentStopIds(updated)
+        return updated
+    }
+
     fun isDarkThemeEnabled(): Boolean = getThemeMode() == ThemeMode.DARK
 
     fun setDarkThemeEnabled(enabled: Boolean) {
@@ -413,11 +454,15 @@ class PreferencesManager(context: Context) {
             put("usageStatsEnabled", isUsageStatsEnabled())
         }
 
+        val recentArray = JSONArray()
+        getRecentStopIds().forEach { recentArray.put(it) }
+
         val root = JSONObject().apply {
             put("version", 1)
             put("exportedAt", System.currentTimeMillis())
             put("lastSelectedStopId", getLastSelectedStopId() ?: "")
             put("favoriteStopIds", favArray)
+            put("recentStopIds", recentArray)
             put("settings", settingsObj)
         }
         return root.toString(2)
@@ -440,6 +485,16 @@ class PreferencesManager(context: Context) {
                 }
                 saveFavoriteStopIds(restoredFavs)
                 favoritesCount = restoredFavs.size
+            }
+
+            if (root.has("recentStopIds")) {
+                val recentArray = root.getJSONArray("recentStopIds")
+                val restoredRecents = mutableListOf<String>()
+                for (i in 0 until recentArray.length()) {
+                    val id = recentArray.optString(i, "").trim()
+                    if (id.isNotBlank()) restoredRecents.add(id)
+                }
+                saveRecentStopIds(restoredRecents)
             }
 
             val lastStop = root.optString("lastSelectedStopId", "").trim()

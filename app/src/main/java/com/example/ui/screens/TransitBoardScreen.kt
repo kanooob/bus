@@ -399,6 +399,7 @@ fun TransitBoardScreen(
                 stops = uiState.allStops,
                 selectedStop = uiState.selectedStop,
                 favoriteStopIds = uiState.favoriteStopIds,
+                recentStopIds = uiState.recentStopIds,
                 searchQuery = uiState.searchQuery,
                 onSearchQueryChange = { query -> viewModel.updatePickerSearchQuery(query) },
                 webSuggestions = uiState.webSuggestions,
