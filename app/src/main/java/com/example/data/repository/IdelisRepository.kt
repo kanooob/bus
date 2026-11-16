@@ -1496,6 +1496,7 @@ class IdelisRepository(
             // signifie qu'aucun passage théorique correspondant n'était disponible pour cette course/journée.
             val isPlausibleMatch = bestTheo != null && abs(bestDelay) <= MAX_PLAUSIBLE_DELAY_MINUTES
             val matchedTheo = if (isPlausibleMatch) bestTheo else null
+            val isDelayIndeterminate = !isPlausibleMatch
 
             val aimedTimeFormatted = if (matchedTheo != null) {
                 String.format(Locale.FRANCE, "%02d:%02d", bestTheoHour % 24, bestTheoMin)
@@ -1536,7 +1537,8 @@ class IdelisRepository(
                 isRealTime = true,
                 minutesUntilDeparture = waitMins,
                 comparisonLabel = comparisonLabel,
-                iconUrl = iconUrl
+                iconUrl = iconUrl,
+                isDelayIndeterminate = isDelayIndeterminate
             )
         }.sortedBy { it.minutesUntilDeparture }
     }
@@ -1565,38 +1567,51 @@ class IdelisRepository(
                 extractSimpleTime(visit.expectedDepartureTime)
             }
 
-            // Si diffMinutes == 0 et que l'heure théorique n'était pas fournie par SIRI, chercher dans le GTFS
-            if (aimedTimeMs <= 0 && gtfsList.isNotEmpty() && expectedTimeMs > 0) {
-                val expCal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ).apply { timeInMillis = expectedTimeMs }
-                val expMinOfDay = expCal.get(Calendar.HOUR_OF_DAY) * 60 + expCal.get(Calendar.MINUTE)
-                val lineMatches = gtfsList.filter { it.routeShortName.equals(visit.lineRef, ignoreCase = true) }
-                val dirNorm = normalizeDirection(visit.destinationName)
-                val dirMatches = if (dirNorm.isNotEmpty()) {
-                    lineMatches.filter {
-                        val theoNorm = normalizeDirection(it.tripHeadsign)
-                        theoNorm.isNotEmpty() && (theoNorm.contains(dirNorm) || dirNorm.contains(theoNorm))
-                    }
-                } else emptyList()
-                val candidates = if (dirMatches.isNotEmpty()) dirMatches else lineMatches
+            var isDelayIndeterminate = false
+            if (aimedTimeMs > 0 && expectedTimeMs > 0 && abs(diffMinutes) > MAX_PLAUSIBLE_DELAY_MINUTES) {
+                diffMinutes = 0
+                aimedFormatted = expectedFormatted
+                isDelayIndeterminate = true
+            }
 
-                var bestDiff = Int.MAX_VALUE
-                var bestAimed = ""
-                for (theo in candidates) {
-                    val parts = theo.departureTime.split(":")
-                    val h = parts.getOrNull(0)?.toIntOrNull() ?: continue
-                    val m = parts.getOrNull(1)?.toIntOrNull() ?: continue
-                    val theoMod = ((h * 60 + m) % 1440 + 1440) % 1440
-                    var d = expMinOfDay - theoMod
-                    if (d > 720) d -= 1440
-                    if (d < -720) d += 1440
-                    if (abs(d) < abs(bestDiff)) {
-                        bestDiff = d
-                        bestAimed = String.format(Locale.FRANCE, "%02d:%02d", h % 24, m)
+            // Si diffMinutes == 0 et que l'heure théorique n'était pas fournie par SIRI, chercher dans le GTFS
+            if (aimedTimeMs <= 0) {
+                if (gtfsList.isNotEmpty() && expectedTimeMs > 0) {
+                    val expCal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ).apply { timeInMillis = expectedTimeMs }
+                    val expMinOfDay = expCal.get(Calendar.HOUR_OF_DAY) * 60 + expCal.get(Calendar.MINUTE)
+                    val lineMatches = gtfsList.filter { it.routeShortName.equals(visit.lineRef, ignoreCase = true) }
+                    val dirNorm = normalizeDirection(visit.destinationName)
+                    val dirMatches = if (dirNorm.isNotEmpty()) {
+                        lineMatches.filter {
+                            val theoNorm = normalizeDirection(it.tripHeadsign)
+                            theoNorm.isNotEmpty() && (theoNorm.contains(dirNorm) || dirNorm.contains(theoNorm))
+                        }
+                    } else emptyList()
+                    val candidates = if (dirMatches.isNotEmpty()) dirMatches else lineMatches
+
+                    var bestDiff = Int.MAX_VALUE
+                    var bestAimed = ""
+                    for (theo in candidates) {
+                        val parts = theo.departureTime.split(":")
+                        val h = parts.getOrNull(0)?.toIntOrNull() ?: continue
+                        val m = parts.getOrNull(1)?.toIntOrNull() ?: continue
+                        val theoMod = ((h * 60 + m) % 1440 + 1440) % 1440
+                        var d = expMinOfDay - theoMod
+                        if (d > 720) d -= 1440
+                        if (d < -720) d += 1440
+                        if (abs(d) < abs(bestDiff)) {
+                            bestDiff = d
+                            bestAimed = String.format(Locale.FRANCE, "%02d:%02d", h % 24, m)
+                        }
                     }
-                }
-                if (bestDiff != Int.MAX_VALUE && abs(bestDiff) <= MAX_PLAUSIBLE_DELAY_MINUTES) {
-                    diffMinutes = bestDiff
-                    aimedFormatted = bestAimed
+                    if (bestDiff != Int.MAX_VALUE && abs(bestDiff) <= MAX_PLAUSIBLE_DELAY_MINUTES) {
+                        diffMinutes = bestDiff
+                        aimedFormatted = bestAimed
+                    } else {
+                        isDelayIndeterminate = true
+                    }
+                } else {
+                    isDelayIndeterminate = true
                 }
             }
 
@@ -1637,7 +1652,8 @@ class IdelisRepository(
                     isRealTime = true,
                     minutesUntilDeparture = minutesUntil,
                     comparisonLabel = comparisonLabel,
-                    iconUrl = iconUrl
+                    iconUrl = iconUrl,
+                    isDelayIndeterminate = isDelayIndeterminate
                 )
             )
         }

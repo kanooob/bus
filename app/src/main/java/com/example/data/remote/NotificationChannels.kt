@@ -12,7 +12,7 @@ import com.example.R
 
 /**
  * Registre central des catégories de notifications (NotificationChannels) visibles
- * dans les informations de l'application Android (Paramètres système > Applications > Galaxie Bus > Notifications).
+ * dans les informations de l'application Android (Paramètres système > Applications > Mon Fébus > Notifications).
  */
 object NotificationChannels {
 

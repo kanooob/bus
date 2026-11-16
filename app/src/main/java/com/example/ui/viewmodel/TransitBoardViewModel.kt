@@ -131,7 +131,11 @@ data class TransitBoardUiState(
     val appUpdateState: AppUpdateState = AppUpdateState.Idle,
     val updatePromptVisible: Boolean = false,
     val isWifiConnected: Boolean = false,
-    val usageStatsEnabled: Boolean = true
+    val usageStatsEnabled: Boolean = true,
+    // Contenu / notes de version de la version actuelle
+    val currentVersionRelease: GitHubReleaseInfo? = null,
+    val isLoadingCurrentVersionNotes: Boolean = false,
+    val currentVersionNotesError: String? = null
 )
 
 class TransitBoardViewModel(
@@ -166,7 +170,8 @@ class TransitBoardViewModel(
             githubRepo = preferencesManager?.getGithubRepo() ?: com.example.data.local.PreferencesManager.DEFAULT_GITHUB_REPO,
             githubTag = preferencesManager?.getGithubTag() ?: com.example.data.local.PreferencesManager.DEFAULT_GITHUB_TAG,
             lastGtfsSyncTimestamp = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L,
-            usageStatsEnabled = preferencesManager?.isUsageStatsEnabled() ?: true
+            usageStatsEnabled = preferencesManager?.isUsageStatsEnabled() ?: true,
+            currentVersionRelease = preferencesManager?.getCachedCurrentVersionRelease(BuildConfig.VERSION_NAME)
         )
     )
     val uiState: StateFlow<TransitBoardUiState> = _uiState.asStateFlow()
@@ -176,6 +181,7 @@ class TransitBoardViewModel(
     private var trafficRefreshJob: Job? = null
     private var webSearchJob: Job? = null
     private var updateJob: Job? = null
+    private var currentVersionNotesJob: Job? = null
     private var refreshJob: Job? = null
     private var downloadDataJob: Job? = null
     private var gtfsSyncJob: Job? = null
@@ -216,6 +222,7 @@ class TransitBoardViewModel(
             delay(1_200L)
             loadComplementaryData(includeTrafficAutoRefresh = true)
             checkForAppUpdateOnLaunch()
+            loadCurrentVersionReleaseNotes(forceRefresh = false)
             sendDailyUsageStatsPingOnLaunch()
         }
     }
@@ -1291,6 +1298,17 @@ class TransitBoardViewModel(
             }
 
             val release = checkRes.getOrNull()!!
+            if (release.versionName.equals(currentVersion, ignoreCase = true) ||
+                release.tagName.removePrefix("v").removePrefix("V").equals(currentVersion, ignoreCase = true)
+            ) {
+                preferencesManager?.saveCachedCurrentVersionRelease(currentVersion, release)
+                _uiState.update {
+                    it.copy(
+                        currentVersionRelease = release,
+                        currentVersionNotesError = null
+                    )
+                }
+            }
             if (!release.isNewerThanCurrent) {
                 _uiState.update {
                     it.copy(
@@ -1455,6 +1473,50 @@ class TransitBoardViewModel(
         _uiState.update { it.copy(updatePromptVisible = false) }
     }
 
+    fun loadCurrentVersionReleaseNotes(forceRefresh: Boolean = false) {
+        val currentVersion = BuildConfig.VERSION_NAME
+        val existing = _uiState.value.currentVersionRelease
+        if (!forceRefresh && existing != null && existing.releaseNotes.isNotBlank()) {
+            return
+        }
+        if (currentVersionNotesJob?.isActive == true && !forceRefresh) return
+
+        currentVersionNotesJob?.cancel()
+        currentVersionNotesJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isLoadingCurrentVersionNotes = true,
+                    currentVersionNotesError = null
+                )
+            }
+            val repoUrl = _uiState.value.githubRepo.ifBlank {
+                com.example.data.local.PreferencesManager.DEFAULT_GITHUB_REPO
+            }
+            val result = repository.updaterService.fetchReleaseForVersion(
+                repoUrl = repoUrl,
+                currentVersion = currentVersion
+            )
+            if (result.isSuccess) {
+                val release = result.getOrNull()!!
+                preferencesManager?.saveCachedCurrentVersionRelease(currentVersion, release)
+                _uiState.update {
+                    it.copy(
+                        currentVersionRelease = release,
+                        isLoadingCurrentVersionNotes = false,
+                        currentVersionNotesError = null
+                    )
+                }
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isLoadingCurrentVersionNotes = false,
+                        currentVersionNotesError = result.exceptionOrNull()?.localizedMessage
+                    )
+                }
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         tickerJob?.cancel()
@@ -1462,6 +1524,7 @@ class TransitBoardViewModel(
         trafficRefreshJob?.cancel()
         webSearchJob?.cancel()
         updateJob?.cancel()
+        currentVersionNotesJob?.cancel()
         refreshJob?.cancel()
         downloadDataJob?.cancel()
         gtfsSyncJob?.cancel()

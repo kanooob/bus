@@ -68,6 +68,13 @@ class PreferencesManager(context: Context) {
         private const val KEY_USAGE_STATS_ENABLED = "usage_stats_enabled"
         private const val KEY_LAST_USAGE_STATS_PING_DATE = "last_usage_stats_ping_date"
 
+        // Cache des notes de version de la version installée
+        private const val KEY_CURRENT_VERSION_RELEASE_VER = "current_version_release_ver"
+        private const val KEY_CURRENT_VERSION_RELEASE_TAG = "current_version_release_tag"
+        private const val KEY_CURRENT_VERSION_RELEASE_NAME = "current_version_release_name"
+        private const val KEY_CURRENT_VERSION_RELEASE_NOTES = "current_version_release_notes"
+        private const val KEY_CURRENT_VERSION_RELEASE_URL = "current_version_release_url"
+
         const val DEFAULT_WEB_URL = "https://www.idelis.fr/?type=777"
         private const val LEGACY_GTFS_ZIP_URL = "https://opendata.idelis.fr/?file=GTFS_MultiRoutes/Data.GTFS.zip"
         private const val LEGACY_ALT_GTFS_ZIP_URL = "https://data.idelis.fr/api/explore/v2.1/catalog/datasets/fichier-des-donnees-theoriques-du-reseau-idelis-au-format-gtfs/alternative_exports/https_opendata_idelis_fr_file_gtfs_multiroutes_data_gtfs_zip/"
@@ -344,6 +351,40 @@ class PreferencesManager(context: Context) {
 
     fun saveLastUsageStatsPingDate(dateKey: String) {
         prefs.edit().putString(KEY_LAST_USAGE_STATS_PING_DATE, dateKey).apply()
+    }
+
+    fun getCachedCurrentVersionRelease(currentVersion: String): com.example.data.remote.GitHubReleaseInfo? {
+        val cachedVer = prefs.getString(KEY_CURRENT_VERSION_RELEASE_VER, null)?.trim()
+        if (!cachedVer.equals(currentVersion.trim(), ignoreCase = true)) return null
+        val notes = prefs.getString(KEY_CURRENT_VERSION_RELEASE_NOTES, null) ?: ""
+        val name = prefs.getString(KEY_CURRENT_VERSION_RELEASE_NAME, null) ?: "v$currentVersion"
+        if (notes.isBlank() && name.isBlank()) return null
+        val tag = prefs.getString(KEY_CURRENT_VERSION_RELEASE_TAG, null) ?: "v$currentVersion"
+        val url = prefs.getString(KEY_CURRENT_VERSION_RELEASE_URL, null) ?: DEFAULT_GITHUB_REPO
+        return com.example.data.remote.GitHubReleaseInfo(
+            tagName = tag,
+            versionName = currentVersion,
+            releaseName = name,
+            releaseNotes = notes,
+            htmlUrl = url,
+            apkDownloadUrl = null,
+            apkFileName = null,
+            apkSizeBytes = 0L,
+            isNewerThanCurrent = false
+        )
+    }
+
+    fun saveCachedCurrentVersionRelease(
+        currentVersion: String,
+        release: com.example.data.remote.GitHubReleaseInfo
+    ) {
+        prefs.edit()
+            .putString(KEY_CURRENT_VERSION_RELEASE_VER, currentVersion.trim())
+            .putString(KEY_CURRENT_VERSION_RELEASE_TAG, release.tagName)
+            .putString(KEY_CURRENT_VERSION_RELEASE_NAME, release.releaseName)
+            .putString(KEY_CURRENT_VERSION_RELEASE_NOTES, release.releaseNotes)
+            .putString(KEY_CURRENT_VERSION_RELEASE_URL, release.htmlUrl)
+            .apply()
     }
 
     // 4. Avancé : Sauvegarde et restauration JSON

@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="app/src/main/res/drawable/galaxie_bus_logo.png" width="140" height="140" alt="Logo Galaxie Bus" />
-  <h1>Galaxie Bus</h1>
+  <img src="docs/logo.png" width="140" height="140" alt="Logo Mon Fébus" />
+  <h1>Mon Fébus</h1>
   <p>
     Application Android temps réel pour le réseau de transport <strong>Idelis</strong> (Pau Béarn Pyrénées) :
     prochains départs en direct, widget dynamique sur l'écran d'accueil, infos trafic et horaires hors-ligne.

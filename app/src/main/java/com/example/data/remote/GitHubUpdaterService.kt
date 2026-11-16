@@ -175,7 +175,7 @@ class GitHubUpdaterService(
             val latestReq = Request.Builder()
                 .url(primaryUrl)
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "GalaxieBus-Android/$currentVersion")
+                .header("User-Agent", "MonFebus-Android/$currentVersion")
                 .build()
 
             val releaseJson: JSONObject? = client.newCall(latestReq).execute().use { response ->
@@ -189,7 +189,7 @@ class GitHubUpdaterService(
                         val listReq = Request.Builder()
                             .url("https://api.github.com/repos/$owner/$repo/releases?per_page=1")
                             .header("Accept", "application/vnd.github+json")
-                            .header("User-Agent", "GalaxieBus-Android/$currentVersion")
+                            .header("User-Agent", "MonFebus-Android/$currentVersion")
                             .build()
                         client.newCall(listReq).execute().use { listResp ->
                             if (!listResp.isSuccessful) {
@@ -216,50 +216,128 @@ class GitHubUpdaterService(
                 )
             }
 
-            val tagName = releaseJson.optString("tag_name", "").trim()
-            val versionName = tagName.removePrefix("v").removePrefix("V").ifBlank { tagName }
-            val releaseName = releaseJson.optString("name", tagName).ifBlank { tagName }
-            val releaseNotes = releaseJson.optString("body", "").let {
-                if (it == "null") "" else it.trim()
-            }
-            val htmlUrl = releaseJson.optString("html_url", "https://github.com/$owner/$repo/releases")
-
-            var apkDownloadUrl: String? = null
-            var apkFileName: String? = null
-            var apkSizeBytes = 0L
-
-            val assets = releaseJson.optJSONArray("assets")
-            if (assets != null) {
-                for (i in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(i)
-                    val name = asset.optString("name", "")
-                    if (name.endsWith(".apk", ignoreCase = true)) {
-                        apkDownloadUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() && it != "null" }
-                        apkFileName = name
-                        apkSizeBytes = asset.optLong("size", 0L)
-                        break
-                    }
-                }
-            }
-
-            val isNewer = isNewerVersion(tagName, currentVersion)
-            Result.success(
-                GitHubReleaseInfo(
-                    tagName = tagName,
-                    versionName = versionName,
-                    releaseName = releaseName,
-                    releaseNotes = releaseNotes,
-                    htmlUrl = htmlUrl,
-                    apkDownloadUrl = apkDownloadUrl,
-                    apkFileName = apkFileName,
-                    apkSizeBytes = apkSizeBytes,
-                    isNewerThanCurrent = isNewer
-                )
-            )
+            Result.success(parseReleaseJson(releaseJson, owner, repo, currentVersion))
         } catch (e: Exception) {
             Log.e(TAG, "Erreur vérification mise à jour GitHub: ${e.message}", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * Récupère les informations et notes de release GitHub correspondant à la version actuellement installée.
+     */
+    suspend fun fetchReleaseForVersion(
+        repoUrl: String = DEFAULT_REPO_URL,
+        currentVersion: String
+    ): Result<GitHubReleaseInfo> = withContext(Dispatchers.IO) {
+        try {
+            val (owner, repo) = parseOwnerAndRepo(repoUrl)
+            val cleanVersion = currentVersion.trim().removePrefix("v").removePrefix("V")
+            if (cleanVersion.isBlank()) {
+                return@withContext Result.failure(IllegalArgumentException("Numéro de version vide"))
+            }
+
+            val candidateTags = listOf("v$cleanVersion", cleanVersion)
+            var foundJson: JSONObject? = null
+            var lastErrorCode: Int? = null
+
+            for (tag in candidateTags) {
+                val req = Request.Builder()
+                    .url("https://api.github.com/repos/$owner/$repo/releases/tags/$tag")
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "MonFebus-Android/$cleanVersion")
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string().orEmpty()
+                        if (body.isNotBlank()) {
+                            foundJson = JSONObject(body)
+                        }
+                    } else {
+                        lastErrorCode = resp.code
+                    }
+                }
+                if (foundJson != null) break
+            }
+
+            if (foundJson == null) {
+                val listReq = Request.Builder()
+                    .url("https://api.github.com/repos/$owner/$repo/releases?per_page=15")
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", "MonFebus-Android/$cleanVersion")
+                    .build()
+                client.newCall(listReq).execute().use { listResp ->
+                    if (listResp.isSuccessful) {
+                        val arr = JSONArray(listResp.body?.string().orEmpty())
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val tag = obj.optString("tag_name", "").trim()
+                            val normalizedTag = tag.removePrefix("v").removePrefix("V")
+                            if (normalizedTag.equals(cleanVersion, ignoreCase = true) ||
+                                tag.equals(cleanVersion, ignoreCase = true)
+                            ) {
+                                foundJson = obj
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+
+            val resolvedJson = foundJson ?: return@withContext Result.failure(
+                Exception("Notes de version v$cleanVersion introuvables sur GitHub (HTTP ${lastErrorCode ?: 404})")
+            )
+            Result.success(parseReleaseJson(resolvedJson, owner, repo, cleanVersion))
+        } catch (e: Exception) {
+            Log.w(TAG, "Impossible de récupérer le contenu de la version v$currentVersion: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    private fun parseReleaseJson(
+        releaseJson: JSONObject,
+        owner: String,
+        repo: String,
+        currentVersion: String
+    ): GitHubReleaseInfo {
+        val tagName = releaseJson.optString("tag_name", "").trim()
+        val versionName = tagName.removePrefix("v").removePrefix("V").ifBlank { tagName }
+        val releaseName = releaseJson.optString("name", tagName).ifBlank { tagName }
+        val releaseNotes = releaseJson.optString("body", "").let {
+            if (it == "null") "" else it.trim()
+        }
+        val htmlUrl = releaseJson.optString("html_url", "https://github.com/$owner/$repo/releases")
+
+        var apkDownloadUrl: String? = null
+        var apkFileName: String? = null
+        var apkSizeBytes = 0L
+
+        val assets = releaseJson.optJSONArray("assets")
+        if (assets != null) {
+            for (i in 0 until assets.length()) {
+                val asset = assets.getJSONObject(i)
+                val name = asset.optString("name", "")
+                if (name.endsWith(".apk", ignoreCase = true)) {
+                    apkDownloadUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() && it != "null" }
+                    apkFileName = name
+                    apkSizeBytes = asset.optLong("size", 0L)
+                    break
+                }
+            }
+        }
+
+        val isNewer = isNewerVersion(tagName, currentVersion)
+        return GitHubReleaseInfo(
+            tagName = tagName,
+            versionName = versionName,
+            releaseName = releaseName,
+            releaseNotes = releaseNotes,
+            htmlUrl = htmlUrl,
+            apkDownloadUrl = apkDownloadUrl,
+            apkFileName = apkFileName,
+            apkSizeBytes = apkSizeBytes,
+            isNewerThanCurrent = isNewer
+        )
     }
 
     /**
@@ -276,7 +354,7 @@ class GitHubUpdaterService(
         val updatesDir = File(context.cacheDir, "updates").apply {
             if (!exists()) mkdirs()
         }
-        val safeName = (release.apkFileName ?: "galaxie-bus-${release.versionName}.apk")
+        val safeName = (release.apkFileName ?: "mon-febus-${release.versionName}.apk")
             .replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val finalFile = File(updatesDir, safeName)
         val tempFile = File(updatesDir, "$safeName.part")
@@ -298,7 +376,7 @@ class GitHubUpdaterService(
             val request = Request.Builder()
                 .url(url)
                 .header("Accept", "application/octet-stream")
-                .header("User-Agent", "GalaxieBus-Android")
+                .header("User-Agent", "MonFebus-Android")
                 .build()
 
             client.newCall(request).execute().use { response ->

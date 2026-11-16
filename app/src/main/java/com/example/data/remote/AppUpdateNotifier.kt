@@ -14,7 +14,7 @@ import com.example.MainActivity
 import com.example.R
 
 /**
- * Gère les notifications Android locales lorsqu'une nouvelle version de Galaxie Bus
+ * Gère les notifications Android locales lorsqu'une nouvelle version de Mon Fébus
  * est détectée ou prête à être installée depuis GitHub Releases.
  */
 object AppUpdateNotifier {
@@ -108,7 +108,7 @@ object AppUpdateNotifier {
                 if (formattedNotes.isNotBlank()) {
                     append(formattedNotes)
                 } else if (!readyToInstall) {
-                    append("Une nouvelle version de Galaxie Bus est disponible sur GitHub.")
+                    append("Une nouvelle version de Mon Fébus est disponible sur GitHub.")
                 }
             }
 

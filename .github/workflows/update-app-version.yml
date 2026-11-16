@@ -80,14 +80,14 @@ jobs:
             echo "Le tag $TAG existe déjà, impossible de le recréer."
             exit 1
           fi
-          git tag -a "$TAG" -m "Version Galaxie Bus $TAG (build ${{ steps.version.outputs.new_version_code }})"
+          git tag -a "$TAG" -m "Version Mon Fébus $TAG (build ${{ steps.version.outputs.new_version_code }})"
           git push origin "$TAG"
 
       - name: Résumé de l'opération
         if: always()
         run: |
           {
-            echo "### Mise à jour de version Galaxie Bus"
+            echo "### Mise à jour de version Mon Fébus"
             echo ""
             echo "| Champ | Avant | Après |"
             echo "|---|---|---|"

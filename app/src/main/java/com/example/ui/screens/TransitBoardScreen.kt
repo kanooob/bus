@@ -224,6 +224,7 @@ fun TransitBoardScreen(
                 },
                 onSettingsClick = {
                     viewModel.refreshWifiStatus()
+                    viewModel.loadCurrentVersionReleaseNotes(forceRefresh = false)
                     isSettingsOpen = true
                 },
                 isDarkTheme = effectiveDarkTheme
@@ -491,6 +492,10 @@ fun TransitBoardScreen(
                 },
                 usageStatsEnabled = uiState.usageStatsEnabled,
                 onToggleUsageStats = { viewModel.setUsageStatsEnabled(it) },
+                currentVersionRelease = uiState.currentVersionRelease,
+                isLoadingCurrentVersionNotes = uiState.isLoadingCurrentVersionNotes,
+                currentVersionNotesError = uiState.currentVersionNotesError,
+                onRefreshCurrentVersionNotes = { viewModel.loadCurrentVersionReleaseNotes(forceRefresh = true) },
                 onDismissRequest = { isSettingsOpen = false }
             )
         }

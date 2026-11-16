@@ -46,5 +46,6 @@ data class DepartureComparison(
     val isRealTime: Boolean,                       // true si SIRI actif, false si fallback GTFS
     val minutesUntilDeparture: Long,               // Estimation de temps d'attente
     val comparisonLabel: String,                   // "17:16 GTFS ➔ 17:17 Temps réel [+1 min]"
-    val iconUrl: String? = null                    // URL du PNG officiel (liste-des-icones-des-lignes)
+    val iconUrl: String? = null,                   // URL du PNG officiel (liste-des-icones-des-lignes)
+    val isDelayIndeterminate: Boolean = false      // true si retard aberrant / sans horaire théorique concordant
 )

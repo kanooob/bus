@@ -4,8 +4,10 @@ import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import com.example.data.model.AppUpdateCheckFrequency
@@ -16,6 +18,7 @@ import com.example.data.model.ThemeMode
 import com.example.data.model.UpdateNetworkMode
 import com.example.data.model.WidgetLocationFrequency
 import com.example.data.model.WidgetRefreshFrequency
+import com.example.data.remote.GitHubReleaseInfo
 import com.example.ui.components.SettingsModal
 import com.example.ui.theme.MyApplicationTheme
 import org.junit.Assert.assertEquals
@@ -186,5 +189,82 @@ class SettingsModalRobolectricTest {
         composeTestRule.waitForIdle()
 
         assertEquals(false, lastToggledValue)
+    }
+
+    @Test
+    fun `updates and about show current version content and advanced shows idelis disclaimer`() {
+        val currentRelease = GitHubReleaseInfo(
+            tagName = "v${BuildConfig.VERSION_NAME}",
+            versionName = BuildConfig.VERSION_NAME,
+            releaseName = "Mon Fébus v${BuildConfig.VERSION_NAME}",
+            releaseNotes = "## Nouveautés\n- Affichage direct du contenu de version\n- Stabilité améliorée",
+            htmlUrl = "https://github.com/kanooob/bus/releases/tag/v${BuildConfig.VERSION_NAME}",
+            apkDownloadUrl = null,
+            apkFileName = null,
+            apkSizeBytes = 0L,
+            isNewerThanCurrent = false
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme(darkTheme = false) {
+                SettingsModal(
+                    isDarkTheme = false,
+                    themeMode = ThemeMode.SYSTEM,
+                    onSelectThemeMode = {},
+                    primaryColorMode = PrimaryColorMode.APP_DEFAULT,
+                    onSelectPrimaryColorMode = {},
+                    inAppRefreshFrequency = InAppRefreshFrequency.EVERY_1_MIN,
+                    onSelectInAppRefreshFrequency = {},
+                    widgetRefreshFrequency = WidgetRefreshFrequency.EVERY_15_MIN,
+                    onSelectWidgetRefreshFrequency = {},
+                    widgetLocationFrequency = WidgetLocationFrequency.EVERY_15_MIN,
+                    onSelectWidgetLocationFrequency = {},
+                    gtfsSyncFrequency = GtfsSyncFrequency.DAILY_ON_OPEN,
+                    onSelectGtfsSyncFrequency = {},
+                    appUpdateCheckFrequency = AppUpdateCheckFrequency.DAILY_ON_OPEN,
+                    onSelectAppUpdateCheckFrequency = {},
+                    updateNetworkMode = UpdateNetworkMode.WIFI_AND_CELLULAR,
+                    onSelectUpdateNetworkMode = {},
+                    currentVersionRelease = currentRelease,
+                    onDismissRequest = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        // 1. Mises à jour -> affiche le contenu de la version actuelle
+        composeTestRule.onNodeWithTag("settings_category_app_updates").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("settings_submenu_list")
+            .performScrollToNode(hasTestTag("settings_updates_current_version_card"))
+        composeTestRule.onNodeWithTag("settings_updates_current_version_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Affichage direct du contenu de version", substring = true)
+            .assertIsDisplayed()
+
+        // 2. À propos -> affiche Mon Fébus et le contenu de la version actuelle
+        composeTestRule.onNodeWithTag("settings_submenu_list")
+            .performScrollToNode(hasTestTag("setting_about_row"))
+        composeTestRule.onNodeWithTag("setting_about_row").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Mon Fébus").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_about_current_version_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Stabilité améliorée", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("Fermer").performClick()
+        composeTestRule.waitForIdle()
+
+        // Retour au menu principal puis ouverture de Avancé -> affiche la provenance Idelis et les mentions
+        composeTestRule.onNodeWithTag("settings_back_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("settings_categories_menu")
+            .performScrollToNode(hasTestTag("settings_category_advanced"))
+        composeTestRule.onNodeWithTag("settings_category_advanced").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("settings_submenu_list")
+            .performScrollToNode(hasTestTag("advanced_data_disclaimer_card"))
+        composeTestRule.onNodeWithTag("advanced_data_disclaimer_card").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Idelis", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("livrée telle quelle", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("inexactes", substring = true).assertIsDisplayed()
     }
 }

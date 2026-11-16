@@ -129,6 +129,7 @@ import com.example.data.remote.AppUpdateState
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.NotificationChannels
 import com.example.data.remote.formatReleaseNotesForDisplay
+import com.example.ui.theme.TransitSurface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -231,6 +232,10 @@ fun SettingsModal(
     onResetAdvancedUrls: () -> Unit = {},
     usageStatsEnabled: Boolean = true,
     onToggleUsageStats: (Boolean) -> Unit = {},
+    currentVersionRelease: GitHubReleaseInfo? = null,
+    isLoadingCurrentVersionNotes: Boolean = false,
+    currentVersionNotesError: String? = null,
+    onRefreshCurrentVersionNotes: () -> Unit = {},
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -517,7 +522,7 @@ fun SettingsModal(
                                 item {
                                     SettingsCategoryMenuCard(
                                         category = SettingsCategory.ADVANCED,
-                                        summary = "Sauvegarde JSON • URLs réseau / API • Compteur d'utilisateurs",
+                                        summary = "Sauvegarde JSON • URLs réseau / API • Sources & mentions",
                                         cardColor = cardColor,
                                         primaryColor = primaryColor,
                                         onClick = { selectedCategory = SettingsCategory.ADVANCED }
@@ -1033,6 +1038,28 @@ fun SettingsModal(
                                                 )
                                             }
                                         }
+
+                                        item {
+                                            SettingsSectionGroup(
+                                                sectionTitle = "Contenu de la version actuelle",
+                                                primaryColor = primaryColor,
+                                                cardColor = cardColor
+                                            ) {
+                                                CurrentVersionNotesContent(
+                                                    currentVersionRelease = currentVersionRelease,
+                                                    isLoading = isLoadingCurrentVersionNotes,
+                                                    errorMessage = currentVersionNotesError,
+                                                    onRefresh = onRefreshCurrentVersionNotes,
+                                                    primaryColor = primaryColor,
+                                                    contentColor = contentColor,
+                                                    mutedColor = mutedColor,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(16.dp)
+                                                        .testTag("settings_updates_current_version_card")
+                                                )
+                                            }
+                                        }
                                     }
 
                                     SettingsCategory.ADVANCED -> {
@@ -1078,6 +1105,54 @@ fun SettingsModal(
                                                     testTag = "setting_usage_stats_row",
                                                     switchTestTag = "setting_usage_stats_switch"
                                                 )
+                                            }
+                                        }
+
+                                        item {
+                                            SettingsSectionGroup(
+                                                sectionTitle = "Sources des données et avertissement",
+                                                primaryColor = primaryColor,
+                                                cardColor = cardColor
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(16.dp)
+                                                        .testTag("advanced_data_disclaimer_card"),
+                                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                    ) {
+                                                        SettingsLeadingIcon(
+                                                            icon = Icons.Default.Info,
+                                                            tint = primaryColor
+                                                        )
+                                                        Text(
+                                                            text = "Provenance et fiabilité des données",
+                                                            style = MaterialTheme.typography.bodyLarge.copy(
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = contentColor
+                                                            )
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = "Les horaires en temps réel, fiches théoriques (GTFS), infos trafic, parcs relais et stations proviennent des services et données publiques du réseau Idelis. Mon Fébus est une application indépendante et non officielle.",
+                                                        style = MaterialTheme.typography.bodySmall.copy(
+                                                            color = mutedColor,
+                                                            lineHeight = 18.sp
+                                                        )
+                                                    )
+                                                    Text(
+                                                        text = "L'application est livrée telle quelle, sans garantie d'aucune sorte. Les données affichées peuvent être inexactes, incomplètes, retardées ou temporairement indisponibles. Référez-vous toujours aux informations officielles aux arrêts ou sur idelis.fr.",
+                                                        style = MaterialTheme.typography.bodySmall.copy(
+                                                            color = contentColor.copy(alpha = 0.85f),
+                                                            fontWeight = FontWeight.Medium,
+                                                            lineHeight = 18.sp
+                                                        )
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -1332,7 +1407,12 @@ fun SettingsModal(
                     )
                 },
                 text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = primaryColor.copy(alpha = 0.1f),
@@ -1345,13 +1425,13 @@ fun SettingsModal(
                             ) {
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
-                                    color = Color.White,
+                                    color = TransitSurface,
                                     shadowElevation = 1.dp,
                                     modifier = Modifier.size(52.dp)
                                 ) {
                                     Image(
                                         painter = painterResource(id = R.drawable.galaxie_bus_logo),
-                                        contentDescription = "Logo Galaxie Bus",
+                                        contentDescription = "Logo Mon Fébus",
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .padding(6.dp)
@@ -1359,7 +1439,7 @@ fun SettingsModal(
                                 }
                                 Column {
                                     Text(
-                                        text = "Galaxie Bus",
+                                        text = "Mon Fébus",
                                         style = MaterialTheme.typography.titleMedium.copy(
                                             fontWeight = FontWeight.Black,
                                             color = primaryColor
@@ -1376,6 +1456,28 @@ fun SettingsModal(
                                     )
                                 }
                             }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_about_current_version_card")
+                        ) {
+                            CurrentVersionNotesContent(
+                                currentVersionRelease = currentVersionRelease,
+                                isLoading = isLoadingCurrentVersionNotes,
+                                errorMessage = currentVersionNotesError,
+                                onRefresh = onRefreshCurrentVersionNotes,
+                                primaryColor = primaryColor,
+                                contentColor = contentColor,
+                                mutedColor = mutedColor,
+                                maxNotesHeight = 160.dp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp)
+                            )
                         }
 
                         Text(
@@ -1460,7 +1562,7 @@ fun SettingsModal(
                         Button(
                             onClick = {
                                 val dateSuffix = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
-                                exportJsonLauncher.launch("galaxie_bus_backup_$dateSuffix.json")
+                                exportJsonLauncher.launch("mon_febus_backup_$dateSuffix.json")
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2111,4 +2213,115 @@ private fun openAppLocationSettings(context: Context) {
         }
         context.startActivity(intent)
     } catch (_: Exception) {}
+}
+
+@Composable
+private fun CurrentVersionNotesContent(
+    currentVersionRelease: GitHubReleaseInfo?,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onRefresh: () -> Unit,
+    primaryColor: Color,
+    contentColor: Color,
+    mutedColor: Color,
+    maxNotesHeight: androidx.compose.ui.unit.Dp = 220.dp,
+    modifier: Modifier = Modifier
+) {
+    val formattedNotes = remember(currentVersionRelease?.releaseNotes) {
+        formatReleaseNotesForDisplay(currentVersionRelease?.releaseNotes)
+    }
+    val releaseTitle = currentVersionRelease?.releaseName?.trim().orEmpty()
+    val showReleaseTitle = releaseTitle.isNotBlank() &&
+        !releaseTitle.equals(currentVersionRelease?.tagName.orEmpty(), ignoreCase = true)
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Version v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = contentColor
+                    )
+                )
+                if (showReleaseTitle) {
+                    Text(
+                        text = releaseTitle,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = primaryColor,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                }
+            }
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = primaryColor,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                IconButton(
+                    onClick = onRefresh,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Actualiser le contenu de la version",
+                        tint = primaryColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+
+        if (isLoading && formattedNotes.isBlank()) {
+            Text(
+                text = "Chargement du contenu de la version v${BuildConfig.VERSION_NAME} depuis GitHub...",
+                style = MaterialTheme.typography.bodySmall.copy(color = mutedColor)
+            )
+        } else if (formattedNotes.isNotBlank()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxNotesHeight)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = formattedNotes,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = contentColor.copy(alpha = 0.88f),
+                        lineHeight = 18.sp
+                    )
+                )
+            }
+        } else {
+            val fallbackSummary = remember {
+                "• Horaires des prochains passages en temps réel (SIRI / Web Idelis)\n" +
+                    "• Widget d'écran d'accueil configurable avec détection d'arrêt proche\n" +
+                    "• Info trafic en direct et notifications configurables\n" +
+                    "• Base GTFS locale hors-ligne, favoris et sauvegarde/restauration JSON"
+            }
+            Text(
+                text = fallbackSummary,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = contentColor.copy(alpha = 0.85f),
+                    lineHeight = 18.sp
+                )
+            )
+            if (!errorMessage.isNullOrBlank()) {
+                Text(
+                    text = "Notes GitHub indisponibles hors ligne ou tag v${BuildConfig.VERSION_NAME} non publié.",
+                    style = MaterialTheme.typography.labelSmall.copy(color = mutedColor)
+                )
+            }
+        }
+    }
 }

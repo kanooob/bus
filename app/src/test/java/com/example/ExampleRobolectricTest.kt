@@ -20,7 +20,7 @@ class ExampleRobolectricTest {
     fun `read string from context`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
-        assertEquals("Galaxie Bus", appName)
+        assertEquals("Mon Fébus", appName)
     }
 
     @Test
@@ -481,7 +481,7 @@ class ExampleRobolectricTest {
         val release = com.example.data.remote.GitHubReleaseInfo(
             tagName = "v2.2.0",
             versionName = "2.2.0",
-            releaseName = "Galaxie Bus v2.2.0",
+            releaseName = "Mon Fébus v2.2.0",
             releaseNotes = "## Nouveautés\n- **Actualisation discrète** toutes les 45s\n- Corrections de bugs",
             htmlUrl = "https://github.com/kanooob/bus/releases/tag/v2.2.0",
             apkDownloadUrl = "https://github.com/kanooob/bus/releases/download/v2.2.0/app-release.apk",
@@ -1241,6 +1241,7 @@ class ExampleRobolectricTest {
         assertEquals(1, guarded.size)
         assertEquals(0, guarded[0].delayMinutes)
         assertEquals(com.example.data.model.DepartureStatus.ON_TIME, guarded[0].status)
+        assertTrue(guarded[0].isDelayIndeterminate)
 
         // Cas 2 : retard réaliste de +4 min par rapport à un horaire GTFS concordant
         val nearCal = (nowCal.clone() as java.util.Calendar).apply { add(java.util.Calendar.MINUTE, 1) }
@@ -1251,6 +1252,18 @@ class ExampleRobolectricTest {
         assertEquals(1, delayed.size)
         assertEquals(4, delayed[0].delayMinutes)
         assertEquals(com.example.data.model.DepartureStatus.DELAYED, delayed[0].status)
+        assertFalse(delayed[0].isDelayIndeterminate)
+
+        // Cas 3 : passage véritablement à l'heure (0 min d'écart) -> vert (isDelayIndeterminate = false)
+        val exactCal = (nowCal.clone() as java.util.Calendar).apply { add(java.util.Calendar.MINUTE, 5) }
+        val onTimeTheo = listOf(
+            implausibleTheo.first().copy(departureTime = fmt.format(exactCal.time))
+        )
+        val onTime = repo.compareWebDeparturesWithTheoretical(webDep, onTimeTheo)
+        assertEquals(1, onTime.size)
+        assertEquals(0, onTime[0].delayMinutes)
+        assertEquals(com.example.data.model.DepartureStatus.ON_TIME, onTime[0].status)
+        assertFalse(onTime[0].isDelayIndeterminate)
     }
 
     @Test
