@@ -231,11 +231,19 @@ fun StopPickerModal(
         stops.filter { favoriteStopIds.contains(it.stopId) }
     }
 
-    val actualRecentStops = remember(stops, favoriteStopIds, recentStopIds) {
-        val ordered = if (recentStopIds.isNotEmpty()) {
-            recentStopIds.mapNotNull { id -> stops.firstOrNull { it.stopId == id } }
+    val allKnownStops = remember(stops, selectedStop) {
+        if (selectedStop != null && stops.none { it.stopId == selectedStop.stopId }) {
+            listOf(selectedStop) + stops
         } else {
             stops
+        }
+    }
+
+    val actualRecentStops = remember(allKnownStops, selectedStop, favoriteStopIds, recentStopIds) {
+        val ordered = if (recentStopIds.isNotEmpty()) {
+            recentStopIds.mapNotNull { id -> allKnownStops.firstOrNull { it.stopId == id } }
+        } else {
+            listOfNotNull(selectedStop) + allKnownStops
         }
         ordered
             .filter { !favoriteStopIds.contains(it.stopId) }

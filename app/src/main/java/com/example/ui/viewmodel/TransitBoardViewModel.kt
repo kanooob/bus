@@ -323,9 +323,16 @@ class TransitBoardViewModel(
                         ?: stops.firstOrNull { it.stopName.contains("Bosquet", true) }
                         ?: stops.firstOrNull()
                         ?: com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP
+                    val initialRecentIds = if (current.recentStopIds.isEmpty()) {
+                        preferencesManager?.addRecentStopId(defaultStop.stopId)
+                            ?: listOf(defaultStop.stopId)
+                    } else {
+                        current.recentStopIds
+                    }
                     current.copy(
                         allStops = stops,
                         selectedStop = defaultStop,
+                        recentStopIds = initialRecentIds,
                         activePeriod = repository.getCurrentPeriod()
                     )
                 }
