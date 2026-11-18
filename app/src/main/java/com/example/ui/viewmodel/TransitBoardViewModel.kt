@@ -172,6 +172,7 @@ class TransitBoardViewModel(
             githubRepo = preferencesManager?.getGithubRepo() ?: com.example.data.local.PreferencesManager.DEFAULT_GITHUB_REPO,
             githubTag = preferencesManager?.getGithubTag() ?: com.example.data.local.PreferencesManager.DEFAULT_GITHUB_TAG,
             lastGtfsSyncTimestamp = preferencesManager?.getLastGtfsSyncTimestamp() ?: 0L,
+            activePeriod = repository.getCurrentPeriod(),
             usageStatsEnabled = preferencesManager?.isUsageStatsEnabled() ?: true,
             currentVersionRelease = preferencesManager?.getCachedCurrentVersionRelease(BuildConfig.VERSION_NAME)
         )
@@ -424,6 +425,7 @@ class TransitBoardViewModel(
                     _uiState.update {
                         it.copy(
                             trafficAlerts = alerts,
+                            activePeriod = repository.getCurrentPeriod(),
                             isTrafficLoading = false,
                             trafficErrorMessage = null,
                             lastTrafficRefreshTimestamp = now
@@ -432,6 +434,7 @@ class TransitBoardViewModel(
                 } else {
                     _uiState.update {
                         it.copy(
+                            activePeriod = repository.getCurrentPeriod(),
                             isTrafficLoading = false,
                             trafficErrorMessage = result.exceptionOrNull()?.localizedMessage
                                 ?: "Impossible de récupérer les infos trafic idelis.fr"
@@ -533,6 +536,7 @@ class TransitBoardViewModel(
 
     fun setTrafficNotificationsEnabled(enabled: Boolean) {
         preferencesManager?.setTrafficNotificationsEnabled(enabled)
+        _uiState.update { it.copy(trafficNotificationsEnabled = enabled) }
         if (enabled && preferencesManager != null && !preferencesManager.hasTrafficBaselineInitialized()) {
             val currentAlerts = _uiState.value.trafficAlerts
             if (currentAlerts.isNotEmpty()) {
@@ -540,9 +544,11 @@ class TransitBoardViewModel(
                     currentAlerts.map { TrafficAlertNotifier.alertFingerprint(it) }.toSet()
                 )
                 preferencesManager.setTrafficBaselineInitialized(true)
+            } else {
+                // Établir la baseline silencieusement pour n'envoyer que les futures nouvelles infos
+                refreshTrafficAlerts(notifyIfNew = false, forceRefresh = false)
             }
         }
-        _uiState.update { it.copy(trafficNotificationsEnabled = enabled) }
         syncTrafficBackgroundSchedule()
     }
 

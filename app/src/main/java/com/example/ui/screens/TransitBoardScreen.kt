@@ -227,6 +227,7 @@ fun TransitBoardScreen(
                     viewModel.loadCurrentVersionReleaseNotes(forceRefresh = false)
                     isSettingsOpen = true
                 },
+                trafficAlertCount = uiState.trafficAlerts.size,
                 isDarkTheme = effectiveDarkTheme
             )
 

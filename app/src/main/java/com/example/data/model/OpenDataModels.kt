@@ -71,6 +71,7 @@ enum class IdelisPeriod(
     ORANGE("Période Orange", "F57C00", "Orange", "Lundi au vendredi (scolaire)"),
     BLEUE("Période Bleue", "0288D1", "Bleue", "Lundi au vendredi (non scolaire)"),
     GRISE("Période Grise", "757575", "Grise", "Samedi"),
-    VERTE("Période Verte", "388E3C", "Verte", "Dimanche et jours fériés")
+    VERTE("Période Verte", "388E3C", "Verte", "Dimanche et jours fériés"),
+    BLANCHE("Période Blanche", "9E9E9E", "Blanche", "Service adapté")
 }
 

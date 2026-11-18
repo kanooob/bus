@@ -267,4 +267,47 @@ class SettingsModalRobolectricTest {
         composeTestRule.onNodeWithText("livrée telle quelle", substring = true).assertIsDisplayed()
         composeTestRule.onNodeWithText("inexactes", substring = true).assertIsDisplayed()
     }
+
+    @Test
+    fun `top bar shows alert badge and traffic info modal hides En cours idelis fr`() {
+        val alerts = listOf(
+            com.example.data.model.TrafficAlert(
+                id = "t1",
+                title = "Travaux Foch",
+                messageText = "Déviation temporaire ligne F.",
+                affectedLines = listOf("F"),
+                severity = "WARNING",
+                publishedDate = "En cours • idelis.fr",
+                deviationLink = "https://www.idelis.fr/fileadmin/plan_foch.pdf"
+            )
+        )
+        composeTestRule.setContent {
+            MyApplicationTheme(darkTheme = false) {
+                androidx.compose.foundation.layout.Column {
+                    com.example.ui.components.IdelisSketchTopBar(
+                        stopName = "Pôle Bosquet",
+                        onStopClick = {},
+                        onTrafficInfoClick = {},
+                        onSettingsClick = {},
+                        trafficAlertCount = 2
+                    )
+                    com.example.ui.components.TrafficInfoModal(
+                        alerts = alerts,
+                        activePeriod = com.example.data.model.IdelisPeriod.ORANGE,
+                        onDismissRequest = {}
+                    )
+                }
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("stop_header_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("traffic_info_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_button").assertIsDisplayed()
+        composeTestRule.onNodeWithText("2").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Voir le plan").assertExists()
+        composeTestRule.onNodeWithText("Période Orange • Lundi au vendredi (scolaire)").assertExists()
+        composeTestRule.onNodeWithText("En cours • idelis.fr").assertDoesNotExist()
+    }
 }

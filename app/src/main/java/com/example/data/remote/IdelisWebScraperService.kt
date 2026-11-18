@@ -3,6 +3,7 @@ package com.example.data.remote
 import android.util.Log
 import com.example.data.model.DepartureComparison
 import com.example.data.model.DepartureStatus
+import com.example.data.model.IdelisPeriod
 import com.example.data.model.IdelisWebDeparture
 import com.example.data.model.IdelisWebMonitoringResult
 import com.example.data.model.IdelisWebStop
@@ -15,6 +16,8 @@ import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Element
+import java.text.Normalizer
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
@@ -48,6 +51,20 @@ class IdelisWebScraperService(
         const val IDELIS_HOST = "https://www.idelis.fr"
         const val IDELIS_REFERER = "https://www.idelis.fr/"
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+        private fun safeLogD(msg: String) {
+            try {
+                Log.d(TAG, msg)
+            } catch (_: RuntimeException) {
+            }
+        }
+
+        private fun safeLogE(msg: String, tr: Throwable? = null) {
+            try {
+                if (tr != null) Log.e(TAG, msg, tr) else Log.e(TAG, msg)
+            } catch (_: RuntimeException) {
+            }
+        }
     }
 
     /**
@@ -151,10 +168,10 @@ class IdelisWebScraperService(
                 }
             }
 
-            Log.d(TAG, "Autocomplétion pour '$searchTerm': ${stopItems.size} arrêts trouvés")
+            safeLogD("Autocomplétion pour '$searchTerm': ${stopItems.size} arrêts trouvés")
             Result.success(stopItems)
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur autocomplétion pour '$searchTerm': ${e.message}", e)
+            safeLogE("Erreur autocomplétion pour '$searchTerm': ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -203,13 +220,12 @@ class IdelisWebScraperService(
             }
 
             val parsed = parseStopMonitoringHtml(poleName, html)
-            Log.d(
-                TAG,
+            safeLogD(
                 "Stop monitoring pour '$poleName': ${parsed.departures.size} passages, notServed=${parsed.isStopNotServed}"
             )
             Result.success(parsed)
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur stop_monitoring pour '$poleName': ${e.message}", e)
+            safeLogE("Erreur stop_monitoring pour '$poleName': ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -412,6 +428,310 @@ class IdelisWebScraperService(
             .trim(' ', '-', '–', ':', ',', ';')
     }
 
+    private data class ParsedWebTrafficAlert(
+        val alert: IdelisWebTrafficAlert,
+        val rawDateAttr: String
+    )
+
+    internal fun cleanPublishedDate(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return ""
+        val normalized = Normalizer.normalize(trimmed.lowercase(Locale.FRANCE), Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+            .replace(Regex("[•·\\-|/]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        return when {
+            normalized == "en cours" -> ""
+            normalized == "idelis.fr" -> ""
+            normalized == "en cours idelis.fr" -> ""
+            normalized.startsWith("en cours") && normalized.contains("idelis.fr") -> ""
+            else -> trimmed
+        }
+    }
+
+    internal fun isAlertWithinOneMonth(
+        title: String,
+        description: String,
+        publishedDate: String,
+        rawDateAttr: String = "",
+        nowCal: Calendar = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ)
+    ): Boolean {
+        val combined = listOf(rawDateAttr, publishedDate, title, description)
+            .filter { it.isNotBlank() }
+            .joinToString(" | ")
+        if (combined.isBlank()) return true
+
+        val parsedDates = extractExplicitYearDates(combined)
+        if (parsedDates.isEmpty()) {
+            // Aucune date avec année explicite : ne pas masquer une alerte en cours sans année
+            return true
+        }
+
+        val cutoff = (nowCal.clone() as Calendar).apply {
+            add(Calendar.MONTH, -1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val latestDate = parsedDates.maxByOrNull { it.timeInMillis } ?: return true
+        return !latestDate.before(cutoff)
+    }
+
+    internal fun isTrafficAlertWithinOneMonth(
+        alert: com.example.data.model.TrafficAlert,
+        nowCal: Calendar = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ)
+    ): Boolean {
+        return isAlertWithinOneMonth(
+            title = alert.title,
+            description = alert.messageText,
+            publishedDate = alert.publishedDate,
+            nowCal = nowCal
+        )
+    }
+
+    private fun extractExplicitYearDates(text: String): List<Calendar> {
+        val fold = Normalizer.normalize(text.lowercase(Locale.FRANCE), Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+        val dates = mutableListOf<Calendar>()
+
+        fun addDate(year: Int, month1to12: Int, day: Int) {
+            if (year !in 2000..2100 || month1to12 !in 1..12 || day !in 1..31) return
+            val cal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ).apply {
+                isLenient = false
+                clear()
+                set(Calendar.YEAR, year)
+                set(Calendar.MONTH, month1to12 - 1)
+                set(Calendar.DAY_OF_MONTH, day)
+                set(Calendar.HOUR_OF_DAY, 23)
+                set(Calendar.MINUTE, 59)
+                set(Calendar.SECOND, 59)
+                set(Calendar.MILLISECOND, 999)
+            }
+            try {
+                // Triggers strict validation of calendar fields (e.g. rejects Feb 30)
+                cal.timeInMillis
+                dates.add(cal)
+            } catch (_: Exception) {
+            }
+        }
+
+        // 1. ISO yyyy-MM-dd
+        val isoRegex = Regex("""\b(20\d{2})-(\d{1,2})-(\d{1,2})\b""")
+        isoRegex.findAll(fold).forEach { m ->
+            val y = m.groupValues[1].toIntOrNull() ?: return@forEach
+            val mo = m.groupValues[2].toIntOrNull() ?: return@forEach
+            val d = m.groupValues[3].toIntOrNull() ?: return@forEach
+            addDate(y, mo, d)
+        }
+
+        // 2. Numeric dd/MM/yyyy, dd-MM-yyyy, dd.MM.yyyy or dd/MM/yy
+        val dmyRegex = Regex("""\b(\d{1,2})[/.\-](\d{1,2})[/.\-](20\d{2}|\d{2})\b""")
+        dmyRegex.findAll(fold).forEach { m ->
+            val d = m.groupValues[1].toIntOrNull() ?: return@forEach
+            val mo = m.groupValues[2].toIntOrNull() ?: return@forEach
+            val rawY = m.groupValues[3].toIntOrNull() ?: return@forEach
+            val y = if (rawY < 100) 2000 + rawY else rawY
+            addDate(y, mo, d)
+        }
+
+        // 3. French month + year: e.g. "12 septembre 2026" or "1er octobre 2026"
+        val monthMap = mapOf(
+            "janvier" to 1, "janv" to 1,
+            "fevrier" to 2, "fev" to 2,
+            "mars" to 3,
+            "avril" to 4, "avr" to 4,
+            "mai" to 5,
+            "juin" to 6,
+            "juillet" to 7, "juil" to 7,
+            "aout" to 8,
+            "septembre" to 9, "sept" to 9,
+            "octobre" to 10, "oct" to 10,
+            "novembre" to 11, "nov" to 11,
+            "decembre" to 12, "dec" to 12
+        )
+        val frDateRegex = Regex(
+            """\b(\d{1,2})(?:er)?\s+(janvier|janv|fevrier|fev|mars|avril|avr|mai|juin|juillet|juil|aout|septembre|sept|octobre|oct|novembre|nov|decembre|dec)\.?\s+(20\d{2})\b"""
+        )
+        frDateRegex.findAll(fold).forEach { m ->
+            val d = m.groupValues[1].toIntOrNull() ?: return@forEach
+            val moName = m.groupValues[2]
+            val y = m.groupValues[3].toIntOrNull() ?: return@forEach
+            val mo = monthMap[moName] ?: return@forEach
+            addDate(y, mo, d)
+        }
+
+        return dates
+    }
+
+    internal fun isDirectDocumentOrPlanUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.ROOT)
+        val isDocExt = path.endsWith(".pdf") ||
+            path.endsWith(".png") ||
+            path.endsWith(".jpg") ||
+            path.endsWith(".jpeg") ||
+            path.endsWith(".webp")
+        if (!isDocExt) return false
+        if (path.contains("/pictos/") || path.contains("picto-ligne") || path.contains("realtime")) return false
+        return true
+    }
+
+    internal fun isGenericTrafficOverviewUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val lower = url.lowercase(Locale.ROOT).trim()
+        val hasSpecificParam = lower.contains("tx_") ||
+            lower.contains("deviation=") ||
+            lower.contains("perturbation=") ||
+            lower.contains("plan=") ||
+            lower.contains("file=") ||
+            lower.contains("alert=")
+        if (hasSpecificParam) return false
+
+        if (lower.contains("type=778")) return true
+        val path = lower.substringBefore('?').substringBefore('#').trimEnd('/')
+        return path.endsWith("/infos-trafic") ||
+            path.endsWith("/info-trafic") ||
+            path.endsWith("/perturbations") ||
+            path.endsWith("/deviations")
+    }
+
+    private fun scorePlanCandidate(anchorText: String, url: String, isImg: Boolean = false): Int {
+        val lowerUrl = url.lowercase(Locale.ROOT)
+        val lowerText = Normalizer.normalize(anchorText.lowercase(Locale.FRANCE), Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+        val isGeneric = isGenericTrafficOverviewUrl(url)
+        val isFileadminDoc = lowerUrl.contains("/fileadmin/") &&
+            !lowerUrl.contains("/pictos/") &&
+            !lowerUrl.contains("picto")
+        val hasPlanKeyword = lowerText.contains("plan") ||
+            lowerText.contains("carte") ||
+            lowerText.contains("schema") ||
+            lowerText.contains("telecharger") ||
+            lowerText.contains("pdf") ||
+            lowerUrl.contains("plan") ||
+            lowerUrl.contains("carte") ||
+            lowerUrl.contains("schema")
+
+        return when {
+            isDirectDocumentOrPlanUrl(url) && !isImg -> 150 + if (hasPlanKeyword) 20 else 0
+            isFileadminDoc && !isImg -> 130
+            isDirectDocumentOrPlanUrl(url) && isImg && hasPlanKeyword -> 115
+            hasPlanKeyword && !isGeneric && !isImg -> 95
+            (lowerUrl.contains("tx_deviation") || lowerUrl.contains("deviation=") || lowerUrl.contains("tx_")) && !isImg -> 80
+            (lowerUrl.contains("deviation") || lowerUrl.contains("fiche")) && !isGeneric && !isImg -> 65
+            !isGeneric && !isImg -> 25
+            !isImg -> 5
+            else -> 0
+        }
+    }
+
+    private fun extractBestPlanCandidateInElement(container: Element): Pair<String, String>? {
+        var bestScore = 0
+        var bestPair: Pair<String, String>? = null
+
+        for (anchor in container.select("a[href]")) {
+            val href = anchor.attr("href").trim()
+            if (href.startsWith("mailto:", true) || href.startsWith("tel:", true)) continue
+            val resolved = resolveIdelisUrl(href) ?: continue
+            val text = (anchor.text() + " " + anchor.attr("title")).trim()
+            val score = scorePlanCandidate(text, resolved, isImg = false)
+            if (score > bestScore) {
+                bestScore = score
+                bestPair = resolved to anchor.text().trim()
+            }
+        }
+
+        if (bestScore < 95) {
+            for (img in container.select("img[src]")) {
+                val src = resolveIdelisUrl(img.attr("src")) ?: continue
+                val alt = img.attr("alt").trim()
+                val score = scorePlanCandidate(alt, src, isImg = true)
+                if (score > bestScore) {
+                    bestScore = score
+                    bestPair = src to alt
+                }
+            }
+        }
+        return bestPair
+    }
+
+    private fun normalizeForMatch(text: String): String {
+        return Normalizer.normalize(text.lowercase(Locale.FRANCE), Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    /**
+     * Lorsque l'alerte pointe vers une page d'ensemble des déviations (ex: /?type=778 ou /infos-trafic),
+     * tente de retrouver dans le HTML de cette page le lien direct vers le plan (PDF / image) correspondant à l'alerte.
+     */
+    internal fun resolveDirectPlanUrlFromOverviewHtml(
+        overviewHtml: String,
+        alertTitle: String,
+        alertDescription: String,
+        affectedLines: List<String>
+    ): String? {
+        if (overviewHtml.isBlank()) return null
+        val doc = Jsoup.parse(overviewHtml, IDELIS_HOST)
+        val normTitle = normalizeForMatch(alertTitle)
+        val titleTokens = normTitle.split(" ").filter { it.length >= 4 }.toSet()
+        val descTokens = normalizeForMatch(alertDescription).split(" ").filter { it.length >= 5 }.toSet()
+        val upperLines = affectedLines.map { it.uppercase(Locale.ROOT) }.toSet()
+
+        val candidates = doc.select(
+            "article, .alert-item, .deviation-item, .infotrafic-item, .perturbation-item, .card, .accordion-item, section, li, div:has(> a[href]), div:has(> p):has(a[href])"
+        )
+
+        var bestMatchScore = 0
+        var bestUrl: String? = null
+
+        for (block in candidates) {
+            // Ignorer les conteneurs trop globaux (qui englobent toute la page)
+            val blockText = block.text()
+            if (blockText.length > 2500) continue
+
+            val candidate = extractBestPlanCandidateInElement(block) ?: continue
+            val url = candidate.first
+            val linkScore = scorePlanCandidate(candidate.second, url)
+            if (linkScore < 65) continue
+
+            val normBlock = normalizeForMatch(blockText)
+            var matchScore = 0
+            if (normTitle.length >= 8 && normBlock.contains(normTitle)) {
+                matchScore += 100
+            } else if (titleTokens.isNotEmpty()) {
+                val hits = titleTokens.count { normBlock.contains(it) }
+                matchScore += (hits * 60) / titleTokens.size
+            }
+            if (descTokens.isNotEmpty()) {
+                val descHits = descTokens.count { normBlock.contains(it) }
+                matchScore += minOf(30, descHits * 8)
+            }
+            if (upperLines.isNotEmpty()) {
+                val upperBlock = blockText.uppercase(Locale.ROOT)
+                val lineHits = upperLines.count { line ->
+                    Regex("""\b${Regex.escape(line)}\b""").containsMatchIn(upperBlock)
+                }
+                matchScore += lineHits * 15
+            }
+
+            // Exiger un minimum de correspondance sur le sujet pour ne pas associer le plan d'une autre déviation
+            if (matchScore >= 35) {
+                val totalScore = matchScore * 10 + linkScore
+                if (totalScore > bestMatchScore) {
+                    bestMatchScore = totalScore
+                    bestUrl = url
+                }
+            }
+        }
+
+        return bestUrl
+    }
+
     /**
      * 3. REQUÊTE INFO TRAFIC (Perturbations & Déviations en cours)
      * URL : https://www.idelis.fr/?type=777
@@ -447,20 +767,203 @@ class IdelisWebScraperService(
                 return@withContext Result.success(emptyList())
             }
 
-            val alerts = parseInfosTraficHtml(html)
-            Log.d(TAG, "Info trafic idelis.fr : ${alerts.size} alerte(s) extraite(s)")
-            Result.success(alerts)
+            val nowCal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ)
+            val parsedRecent = parseInfosTraficHtmlInternal(html).filter { (alert, rawDateAttr) ->
+                isAlertWithinOneMonth(
+                    title = alert.title,
+                    description = alert.description,
+                    publishedDate = alert.publishedDate,
+                    rawDateAttr = rawDateAttr,
+                    nowCal = nowCal
+                )
+            }
+
+            val pageCache = mutableMapOf<String, String>()
+            fun fetchHtmlOnce(targetUrl: String): String {
+                pageCache[targetUrl]?.let { return it }
+                return try {
+                    val getReq = Request.Builder()
+                        .url(targetUrl)
+                        .get()
+                        .header("User-Agent", USER_AGENT)
+                        .header("Referer", IDELIS_REFERER)
+                        .header("Accept", "text/html,application/xhtml+xml,*/*")
+                        .build()
+                    val body = client.newCall(getReq).execute().use { res ->
+                        val contentType = res.header("Content-Type").orEmpty()
+                        if (res.isSuccessful && !contentType.contains("pdf", ignoreCase = true) && !contentType.startsWith("image/", ignoreCase = true)) {
+                            res.body?.string().orEmpty()
+                        } else {
+                            ""
+                        }
+                    }
+                    pageCache[targetUrl] = body
+                    body
+                } catch (_: Exception) {
+                    pageCache[targetUrl] = ""
+                    ""
+                }
+            }
+
+            val resolvedAlerts = parsedRecent.map { (alert, _) ->
+                val link = alert.deviationLink
+                if (link.isNullOrBlank() || isDirectDocumentOrPlanUrl(link)) {
+                    alert
+                } else {
+                    var bestLink: String? = null
+                    val firstPageHtml = fetchHtmlOnce(link)
+                    if (firstPageHtml.isNotBlank()) {
+                        val resolved = resolveDirectPlanUrlFromOverviewHtml(
+                            overviewHtml = firstPageHtml,
+                            alertTitle = alert.title,
+                            alertDescription = alert.description,
+                            affectedLines = alert.affectedLines
+                        )
+                        if (!resolved.isNullOrBlank()) {
+                            bestLink = if (!isDirectDocumentOrPlanUrl(resolved) && resolved != link) {
+                                val hopHtml = fetchHtmlOnce(resolved)
+                                if (hopHtml.isNotBlank()) {
+                                    resolveDirectPlanUrlFromOverviewHtml(
+                                        overviewHtml = hopHtml,
+                                        alertTitle = alert.title,
+                                        alertDescription = alert.description,
+                                        affectedLines = alert.affectedLines
+                                    ) ?: resolved
+                                } else {
+                                    resolved
+                                }
+                            } else {
+                                resolved
+                            }
+                        }
+                    }
+                    val finalLink = bestLink ?: if (isGenericTrafficOverviewUrl(link)) null else link
+                    alert.copy(deviationLink = finalLink)
+                }
+            }
+
+            safeLogD("Info trafic idelis.fr : ${resolvedAlerts.size} alerte(s) récente(s) extraite(s)")
+            Result.success(resolvedAlerts)
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur infostrafic: ${e.message}", e)
+            safeLogE("Erreur infostrafic: ${e.message}", e)
             Result.failure(e)
         }
     }
 
     /**
+     * Récupère la période de circulation active directement depuis la page d'accueil officielle d'idelis.fr.
+     * Renvoie null si le site est inaccessible ou si la période active n'est pas clairement identifiable.
+     */
+    suspend fun fetchCurrentPeriodFromWeb(): IdelisPeriod? = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url(IDELIS_REFERER)
+                .get()
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,*/*")
+                .build()
+
+            val html = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.string().orEmpty()
+            }
+            if (html.isBlank()) return@withContext null
+            val period = parseCurrentPeriodFromHtml(html)
+            if (period != null) {
+                safeLogD("Période officielle détectée depuis idelis.fr : ${period.label}")
+            }
+            period
+        } catch (e: Exception) {
+            safeLogD("Lecture période sur idelis.fr indisponible : ${e.message}")
+            null
+        }
+    }
+
+    internal fun parseCurrentPeriodFromHtml(html: String): IdelisPeriod? {
+        if (html.isBlank()) return null
+        val doc = Jsoup.parse(html, IDELIS_HOST)
+
+        fun periodFromKeyword(keyword: String): IdelisPeriod? {
+            return when (keyword.lowercase(Locale.FRANCE)) {
+                "orange" -> IdelisPeriod.ORANGE
+                "bleu", "bleue" -> IdelisPeriod.BLEUE
+                "gris", "grise" -> IdelisPeriod.GRISE
+                "vert", "verte" -> IdelisPeriod.VERTE
+                "blanc", "blanche" -> IdelisPeriod.BLANCHE
+                else -> null
+            }
+        }
+
+        fun detectSinglePeriodInText(raw: String): IdelisPeriod? {
+            val fold = normalizeForMatch(raw)
+            if (fold.isBlank()) return null
+            val matches = Regex("""\b(?:periode\s+)?(orange|bleue?|grise?|verte?|blanche?)\b""")
+                .findAll(fold)
+                .mapNotNull { periodFromKeyword(it.groupValues[1]) }
+                .distinct()
+                .toList()
+            return if (matches.size == 1) matches.first() else null
+        }
+
+        val fullFold = normalizeForMatch(doc.text())
+        // 1. Contextual active phrasing ("aujourd hui periode orange", "periode en cours bleue", etc.)
+        val contextualPatterns = listOf(
+            Regex("""(?:aujourd\s*hui|ce\s*jour|du\s*jour|en\s*cours|actuelle?)[^.]{0,50}?\b(?:periode\s+)?(orange|bleue?|grise?|verte?|blanche?)\b"""),
+            Regex("""\bperiode\s+(orange|bleue?|grise?|verte?|blanche?)\b[^.]{0,30}?(?:aujourd\s*hui|en\s*cours|actuelle?)""")
+        )
+        for (pattern in contextualPatterns) {
+            val found = pattern.findAll(fullFold)
+                .mapNotNull { periodFromKeyword(it.groupValues[1]) }
+                .distinct()
+                .toList()
+            if (found.size == 1) return found.first()
+        }
+
+        // 2. Targeted period containers (excluding multi-color legends)
+        val periodElements = doc.select(
+            "[class*=periode], [id*=periode], [class*=period], [id*=period], .jour-type, .calendar-today, .today"
+        )
+        val targetedDetected = mutableListOf<IdelisPeriod>()
+        for (el in periodElements) {
+            val text = el.text().trim()
+            if (text.length > 220) continue
+            val single = detectSinglePeriodInText(text)
+            if (single != null) {
+                targetedDetected.add(single)
+            }
+        }
+        val distinctTargeted = targetedDetected.distinct()
+        if (distinctTargeted.size == 1) return distinctTargeted.first()
+
+        // 3. Active images (ex: <img src=".../periode-bleue.png" alt="Période bleue">)
+        val activeImgPeriods = doc.select("img[src*='periode' i], img[alt*='periode' i], img[alt*='période' i]")
+            .mapNotNull { img ->
+                val combined = "${img.attr("alt")} ${img.attr("title")} ${img.attr("src")}"
+                detectSinglePeriodInText(combined)
+            }
+            .distinct()
+        if (activeImgPeriods.size == 1) return activeImgPeriods.first()
+
+        // 4. Unambiguous "période <couleur>" mention across body text
+        val bodyExplicit = Regex("""\bperiode\s+(orange|bleue?|grise?|verte?|blanche?)\b""")
+            .findAll(fullFold)
+            .mapNotNull { periodFromKeyword(it.groupValues[1]) }
+            .distinct()
+            .toList()
+        if (bodyExplicit.size == 1) return bodyExplicit.first()
+
+        return null
+    }
+
+    /**
      * Parse le HTML retourné par `requete=infostrafic` avec Jsoup.
-     * Extrait les conteneurs `.alert-item` (titre, lignes concernées + pictos, description, lien de déviation `/?type=778...`).
+     * Extrait les conteneurs `.alert-item` (titre, lignes concernées + pictos, description, lien direct vers le plan/déviation).
      */
     fun parseInfosTraficHtml(html: String): List<IdelisWebTrafficAlert> {
+        return parseInfosTraficHtmlInternal(html).map { it.alert }
+    }
+
+    private fun parseInfosTraficHtmlInternal(html: String): List<ParsedWebTrafficAlert> {
         if (html.isBlank()) return emptyList()
         val doc = Jsoup.parse(html, IDELIS_HOST)
 
@@ -470,14 +973,12 @@ class IdelisWebScraperService(
             items = doc.select(".infotrafic-item, .perturbation-item, .trafic-item, div:has(> a[href*='type=778'])")
         }
 
-        val alerts = mutableListOf<IdelisWebTrafficAlert>()
+        val alerts = mutableListOf<ParsedWebTrafficAlert>()
         items.forEachIndexed { index, item ->
-            // 1. Lien vers le plan ou la fiche de déviation (ex: /?type=778...)
-            val deviationAnchor = item.selectFirst(
-                "a[href*='type=778'], a[href*='deviation'], a[href*='fiche'], a[href*='plan'], a[href$='.pdf'], a[href]"
-            )
-            val deviationLink = resolveIdelisUrl(deviationAnchor?.attr("href"))
-            val anchorText = deviationAnchor?.text()?.trim().orEmpty()
+            // 1. Lien prioritaire vers le plan (PDF / image / fiche) plutôt que la page globale d'infos trafic
+            val bestLinkPair = extractBestPlanCandidateInElement(item)
+            val deviationLink = bestLinkPair?.first
+            val anchorText = bestLinkPair?.second.orEmpty()
 
             // 2. Pictos et codes des lignes impactées
             val pictos = mutableListOf<String>()
@@ -522,14 +1023,17 @@ class IdelisWebScraperService(
             val titleEl = item.selectFirst(".alert-title, .title, h1, h2, h3, h4, h5, strong, .fw-bold, .font-weight-bold")
             val rawTitle = titleEl?.text()?.trim().orEmpty()
 
-            // 4. Date / Période éventuelle
-            val dateText = item.selectFirst(".alert-date, .date, time, .text-muted, small")
-                ?.text()?.trim().orEmpty()
+            // 4. Date / Période éventuelle (sans faux texte "En cours • idelis.fr")
+            val dateEl = item.selectFirst(".alert-date, .date, time, .text-muted, small")
+            val rawDateText = dateEl?.text()?.trim().orEmpty()
+            val rawDateAttr = item.selectFirst("time[datetime]")?.attr("datetime")?.trim()
+                ?: dateEl?.attr("datetime")?.trim().orEmpty()
+            val cleanedDateText = cleanPublishedDate(rawDateText)
 
             // 5. Description détaillée
             val descElements = item.select(".alert-description, .alert-body, .alert-text, .description, p")
                 .map { it.text().trim() }
-                .filter { it.isNotBlank() && it != rawTitle && it != anchorText && it != dateText }
+                .filter { it.isNotBlank() && it != rawTitle && it != anchorText && it != rawDateText }
                 .distinct()
 
             var description = descElements.joinToString("\n").trim()
@@ -548,14 +1052,17 @@ class IdelisWebScraperService(
 
             if (title.isNotBlank() || description.isNotBlank() || deviationLink != null) {
                 alerts.add(
-                    IdelisWebTrafficAlert(
-                        id = "infotrafic_${index}_${title.hashCode()}",
-                        title = title,
-                        description = description,
-                        affectedLines = lineRefs,
-                        affectedLinePictos = pictos,
-                        deviationLink = deviationLink,
-                        publishedDate = dateText
+                    ParsedWebTrafficAlert(
+                        alert = IdelisWebTrafficAlert(
+                            id = "infotrafic_${index}_${title.hashCode()}",
+                            title = title,
+                            description = description,
+                            affectedLines = lineRefs,
+                            affectedLinePictos = pictos,
+                            deviationLink = deviationLink,
+                            publishedDate = cleanedDateText
+                        ),
+                        rawDateAttr = rawDateAttr
                     )
                 )
             }

@@ -40,6 +40,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -206,14 +207,10 @@ fun TrafficInfoModal(
                         }
                     }
 
-                    // Bouton Klaxon à gauche des contrôles (joue le son tant qu'on maintient appuyé)
+                    // Bouton Klaxon à gauche des contrôles (cible tactile >= 48dp)
                     Box(
                         modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (isHornPressed) primaryColor else secondaryContainerColor
-                            )
+                            .size(48.dp)
                             .pointerInput(Unit) {
                                 detectTapGestures(
                                     onPress = {
@@ -231,12 +228,22 @@ fun TrafficInfoModal(
                             .testTag("klaxon_button"),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Campaign,
-                            contentDescription = "Klaxon bus",
-                            tint = if (isHornPressed) onPrimaryColor else onSecondaryContainerColor,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isHornPressed) primaryColor else secondaryContainerColor
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Campaign,
+                                contentDescription = "Klaxon bus",
+                                tint = if (isHornPressed) onPrimaryColor else onSecondaryContainerColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
 
                     IconButton(
@@ -252,13 +259,60 @@ fun TrafficInfoModal(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            Text(
-                text = "Perturbations en direct (${activePeriod.label}) :",
-                style = MaterialTheme.typography.bodySmall.copy(
-                    color = mutedColor,
-                    fontWeight = FontWeight.Bold
-                )
-            )
+            val periodColor = remember(activePeriod) {
+                try {
+                    Color(android.graphics.Color.parseColor("#${activePeriod.colorHex}"))
+                } catch (_: Exception) {
+                    primaryColor
+                }
+            }
+            Surface(
+                color = periodColor.copy(alpha = 0.12f),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(periodColor)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${activePeriod.label} • ${activePeriod.description}",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = contentColor,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                    }
+                    if (alerts.isNotEmpty()) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "${alerts.size} alerte${if (alerts.size > 1) "s" else ""}",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = mutedColor,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -409,7 +463,14 @@ fun TrafficInfoModal(
                                     )
                                 }
 
-                                if (alert.publishedDate.isNotBlank()) {
+                                val showDate = remember(alert.publishedDate) {
+                                    val clean = alert.publishedDate.trim().lowercase(java.util.Locale.FRANCE)
+                                    clean.isNotBlank() &&
+                                        clean != "en cours" &&
+                                        clean != "idelis.fr" &&
+                                        !(clean.startsWith("en cours") && clean.contains("idelis.fr"))
+                                }
+                                if (showDate) {
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
                                         text = alert.publishedDate,
@@ -440,7 +501,7 @@ fun TrafficInfoModal(
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "Voir la déviation / le plan",
+                                            text = "Voir le plan",
                                             color = primaryColor,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp

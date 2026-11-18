@@ -263,4 +263,129 @@ class IdelisWebScraperTest {
         )
         assertEquals("Hôpital François Mitterrand", bestHospital?.pole)
     }
+
+    @Test
+    fun testDirectPlanPdfPrioritizedOverOverviewLink() {
+        val html = """
+            <div class="alert-item">
+                <h4 class="alert-title">Déviation Avenue Gaston Phoebus</h4>
+                <p class="alert-description">Arrêt non desservi.</p>
+                <a href="/?type=778">Plus d'informations</a>
+                <a href="/fileadmin/user_upload/deviations/plan_phoebus.pdf">Voir le plan</a>
+            </div>
+        """.trimIndent()
+
+        val alerts = service.parseInfosTraficHtml(html)
+        assertEquals(1, alerts.size)
+        assertEquals(
+            "https://www.idelis.fr/fileadmin/user_upload/deviations/plan_phoebus.pdf",
+            alerts[0].deviationLink
+        )
+    }
+
+    @Test
+    fun testGetInfosTraficResolvesOverviewToDirectPlanAndFiltersOlderThanOneMonth() = kotlinx.coroutines.runBlocking {
+        val nowCal = java.util.Calendar.getInstance(com.example.data.remote.GtfsScheduleIndex.PARIS_TZ)
+        val recentFmt = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.FRANCE).apply {
+            timeZone = com.example.data.remote.GtfsScheduleIndex.PARIS_TZ
+        }
+        val recentCal = (nowCal.clone() as java.util.Calendar).apply { add(java.util.Calendar.DAY_OF_MONTH, -5) }
+        val oldCal = (nowCal.clone() as java.util.Calendar).apply { add(java.util.Calendar.MONTH, -2) }
+        val recentDateStr = recentFmt.format(recentCal.time)
+        val oldDateStr = recentFmt.format(oldCal.time)
+
+        val feedHtml = """
+            <div class="alert-item">
+                <h4 class="alert-title">Travaux Rue Carnot</h4>
+                <span class="alert-date">En cours • idelis.fr</span>
+                <p class="alert-description">Déviation depuis le $recentDateStr.</p>
+                <a href="/?type=778">Plus d'informations</a>
+            </div>
+            <div class="alert-item">
+                <h4 class="alert-title">Anciens travaux terminés</h4>
+                <span class="alert-date">$oldDateStr</span>
+                <p class="alert-description">Info datant du $oldDateStr.</p>
+                <a href="/fileadmin/old_plan.pdf">Plan</a>
+            </div>
+        """.trimIndent()
+
+        val overviewHtml = """
+            <div class="container">
+                <article class="deviation-item">
+                    <h3>Travaux Rue Carnot</h3>
+                    <p>Plan de déviation applicable immédiatement.</p>
+                    <a href="/fileadmin/user_upload/plans/plan_carnot.pdf">Télécharger le plan</a>
+                </article>
+                <article class="deviation-item">
+                    <h3>Travaux Avenue Trespoey</h3>
+                    <a href="/fileadmin/user_upload/plans/plan_trespoey.pdf">Télécharger le plan</a>
+                </article>
+            </div>
+        """.trimIndent()
+
+        val mockClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val body = if (url.contains("type=778")) overviewHtml else feedHtml
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, body))
+                    .build()
+            }
+            .build()
+
+        val testScraper = IdelisWebScraperService(client = mockClient)
+        val result = testScraper.getInfosTrafic()
+        assertTrue(result.isSuccess)
+        val alerts = result.getOrNull().orEmpty()
+        assertEquals(1, alerts.size)
+        assertEquals("Travaux Rue Carnot", alerts[0].title)
+        assertEquals("", alerts[0].publishedDate)
+        assertEquals(
+            "https://www.idelis.fr/fileadmin/user_upload/plans/plan_carnot.pdf",
+            alerts[0].deviationLink
+        )
+    }
+
+    @Test
+    fun testAlertWithinOneMonthDateParsing() {
+        val nowCal = java.util.Calendar.getInstance(com.example.data.remote.GtfsScheduleIndex.PARIS_TZ).apply {
+            clear()
+            set(2026, java.util.Calendar.NOVEMBER, 18, 12, 0, 0)
+        }
+        assertTrue(service.isAlertWithinOneMonth("Travaux récents", "Depuis le 25/10/2026", "", nowCal = nowCal))
+        assertTrue(service.isAlertWithinOneMonth("Travaux prolongés", "Du 01/09/2026 au 30/11/2026", "", nowCal = nowCal))
+        assertTrue(service.isAlertWithinOneMonth("Travaux sans année", "Du 12 au 20 novembre", "", nowCal = nowCal))
+        assertFalse(service.isAlertWithinOneMonth("Ancienne déviation", "Du 10 septembre 2026", "", nowCal = nowCal))
+        assertFalse(service.isAlertWithinOneMonth("Vieille alerte", "", "", rawDateAttr = "2026-10-01", nowCal = nowCal))
+        assertEquals("", service.cleanPublishedDate("En cours • idelis.fr"))
+        assertEquals("18/11/2026", service.cleanPublishedDate("18/11/2026"))
+    }
+
+    @Test
+    fun testParseCurrentPeriodFromHtmlIgnoresLegends() {
+        val htmlWithLegendAndActiveBanner = """
+            <html>
+              <body>
+                <div class="header-periode">Aujourd'hui : Période Orange</div>
+                <div class="legende">
+                    Les périodes : Période Orange (scolaire), Période Bleue (vacances), Période Grise (samedi), Période Verte (dimanche).
+                </div>
+              </body>
+            </html>
+        """.trimIndent()
+
+        assertEquals(
+            com.example.data.model.IdelisPeriod.ORANGE,
+            service.parseCurrentPeriodFromHtml(htmlWithLegendAndActiveBanner)
+        )
+
+        val legendOnlyHtml = """
+            <div class="legende">Orange Bleue Grise Verte</div>
+        """.trimIndent()
+        assertEquals(null, service.parseCurrentPeriodFromHtml(legendOnlyHtml))
+    }
 }

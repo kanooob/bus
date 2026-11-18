@@ -130,21 +130,6 @@ class GtfsDownloadService(
                     "calendar.txt" -> {
                         val text = zipStream.bufferedReader(Charsets.UTF_8).readText()
                         parseCalendarTxt(text, rawCalendars)
-                        // Analyse PVS (Petites Vacances Scolaires -> Période Bleue non scolaire)
-                        if (dayOfWeek != Calendar.SATURDAY && dayOfWeek != Calendar.SUNDAY) {
-                            for (line in text.lineSequence()) {
-                                val parts = parseCsvLine(line)
-                                if (parts.size >= 10) {
-                                    val serviceId = parts[0]
-                                    val startDate = parts[8]
-                                    val endDate = parts[9]
-                                    if (serviceId.contains("PVS", ignoreCase = true) && todayStr in startDate..endDate) {
-                                        detectedPeriod = IdelisPeriod.BLEUE
-                                        break
-                                    }
-                                }
-                            }
-                        }
                     }
                     "calendar_dates.txt" -> {
                         val text = zipStream.bufferedReader(Charsets.UTF_8).readText()

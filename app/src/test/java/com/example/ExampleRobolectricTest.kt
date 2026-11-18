@@ -1788,4 +1788,105 @@ class ExampleRobolectricTest {
         assertTrue(prefs.importBackupJson(json).isSuccess)
         assertEquals(listOf("WEB_S2", "WEB_S6", "WEB_S5", "WEB_S4", "WEB_S3"), prefs.getRecentStopIds())
     }
+
+    @Test
+    fun `traffic alert notifier preserves known alerts across empty fetches and link changes`() {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+        prefs.setTrafficNotificationsEnabled(true)
+
+        val original = com.example.data.model.TrafficAlert(
+            id = "a1",
+            title = "Travaux Avenue Montardon",
+            messageText = "Arrêt Université non desservi",
+            affectedLines = listOf("T2"),
+            severity = "WARNING",
+            publishedDate = "",
+            deviationLink = "https://www.idelis.fr/?type=778"
+        )
+
+        // Baseline initiale
+        assertTrue(
+            com.example.data.remote.TrafficAlertNotifier.processAlerts(
+                context = context,
+                prefs = prefs,
+                alerts = listOf(original),
+                allowNotification = true
+            ).isEmpty()
+        )
+
+        // Passage à vide temporaire ne doit pas effacer l'historique connu
+        assertTrue(
+            com.example.data.remote.TrafficAlertNotifier.processAlerts(
+                context = context,
+                prefs = prefs,
+                alerts = emptyList(),
+                allowNotification = true
+            ).isEmpty()
+        )
+
+        // L'alerte réapparaît avec un lien résolu vers le PDF : ne doit PAS re-notifier
+        val resolvedLinkVariant = original.copy(
+            deviationLink = "https://www.idelis.fr/fileadmin/plan_montardon.pdf"
+        )
+        val detected = com.example.data.remote.TrafficAlertNotifier.processAlerts(
+            context = context,
+            prefs = prefs,
+            alerts = listOf(resolvedLinkVariant),
+            allowNotification = true
+        )
+        assertTrue("Une alerte déjà notifiée ne doit pas être re-notifiée après résolution de lien ou fetch vide", detected.isEmpty())
+    }
+
+    @Test
+    fun `gtfs period resolver handles PVS and French public holidays accurately`() {
+        // Mercredi 18/11/2026 (jour scolaire avec PVS désactivé ce jour-là dans calendar.txt) -> ORANGE
+        val schoolWed = java.util.Calendar.getInstance(com.example.data.remote.GtfsScheduleIndex.PARIS_TZ).apply {
+            clear()
+            set(2026, java.util.Calendar.NOVEMBER, 18, 12, 0, 0)
+        }
+        val cals = listOf(
+            com.example.data.model.GtfsCalendar(
+                serviceId = "SCO_SEM",
+                monday = 1, tuesday = 1, wednesday = 1, thursday = 1, friday = 1,
+                saturday = 0, sunday = 0,
+                startDate = "20260901", endDate = "20270701"
+            ),
+            com.example.data.model.GtfsCalendar(
+                serviceId = "PVS_VAC",
+                monday = 0, tuesday = 0, wednesday = 0, thursday = 0, friday = 0,
+                saturday = 0, sunday = 0,
+                startDate = "20260901", endDate = "20270701"
+            )
+        )
+        val resSchool = com.example.data.remote.GtfsScheduleIndex.resolveActiveServicesAndPeriod(
+            calendars = cals,
+            calendarDates = emptyList(),
+            targetCal = schoolWed
+        )
+        assertEquals(com.example.data.model.IdelisPeriod.ORANGE, resSchool.period)
+
+        // Mercredi 11/11/2026 (Armistice - jour férié en semaine) -> VERTE
+        val nov11 = java.util.Calendar.getInstance(com.example.data.remote.GtfsScheduleIndex.PARIS_TZ).apply {
+            clear()
+            set(2026, java.util.Calendar.NOVEMBER, 11, 12, 0, 0)
+        }
+        assertTrue(com.example.data.remote.GtfsScheduleIndex.isFrenchPublicHoliday(nov11))
+        assertEquals(
+            com.example.data.model.IdelisPeriod.VERTE,
+            com.example.data.remote.GtfsScheduleIndex.detectDefaultPeriod(nov11)
+        )
+
+        // Lundi de Pâques 2026 (06/04/2026) -> VERTE
+        val easterMonday2026 = java.util.Calendar.getInstance(com.example.data.remote.GtfsScheduleIndex.PARIS_TZ).apply {
+            clear()
+            set(2026, java.util.Calendar.APRIL, 6, 12, 0, 0)
+        }
+        assertTrue(com.example.data.remote.GtfsScheduleIndex.isFrenchPublicHoliday(easterMonday2026))
+        assertEquals(
+            com.example.data.model.IdelisPeriod.VERTE,
+            com.example.data.remote.GtfsScheduleIndex.detectDefaultPeriod(easterMonday2026)
+        )
+    }
 }

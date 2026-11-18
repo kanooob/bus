@@ -107,10 +107,18 @@ fun TrafficAlertCard(
                     modifier = Modifier.weight(1f).padding(end = 8.dp)
                 )
 
-                Text(
-                    text = alert.publishedDate,
-                    style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
-                )
+                val showDate = alert.publishedDate.trim().lowercase(java.util.Locale.FRANCE).let { clean ->
+                    clean.isNotBlank() &&
+                        clean != "en cours" &&
+                        clean != "idelis.fr" &&
+                        !(clean.startsWith("en cours") && clean.contains("idelis.fr"))
+                }
+                if (showDate) {
+                    Text(
+                        text = alert.publishedDate,
+                        style = MaterialTheme.typography.labelSmall.copy(color = TextMuted)
+                    )
+                }
             }
 
             if (alert.messageText.isNotBlank()) {
@@ -171,7 +179,7 @@ fun TrafficAlertCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Voir la déviation", color = IdelisGold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("Voir le plan", color = IdelisGold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }

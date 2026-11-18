@@ -653,7 +653,7 @@ fun StopPickerModal(
                                     IconButton(
                                         onClick = { onToggleFavoriteWebStop(webStop) },
                                         modifier = Modifier
-                                            .size(40.dp)
+                                            .size(48.dp)
                                             .testTag("fav_web_button_${webStop.pole}")
                                     ) {
                                         Icon(
@@ -764,7 +764,7 @@ fun StopPickerModal(
                                         IconButton(
                                             onClick = { onToggleFavorite(stop.stopId) },
                                             modifier = Modifier
-                                                .size(38.dp)
+                                                .size(48.dp)
                                                 .testTag("unfav_button_${stop.stopId}")
                                         ) {
                                             Icon(
@@ -896,7 +896,7 @@ fun StopPickerModal(
                                                 }
                                             },
                                             modifier = Modifier
-                                                .size(36.dp)
+                                                .size(48.dp)
                                                 .testTag("fav_recent_button_${item.stopId}")
                                         ) {
                                             Icon(

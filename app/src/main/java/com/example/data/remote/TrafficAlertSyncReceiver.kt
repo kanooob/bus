@@ -40,18 +40,20 @@ class TrafficAlertSyncReceiver : BroadcastReceiver() {
                 )
                 val result = scraper.getInfosTrafic()
                 if (result.isSuccess) {
-                    val alerts = result.getOrNull().orEmpty().map { item ->
-                        TrafficAlert(
-                            id = item.id,
-                            title = item.title,
-                            messageText = item.description,
-                            affectedLines = item.affectedLines,
-                            severity = "WARNING",
-                            publishedDate = item.publishedDate.ifBlank { "En cours • idelis.fr" },
-                            affectedLinePictos = item.affectedLinePictos,
-                            deviationLink = item.deviationLink
-                        )
-                    }
+                    val alerts = result.getOrNull().orEmpty()
+                        .map { item ->
+                            TrafficAlert(
+                                id = item.id,
+                                title = item.title,
+                                messageText = item.description,
+                                affectedLines = item.affectedLines,
+                                severity = "WARNING",
+                                publishedDate = scraper.cleanPublishedDate(item.publishedDate),
+                                affectedLinePictos = item.affectedLinePictos,
+                                deviationLink = item.deviationLink
+                            )
+                        }
+                        .filter { scraper.isTrafficAlertWithinOneMonth(it) }
                     prefs.saveLastTrafficRefreshTimestamp(System.currentTimeMillis())
                     TrafficAlertNotifier.processAlerts(
                         context = context,

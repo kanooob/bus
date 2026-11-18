@@ -23,10 +23,9 @@ object TrafficAlertNotifier {
     const val EXTRA_OPEN_TRAFFIC_INFO = "EXTRA_OPEN_TRAFFIC_INFO"
 
     fun alertFingerprint(alert: TrafficAlert): String {
-        val title = alert.title.trim().lowercase(Locale.ROOT)
-        val msg = alert.messageText.trim().lowercase(Locale.ROOT)
-        val link = alert.deviationLink.orEmpty().trim().lowercase(Locale.ROOT)
-        return "${title.hashCode()}_${msg.hashCode()}_${link.hashCode()}_${title.take(40)}"
+        val title = alert.title.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT)
+        val msg = alert.messageText.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT)
+        return "${title.hashCode()}_${msg.hashCode()}_${title.take(40)}"
     }
 
     fun ensureChannel(context: Context) {
@@ -49,14 +48,27 @@ object TrafficAlertNotifier {
 
         val currentKeys = alerts.map { alertFingerprint(it) }.toSet()
         if (!prefs.hasTrafficBaselineInitialized()) {
-            prefs.saveKnownTrafficAlertKeys(currentKeys)
+            prefs.saveKnownTrafficAlertKeys(HashSet(currentKeys))
             prefs.setTrafficBaselineInitialized(true)
             return emptyList()
         }
 
         val knownKeys = prefs.getKnownTrafficAlertKeys()
         val newAlerts = alerts.filter { alertFingerprint(it) !in knownKeys }
-        prefs.saveKnownTrafficAlertKeys(currentKeys)
+        val mergedKeys = HashSet<String>(knownKeys).apply {
+            addAll(currentKeys)
+        }
+        val boundedKeys = if (mergedKeys.size > 500) {
+            val retained = HashSet<String>(currentKeys)
+            for (key in knownKeys) {
+                if (retained.size >= 500) break
+                retained.add(key)
+            }
+            retained
+        } else {
+            mergedKeys
+        }
+        prefs.saveKnownTrafficAlertKeys(boundedKeys)
 
         if (allowNotification && newAlerts.isNotEmpty() && prefs.isTrafficNotificationsEnabled() && context != null) {
             notifyNewTrafficAlerts(context, newAlerts)

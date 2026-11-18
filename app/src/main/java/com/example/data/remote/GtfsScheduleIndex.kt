@@ -67,7 +67,56 @@ object GtfsScheduleIndex {
         }.format(cal.time)
     }
 
+    fun isFrenchPublicHoliday(cal: Calendar): Boolean {
+        val month = cal.get(Calendar.MONTH) + 1 // 1..12
+        val day = cal.get(Calendar.DAY_OF_MONTH)
+        val fixed = setOf(
+            1 to 1,   // Jour de l'an
+            5 to 1,   // Fête du Travail
+            5 to 8,   // Victoire 1945
+            7 to 14,  // Fête Nationale
+            8 to 15,  // Assomption
+            11 to 1,  // Toussaint
+            11 to 11, // Armistice 1918
+            12 to 25  // Noël
+        )
+        if ((month to day) in fixed) return true
+
+        // Jours fériés mobiles basés sur Pâques (algorithme grégorien de Meeus/Jones/Butcher)
+        val year = cal.get(Calendar.YEAR)
+        val a = year % 19
+        val b = year / 100
+        val c = year % 100
+        val d = b / 4
+        val e = b % 4
+        val f = (b + 8) / 25
+        val g = (b - f + 1) / 3
+        val h = (19 * a + b - d - g + 15) % 30
+        val i = c / 4
+        val k = c % 4
+        val l = (32 + 2 * e + 2 * i - h - k) % 7
+        val m = (a + 11 * h + 22 * l) / 451
+        val easterMonth = (h + l - 7 * m + 114) / 31 // 3 = mars, 4 = avril
+        val easterDay = ((h + l - 7 * m + 114) % 31) + 1
+
+        val easterCal = Calendar.getInstance(PARIS_TZ).apply {
+            clear()
+            set(year, easterMonth - 1, easterDay, 12, 0, 0)
+        }
+        val targetDayOfYear = cal.get(Calendar.DAY_OF_YEAR)
+        val targetYear = cal.get(Calendar.YEAR)
+
+        fun matchesOffset(daysAfterEaster: Int): Boolean {
+            val probe = (easterCal.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, daysAfterEaster) }
+            return probe.get(Calendar.YEAR) == targetYear && probe.get(Calendar.DAY_OF_YEAR) == targetDayOfYear
+        }
+
+        // Lundi de Pâques (+1), Ascension (+39), Lundi de Pentecôte (+50)
+        return matchesOffset(1) || matchesOffset(39) || matchesOffset(50)
+    }
+
     fun detectDefaultPeriod(cal: Calendar = Calendar.getInstance(PARIS_TZ)): IdelisPeriod {
+        if (isFrenchPublicHoliday(cal)) return IdelisPeriod.VERTE
         return when (cal.get(Calendar.DAY_OF_WEEK)) {
             Calendar.SATURDAY -> IdelisPeriod.GRISE
             Calendar.SUNDAY -> IdelisPeriod.VERTE
@@ -351,18 +400,36 @@ object GtfsScheduleIndex {
             }
         }
 
+        val isHoliday = isFrenchPublicHoliday(targetCal)
+        val hasDimOrFerie = activeServices.any {
+            it.contains("DIM", ignoreCase = true) ||
+                it.contains("FERIE", ignoreCase = true) ||
+                it.contains("VERTE", ignoreCase = true)
+        }
+        val hasScolaire = activeServices.any {
+            it.contains("SCO", ignoreCase = true) || it.contains("ORANGE", ignoreCase = true)
+        }
+        val hasNonScolaire = activeServices.any {
+            it.contains("PVS", ignoreCase = true) ||
+                it.contains("VAC", ignoreCase = true) ||
+                it.contains("BLEU", ignoreCase = true) ||
+                it.contains("ETE", ignoreCase = true) ||
+                it.contains("NON_SCO", ignoreCase = true)
+        }
+        val hasBlanche = activeServices.any {
+            it.contains("BLANCHE", ignoreCase = true)
+        }
+
         val period = when {
-            dayOfWeek == Calendar.SATURDAY -> IdelisPeriod.GRISE
+            isHoliday -> IdelisPeriod.VERTE
             dayOfWeek == Calendar.SUNDAY -> IdelisPeriod.VERTE
-            activeServices.any {
-                it.contains("DIM", ignoreCase = true) || it.contains("FERIE", ignoreCase = true)
-            } && activeServices.none {
-                it.contains("SEM", ignoreCase = true) || it.contains("SCO", ignoreCase = true)
+            dayOfWeek == Calendar.SATURDAY -> IdelisPeriod.GRISE
+            hasDimOrFerie && !hasScolaire && !hasNonScolaire && activeServices.none {
+                it.contains("SEM", ignoreCase = true)
             } -> IdelisPeriod.VERTE
             hasWeekdayRemovalToday && activeServices.isEmpty() -> IdelisPeriod.VERTE
-            activeServices.any {
-                it.contains("PVS", ignoreCase = true) || it.contains("VAC", ignoreCase = true)
-            } -> IdelisPeriod.BLEUE
+            hasBlanche && !hasScolaire && !hasNonScolaire -> IdelisPeriod.BLANCHE
+            hasNonScolaire && !hasScolaire -> IdelisPeriod.BLEUE
             else -> IdelisPeriod.ORANGE
         }
 

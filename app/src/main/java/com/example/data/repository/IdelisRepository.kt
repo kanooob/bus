@@ -466,12 +466,19 @@ class IdelisRepository(
         var globalCurrentPeriod: IdelisPeriod = GtfsScheduleIndex.detectDefaultPeriod()
 
         @Volatile
+        var globalWebPeriod: IdelisPeriod? = null
+
+        @Volatile
+        var globalWebPeriodUpdatedAtMs: Long = 0L
+
+        @Volatile
         var globalWorksAlerts: List<String> = emptyList()
 
         const val MAX_PLAUSIBLE_DELAY_MINUTES = 45
         const val METADATA_CACHE_TTL_MS = OpenDataCacheManager.DEFAULT_METADATA_TTL_MS
         private const val DEPARTURES_COALESCE_WINDOW_MS = 3_500L
         private const val TRAFFIC_COALESCE_WINDOW_MS = 10_000L
+        private const val WEB_PERIOD_CACHE_TTL_MS = 30 * 60_000L
         private const val FAILED_FETCH_COOLDOWN_MS = 15_000L
 
         @Volatile
@@ -603,7 +610,9 @@ class IdelisRepository(
                 cm.loadGtfsZipBytes()?.let { entry ->
                     val snapshot = GtfsScheduleIndex.updateFromZipBytes(entry.value)
                     if (snapshot != null) {
-                        globalCurrentPeriod = snapshot.activePeriod
+                        if (globalWebPeriod == null) {
+                            globalCurrentPeriod = snapshot.activePeriod
+                        }
                         if (snapshot.worksNotes.isNotEmpty()) {
                             globalWorksAlerts = snapshot.worksNotes
                         }
@@ -799,8 +808,27 @@ class IdelisRepository(
 
     suspend fun getStopById(stopId: String): GtfsStop? = database.stopDao().getStopById(stopId)
 
-    fun getCurrentPeriod(): IdelisPeriod = globalCurrentPeriod
+    fun getCurrentPeriod(): IdelisPeriod = globalWebPeriod ?: globalCurrentPeriod
     fun getWorksAlerts(): List<String> = globalWorksAlerts
+
+    /**
+     * Interroge la page d'accueil d'idelis.fr pour récupérer la période de circulation officielle
+     * (Orange, Bleue, Grise, Verte, Blanche) avec un cache de 30 minutes.
+     */
+    suspend fun refreshCurrentPeriodFromWeb(forceRefresh: Boolean = false): IdelisPeriod? = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val cached = globalWebPeriod
+        if (!forceRefresh && cached != null && (now - globalWebPeriodUpdatedAtMs) < WEB_PERIOD_CACHE_TTL_MS) {
+            return@withContext cached
+        }
+        val fetched = webScraperService.fetchCurrentPeriodFromWeb()
+        if (fetched != null) {
+            globalWebPeriod = fetched
+            globalWebPeriodUpdatedAtMs = System.currentTimeMillis()
+            globalCurrentPeriod = fetched
+        }
+        fetched ?: globalWebPeriod
+    }
 
     /**
      * Télécharge et analyse le fichier ZIP GTFS complet (stops, routes, trips, stop_times, calendar, calendar_dates)
@@ -814,7 +842,9 @@ class IdelisRepository(
             val report = gtfsDownloadService.downloadAndProcessGtfsZip(zipUrl, isFirstSync = isFirstSync)
             if (report.success) {
                 val now = System.currentTimeMillis()
-                globalCurrentPeriod = report.activePeriod
+                if (globalWebPeriod == null) {
+                    globalCurrentPeriod = report.activePeriod
+                }
                 if (report.detectedWorks.isNotEmpty()) {
                     globalWorksAlerts = report.detectedWorks
                 }
@@ -853,6 +883,7 @@ class IdelisRepository(
                     val routesJob = async { ensureOfficialRoutesLoaded(forceRefresh) }
                     val iconsJob = async { ensureLineIconsLoaded(forceRefresh) }
                     val stopsJob = async { ensureStopsCacheLoaded(forceRefresh) }
+                    val webPeriodJob = async { refreshCurrentPeriodFromWeb(forceRefresh) }
 
                     val shouldDownloadGtfsPeriod = !skipGtfsZip && (
                         forceRefresh ||
@@ -864,14 +895,16 @@ class IdelisRepository(
                             val periodResult = exploreService.downloadGtfsZipAndDetectPeriod()
                             if (periodResult.isSuccess) {
                                 val (period, works) = periodResult.getOrNull() ?: Pair(IdelisPeriod.VERTE, emptyList())
-                                globalCurrentPeriod = period
+                                if (globalWebPeriod == null) {
+                                    globalCurrentPeriod = period
+                                }
                                 globalWorksAlerts = works
                                 val now = System.currentTimeMillis()
                                 globalGtfsUpdatedAtMs = now
                                 GtfsScheduleIndex.getCachedZipBytes()?.let { bytes ->
                                     cacheManager?.saveGtfsZipBytes(bytes, now)
                                 }
-                                Log.d(TAG, "Période Idelis active : ${period.label} (${period.colorName}) - ${works.size} travaux détectés")
+                                Log.d(TAG, "Période Idelis active : ${getCurrentPeriod().label} - ${works.size} travaux détectés")
                             }
                         }
                     } else null
@@ -879,10 +912,11 @@ class IdelisRepository(
                     routesJob.await()
                     iconsJob.await()
                     stopsJob.await()
+                    webPeriodJob.await()
                     gtfsJob?.await()
                 }
 
-                Result.success("Données Idelis actives (${globalCurrentPeriod.label})")
+                Result.success("Données Idelis actives (${getCurrentPeriod().label})")
             } catch (e: Exception) {
                 Log.w(TAG, "Erreur téléchargement initial : ${e.message}")
                 Result.failure(e)
@@ -1347,7 +1381,7 @@ class IdelisRepository(
                     line in listOf("5", "6", "7", "8", "9", "10", "11", "12") -> 20
                     else -> 25
                 }
-                IdelisPeriod.GRISE -> when {
+                IdelisPeriod.GRISE, IdelisPeriod.BLANCHE -> when {
                     line == "F" || line == "COXI" -> 12
                     line.startsWith("T") -> 15
                     line in listOf("5", "6", "7", "8", "9", "10", "11", "12") -> 25
@@ -1763,10 +1797,13 @@ class IdelisRepository(
 
             coroutineScope {
                 val iconsJob = async { ensureLineIconsLoaded() }
+                val periodJob = async { refreshCurrentPeriodFromWeb(forceRefresh) }
                 val alertsDeferred = async { webScraperService.getInfosTrafic() }
                 val result = alertsDeferred.await()
                 withTimeoutOrNull(350L) { iconsJob.await() }
+                withTimeoutOrNull(800L) { periodJob.await() }
 
+                val nowCal = Calendar.getInstance(GtfsScheduleIndex.PARIS_TZ)
                 val mapped = result.map { webAlerts ->
                     webAlerts.map { item ->
                         val resolvedPictos = if (item.affectedLines.isNotEmpty()) {
@@ -1782,11 +1819,11 @@ class IdelisRepository(
                             messageText = item.description,
                             affectedLines = item.affectedLines,
                             severity = "WARNING",
-                            publishedDate = item.publishedDate.ifBlank { "En cours • idelis.fr" },
+                            publishedDate = webScraperService.cleanPublishedDate(item.publishedDate),
                             affectedLinePictos = resolvedPictos,
                             deviationLink = item.deviationLink
                         )
-                    }
+                    }.filter { webScraperService.isTrafficAlertWithinOneMonth(it, nowCal) }
                 }
                 mapped.getOrNull()?.let { alerts ->
                     cachedTrafficAlerts = System.currentTimeMillis() to alerts

@@ -2270,7 +2270,7 @@ private fun CurrentVersionNotesContent(
             } else {
                 IconButton(
                     onClick = onRefresh,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Refresh,
