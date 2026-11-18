@@ -125,6 +125,7 @@ data class TransitBoardUiState(
     val notServedMessage: String? = null,
     val notServedEntries: List<NotServedEntry> = emptyList(),
     // Info Trafic en direct (?type=777 requete=infostrafic)
+    val unreadTrafficAlertCount: Int = 0,
     val isTrafficLoading: Boolean = false,
     val trafficErrorMessage: String? = null,
     val trafficInfoPromptVisible: Boolean = false,
@@ -202,6 +203,9 @@ class TransitBoardViewModel(
     @Volatile
     private var isTrafficRefreshInProgress: Boolean = false
 
+    @Volatile
+    private var isTrafficMenuCurrentlyOpen: Boolean = false
+
     private val stopUiCache = ConcurrentHashMap<String, Pair<Long, DeparturesResult>>()
 
     companion object {
@@ -269,7 +273,7 @@ class TransitBoardViewModel(
                 skipGtfsZip = shouldSyncGtfsNow
             )
             _uiState.update { current ->
-                val reenriched = repository.reenrichDeparturesWithCurrentCaches(current.departures)
+                val reenriched = repository.reenrichDeparturesWithCurrentCaches(current.departures, current.selectedStop)
                 val currentFilter = current.selectedLineFilter
                 val reenrichedFiltered = if (currentFilter != null) {
                     reenriched.filter { it.lineRef.equals(currentFilter, ignoreCase = true) }
@@ -386,8 +390,9 @@ class TransitBoardViewModel(
             val trafficFreq = _uiState.value.trafficRefreshFrequency
             if (trafficFreq != TrafficRefreshFrequency.NEVER && trafficFreq.intervalMs > 0L) {
                 val lastCheck = preferencesManager?.getLastTrafficRefreshTimestamp() ?: 0L
-                if (now - lastCheck >= trafficFreq.intervalMs) {
-                    refreshTrafficAlerts(notifyIfNew = true, forceRefresh = false)
+                val isDue = now - lastCheck >= trafficFreq.intervalMs
+                if (isDue || _uiState.value.trafficAlerts.isEmpty()) {
+                    refreshTrafficAlerts(notifyIfNew = isDue, forceRefresh = false)
                 }
             }
         }
@@ -422,9 +427,16 @@ class TransitBoardViewModel(
                         alerts = alerts,
                         allowNotification = notifyIfNew
                     )
+                    val unreadCount = if (isTrafficMenuCurrentlyOpen) {
+                        TrafficAlertNotifier.markAlertsAsRead(preferencesManager, alerts)
+                        0
+                    } else {
+                        TrafficAlertNotifier.countUnreadAlerts(preferencesManager, alerts)
+                    }
                     _uiState.update {
                         it.copy(
                             trafficAlerts = alerts,
+                            unreadTrafficAlertCount = unreadCount,
                             activePeriod = repository.getCurrentPeriod(),
                             isTrafficLoading = false,
                             trafficErrorMessage = null,
@@ -555,6 +567,21 @@ class TransitBoardViewModel(
     fun setWidgetUpdateNotificationsEnabled(enabled: Boolean) {
         preferencesManager?.setWidgetUpdateNotificationsEnabled(enabled)
         _uiState.update { it.copy(widgetUpdateNotificationsEnabled = enabled) }
+    }
+
+    fun setTrafficMenuOpen(isOpen: Boolean) {
+        isTrafficMenuCurrentlyOpen = isOpen
+        if (isOpen) {
+            markTrafficAlertsAsRead()
+        }
+    }
+
+    fun markTrafficAlertsAsRead() {
+        val currentAlerts = _uiState.value.trafficAlerts
+        if (currentAlerts.isNotEmpty()) {
+            TrafficAlertNotifier.markAlertsAsRead(preferencesManager, currentAlerts)
+        }
+        _uiState.update { it.copy(unreadTrafficAlertCount = 0) }
     }
 
     fun openTrafficInfoFromNotification() {
@@ -733,7 +760,7 @@ class TransitBoardViewModel(
 
         _uiState.update { current ->
             if (cachedResult != null) {
-                val reenriched = repository.reenrichDeparturesWithCurrentCaches(cachedResult.departures)
+                val reenriched = repository.reenrichDeparturesWithCurrentCaches(cachedResult.departures, stop)
                 val reenrichedNotServed = repository.reenrichNotServedEntriesWithCurrentCaches(cachedResult.notServedEntries)
                 current.copy(
                     selectedStop = stop,

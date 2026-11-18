@@ -1889,4 +1889,132 @@ class ExampleRobolectricTest {
             com.example.data.remote.GtfsScheduleIndex.detectDefaultPeriod(easterMonday2026)
         )
     }
+
+    @Test
+    fun `traffic alert unread count clears when marked as read and counts only new alerts`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences("idelis_user_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+        val prefs = com.example.data.local.PreferencesManager(context)
+
+        val a1 = com.example.data.model.TrafficAlert(
+            id = "u1",
+            title = "Travaux Rue Carnot",
+            messageText = "Ligne F déviée.",
+            affectedLines = listOf("F"),
+            severity = "WARNING",
+            publishedDate = "",
+            deviationLink = null
+        )
+        val a2 = com.example.data.model.TrafficAlert(
+            id = "u2",
+            title = "Travaux Bosquet",
+            messageText = "Arrêt déplacé.",
+            affectedLines = listOf("T1"),
+            severity = "WARNING",
+            publishedDate = "",
+            deviationLink = null
+        )
+
+        assertEquals(2, com.example.data.remote.TrafficAlertNotifier.countUnreadAlerts(prefs, listOf(a1, a2)))
+
+        // L'utilisateur ouvre le menu -> toutes les alertes actuelles sont marquées comme lues
+        com.example.data.remote.TrafficAlertNotifier.markAlertsAsRead(prefs, listOf(a1, a2))
+        assertEquals(0, com.example.data.remote.TrafficAlertNotifier.countUnreadAlerts(prefs, listOf(a1, a2)))
+
+        // Une nouvelle alerte arrive -> seule la nouvelle est comptée comme non lue
+        val a3 = com.example.data.model.TrafficAlert(
+            id = "u3",
+            title = "Manifestation Centre-Ville",
+            messageText = "Lignes perturbées.",
+            affectedLines = listOf("T2"),
+            severity = "WARNING",
+            publishedDate = "",
+            deviationLink = null
+        )
+        assertEquals(1, com.example.data.remote.TrafficAlertNotifier.countUnreadAlerts(prefs, listOf(a1, a2, a3)))
+    }
+
+    @Test
+    fun `bosquet departures display only Quai A or Quai B according to line and direction`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = com.example.data.local.IdelisDatabase.getInstance(context)
+        val repo = com.example.data.repository.IdelisRepository(db, context)
+
+        val prevServings = com.example.data.repository.IdelisRepository.globalServingsByStopName
+        try {
+            val bosquetServings = listOf(
+                com.example.data.remote.StopServing(
+                    timeo = 1,
+                    stopName = "Pl. d'Espagne - Bosquet Quai A",
+                    pole = "Bosquet",
+                    lineRef = "F",
+                    direction = "PAU Gare de Pau",
+                    sens = 1,
+                    commune = "Pau",
+                    lat = 43.2995,
+                    lon = -0.3668
+                ),
+                com.example.data.remote.StopServing(
+                    timeo = 2,
+                    stopName = "Pl. d'Espagne - Bosquet Quai B",
+                    pole = "Bosquet",
+                    lineRef = "F",
+                    direction = "PAU Hôpital F. Mitterrand",
+                    sens = 2,
+                    commune = "Pau",
+                    lat = 43.2995,
+                    lon = -0.3668
+                )
+            )
+            com.example.data.repository.IdelisRepository.globalServingsByStopName =
+                mapOf("pôle bosquet" to bosquetServings)
+
+            val webDeps = listOf(
+                com.example.data.model.IdelisWebDeparture(
+                    lineRef = "F",
+                    lineName = "Fébus",
+                    linePictoUrl = null,
+                    direction = "PAU Gare de Pau",
+                    stopQuai = "Pl. d'Espagne - Bosquet Quai A",
+                    timeText = "2 min",
+                    isRealTime = true,
+                    waitMinutes = 2
+                ),
+                com.example.data.model.IdelisWebDeparture(
+                    lineRef = "F",
+                    lineName = "Fébus",
+                    linePictoUrl = null,
+                    direction = "PAU Hôpital F. Mitterrand",
+                    stopQuai = null, // Cas où le web ne renvoie pas le quai -> repli par ligne/direction
+                    timeText = "5 min",
+                    isRealTime = true,
+                    waitMinutes = 5
+                ),
+                com.example.data.model.IdelisWebDeparture(
+                    lineRef = "6",
+                    lineName = "Ligne 6",
+                    linePictoUrl = null,
+                    direction = "BIZANOS Laurets",
+                    stopQuai = null,
+                    timeText = "8 min",
+                    isRealTime = true,
+                    waitMinutes = 8
+                )
+            )
+
+            val result = repo.compareWebDeparturesWithTheoretical(
+                webDepartures = webDeps,
+                theoreticalDepartures = emptyList(),
+                stop = com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP,
+                poleName = "Bosquet"
+            )
+
+            assertEquals(3, result.size)
+            assertEquals("PAU Gare de Pau (Quai A)", result[0].destinationName)
+            assertEquals("PAU Hôpital F. Mitterrand (Quai B)", result[1].destinationName)
+            assertEquals("BIZANOS Laurets", result[2].destinationName)
+        } finally {
+            com.example.data.repository.IdelisRepository.globalServingsByStopName = prevServings
+        }
+    }
 }

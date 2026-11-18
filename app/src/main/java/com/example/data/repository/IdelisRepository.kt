@@ -928,14 +928,36 @@ class IdelisRepository(
      * Ré-enrichit localement les départs déjà affichés avec les icônes et couleurs officielles
      * récemment chargées, sans refaire d'appel réseau stop_monitoring.
      */
-    fun reenrichDeparturesWithCurrentCaches(departures: List<DepartureComparison>): List<DepartureComparison> {
+    fun reenrichDeparturesWithCurrentCaches(
+        departures: List<DepartureComparison>,
+        stop: GtfsStop? = null
+    ): List<DepartureComparison> {
         if (departures.isEmpty()) return departures
         return departures.map { dep ->
             val route = globalOfficialRoutesMap[dep.lineRef.uppercase()] ?: officialRoutesMap[dep.lineRef.uppercase()]
             val colorHex = route?.colorHex?.removePrefix("#")?.takeIf { it.isNotBlank() } ?: dep.routeColorHex
             val textHex = if (colorHex.equals("FFC107", true) || colorHex.equals("FFCC00", true)) "121212" else dep.routeTextColorHex
             val resolvedIcon = resolveLineIconUrl(dep.lineRef) ?: dep.iconUrl
+
+            val updatedDestination = if (stop != null && IdelisWebScraperService.extractQuaiLabel(dep.destinationName) == null) {
+                val depLineKey = dep.lineRef.trim()
+                    .let { if (it.startsWith("Ligne", true)) it.substring(5).trim() else it }
+                    .uppercase(Locale.ROOT)
+                val depDirNorm = normalizeDirection(dep.destinationName)
+                val resolvedQuai = resolveQuaiFromServingsCache(
+                    lineRef = depLineKey,
+                    depDirNorm = depDirNorm,
+                    stop = stop,
+                    poleName = getPoleNameForStop(stop),
+                    fastNormalizeDir = ::normalizeDirection
+                )
+                if (resolvedQuai != null) "${dep.destinationName} ($resolvedQuai)" else dep.destinationName
+            } else {
+                dep.destinationName
+            }
+
             dep.copy(
+                destinationName = updatedDestination,
                 routeColorHex = colorHex,
                 routeTextColorHex = textHex,
                 iconUrl = resolvedIcon
@@ -1093,7 +1115,9 @@ class IdelisRepository(
                 val comparisons = if (cleanWebDeps.isNotEmpty()) {
                     compareWebDeparturesWithTheoretical(
                         webDepartures = cleanWebDeps,
-                        theoreticalDepartures = theoreticalDepartures
+                        theoreticalDepartures = theoreticalDepartures,
+                        stop = stop,
+                        poleName = poleName
                     )
                 } else {
                     emptyList()
@@ -1447,9 +1471,45 @@ class IdelisRepository(
      * avec les horaires théoriques GTFS pour calculer le retard ou l'avance réel (+X min, -X min, À l'heure).
      * N'inclut que les départs temps réel issus de la requête.
      */
+    private fun resolveQuaiFromServingsCache(
+        lineRef: String,
+        depDirNorm: String,
+        stop: GtfsStop?,
+        poleName: String?,
+        fastNormalizeDir: (String) -> String
+    ): String? {
+        if (depDirNorm.isBlank()) return null
+        val servingsMap = globalServingsByStopName.ifEmpty { servingsByStopName }
+        if (servingsMap.isEmpty()) return null
+
+        val candidateKeys = listOfNotNull(poleName, stop?.parentStation, stop?.stopName)
+            .map { getCanonicalStopName(it).lowercase() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (candidateKeys.isEmpty()) return null
+
+        val matchingServings = candidateKeys
+            .flatMap { key -> servingsMap[key].orEmpty() }
+            .filter { serving ->
+                val servingLine = serving.lineRef.trim()
+                    .let { if (it.startsWith("Ligne", true)) it.substring(5).trim() else it }
+                    .uppercase(Locale.ROOT)
+                if (servingLine != lineRef) return@filter false
+                val servingDirNorm = fastNormalizeDir(serving.direction)
+                servingDirNorm.isNotEmpty() && (servingDirNorm.contains(depDirNorm) || depDirNorm.contains(servingDirNorm))
+            }
+
+        return matchingServings
+            .mapNotNull { IdelisWebScraperService.extractQuaiLabel(it.stopName) }
+            .distinct()
+            .singleOrNull()
+    }
+
     fun compareWebDeparturesWithTheoretical(
         webDepartures: List<IdelisWebDeparture>,
-        theoreticalDepartures: List<GtfsTheoreticalDeparture>
+        theoreticalDepartures: List<GtfsTheoreticalDeparture>,
+        stop: GtfsStop? = null,
+        poleName: String? = null
     ): List<DepartureComparison> {
         val parisTz = TimeZone.getTimeZone("Europe/Paris")
         val nowCal = Calendar.getInstance(parisTz)
@@ -1557,11 +1617,33 @@ class IdelisRepository(
             val textHex = if (colorHex.equals("FFC107", true) || colorHex.equals("FFCC00", true)) "121212" else "FFFFFF"
             val iconUrl = resolveLineIconUrl(dep.lineRef) ?: dep.linePictoUrl
 
+            val quaiFromWeb = IdelisWebScraperService.extractQuaiLabel(dep.stopQuai)
+            val quaiFromTheo = if (quaiFromWeb == null && dirMatches.isNotEmpty()) {
+                IdelisWebScraperService.extractQuaiLabel(matchedTheo?.stopName)
+                    ?: dirMatches.mapNotNull { IdelisWebScraperService.extractQuaiLabel(it.stopName) }
+                        .distinct()
+                        .singleOrNull()
+            } else {
+                null
+            }
+            val quaiFromServings = if (quaiFromWeb == null && quaiFromTheo == null) {
+                resolveQuaiFromServingsCache(
+                    lineRef = depLineKey,
+                    depDirNorm = depDirNorm,
+                    stop = stop,
+                    poleName = poleName,
+                    fastNormalizeDir = ::fastNormalizeDir
+                )
+            } else {
+                null
+            }
+            val quaiLabel = quaiFromWeb ?: quaiFromTheo ?: quaiFromServings
+
             DepartureComparison(
                 id = "live_${dep.lineRef}_${dep.direction}_${index}_${dep.timeText}",
                 lineRef = dep.lineRef,
                 lineName = dep.lineName,
-                destinationName = dep.direction + (dep.stopQuai?.let { " ($it)" } ?: ""),
+                destinationName = dep.direction + (quaiLabel?.let { " ($it)" } ?: ""),
                 routeColorHex = colorHex,
                 routeTextColorHex = textHex,
                 aimedDepartureTimeFormatted = aimedTimeFormatted,

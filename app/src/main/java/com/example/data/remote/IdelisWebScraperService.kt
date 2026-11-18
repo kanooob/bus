@@ -52,6 +52,21 @@ class IdelisWebScraperService(
         const val IDELIS_REFERER = "https://www.idelis.fr/"
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+        private val QUAI_EXTRACT_REGEX = Regex("""\bquai[s]?\s*[:\-]?\s*([a-z]\d?|\d{1,2})\b""", RegexOption.IGNORE_CASE)
+        private val ARRET_LABEL_REGEX = Regex("""(?:^|\s*[-–—]\s*|\s+)Arr[êe]t\s*:\s*""", RegexOption.IGNORE_CASE)
+        private val DIRECTION_PREFIX_REGEX = Regex("""^\s*Direction\s*:\s*""", RegexOption.IGNORE_CASE)
+
+        /**
+         * Extrait uniquement la mention de quai et sa lettre/numéro (ex: "Pl. d'Espagne - Bosquet Quai A" -> "Quai A").
+         * Renvoie null si aucun quai explicite n'est présent.
+         */
+        fun extractQuaiLabel(rawStopOrQuai: String?): String? {
+            val clean = rawStopOrQuai?.trim()?.takeIf { it.isNotBlank() } ?: return null
+            val match = QUAI_EXTRACT_REGEX.find(clean) ?: return null
+            val identifier = match.groupValues[1].uppercase(Locale.ROOT)
+            return "Quai $identifier"
+        }
+
         private fun safeLogD(msg: String) {
             try {
                 Log.d(TAG, msg)
@@ -275,7 +290,8 @@ class IdelisWebScraperService(
                     val cleanDir = cleanNotServedTextFromLabel(currentDirection)
                         .ifBlank { "Direction non précisée" }
                     val cleanQuai = currentQuai?.let { cleanNotServedTextFromLabel(it) }?.takeIf { it.isNotBlank() }
-                    val dirWithQuai = if (cleanQuai != null) "$cleanDir ($cleanQuai)" else cleanDir
+                    val formattedQuai = extractQuaiLabel(cleanQuai) ?: cleanQuai
+                    val dirWithQuai = if (formattedQuai != null) "$cleanDir ($formattedQuai)" else cleanDir
                     rawNotServedEntries.add(
                         NotServedEntry(
                             lineRef = lineRef,
@@ -341,7 +357,7 @@ class IdelisWebScraperService(
                                     lineName = lineName,
                                     linePictoUrl = pictoSrc,
                                     direction = currentDirection,
-                                    stopQuai = currentQuai,
+                                    stopQuai = extractQuaiLabel(currentQuai),
                                     timeText = rawText,
                                     isRealTime = isRealTime,
                                     waitMinutes = waitMinutes
@@ -1115,11 +1131,12 @@ class IdelisWebScraperService(
             }
             val formattedTime = String.format(Locale.FRANCE, "%02d:%02d", timeCal.get(Calendar.HOUR_OF_DAY), timeCal.get(Calendar.MINUTE))
 
+            val quaiLabel = extractQuaiLabel(dep.stopQuai)
             DepartureComparison(
                 id = "web_${dep.lineRef}_${dep.direction}_${index}_${dep.timeText}",
                 lineRef = dep.lineRef,
                 lineName = dep.lineName,
-                destinationName = dep.direction + (dep.stopQuai?.let { " ($it)" } ?: ""),
+                destinationName = dep.direction + (quaiLabel?.let { " ($it)" } ?: ""),
                 routeColorHex = routeColor,
                 routeTextColorHex = "#FFFFFF",
                 aimedDepartureTimeFormatted = if (dep.timeText.contains(":")) dep.timeText else formattedTime,
@@ -1157,15 +1174,31 @@ class IdelisWebScraperService(
         return textMatch?.value ?: "BUS"
     }
 
-    private fun parseDirectionAndQuai(text: String): Pair<String, String?> {
+    internal fun parseDirectionAndQuai(text: String): Pair<String, String?> {
         // Ex: "Direction: PAU Gare de Pau -  Arrêt: Pl. d'Espagne - Bosquet Quai A - "
-        val dirMatch = Regex("""Direction:\s*([^–-]+?)(?:\s*-\s*Arr[êe]t:|\s*$)""", RegexOption.IGNORE_CASE).find(text)
-        val dir = dirMatch?.groupValues?.getOrNull(1)?.trim() ?: text
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) return Pair("", null)
 
-        val quaiMatch = Regex("""Arr[êe]t:\s*([^–-]+?)(?:\s*-\s*|$)""", RegexOption.IGNORE_CASE).find(text)
-        val quai = quaiMatch?.groupValues?.getOrNull(1)?.trim()
+        val arretLabelMatch = ARRET_LABEL_REGEX.find(trimmed)
+        val dirPart = if (arretLabelMatch != null) {
+            trimmed.substring(0, arretLabelMatch.range.first)
+        } else {
+            trimmed
+        }
+        val dir = dirPart
+            .replace(DIRECTION_PREFIX_REGEX, "")
+            .trim(' ', '-', '–', '—')
+            .ifBlank { trimmed }
 
-        return Pair(dir, quai)
+        val rawStop = if (arretLabelMatch != null) {
+            trimmed.substring(arretLabelMatch.range.last + 1)
+                .trim(' ', '-', '–', '—')
+                .takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+
+        return Pair(dir, rawStop)
     }
 
     private fun computeWaitMinutes(timeText: String): Int {

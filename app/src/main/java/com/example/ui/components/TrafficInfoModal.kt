@@ -269,48 +269,26 @@ fun TrafficInfoModal(
             Surface(
                 color = periodColor.copy(alpha = 0.12f),
                 shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.testTag("traffic_period_badge")
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(periodColor)
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(periodColor)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = activePeriod.label,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = contentColor,
+                            fontWeight = FontWeight.Bold
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "${activePeriod.label} • ${activePeriod.description}",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = contentColor,
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-                    if (alerts.isNotEmpty()) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "${alerts.size} alerte${if (alerts.size > 1) "s" else ""}",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = mutedColor,
-                                    fontWeight = FontWeight.Bold
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
+                    )
                 }
             }
 

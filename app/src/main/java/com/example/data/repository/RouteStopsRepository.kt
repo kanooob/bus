@@ -303,7 +303,8 @@ class RouteStopsRepository(
     private fun findBestMatchingDirection(target: String, directions: List<String>): String {
         if (directions.isEmpty()) return target
 
-        val normTarget = normalizeString(target)
+        val cleanedTarget = target.replace(Regex("""\s*\([^)]*\)\s*$"""), "").trim()
+        val normTarget = normalizeString(cleanedTarget.ifBlank { target })
         directions.firstOrNull { normalizeString(it) == normTarget }?.let { return it }
         directions.firstOrNull { normTarget.contains(normalizeString(it)) || normalizeString(it).contains(normTarget) }?.let { return it }
 

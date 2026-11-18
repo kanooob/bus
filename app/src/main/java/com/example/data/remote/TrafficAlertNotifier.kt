@@ -28,6 +28,32 @@ object TrafficAlertNotifier {
         return "${title.hashCode()}_${msg.hashCode()}_${title.take(40)}"
     }
 
+    fun countUnreadAlerts(prefs: PreferencesManager?, alerts: List<TrafficAlert>): Int {
+        if (alerts.isEmpty()) return 0
+        val seenKeys = prefs?.getSeenTrafficAlertKeys() ?: return alerts.size
+        return alerts.count { alertFingerprint(it) !in seenKeys }
+    }
+
+    fun markAlertsAsRead(prefs: PreferencesManager?, alerts: List<TrafficAlert>) {
+        if (prefs == null || alerts.isEmpty()) return
+        val currentKeys = alerts.map { alertFingerprint(it) }.toSet()
+        val existingKeys = prefs.getSeenTrafficAlertKeys()
+        val mergedKeys = HashSet<String>(existingKeys).apply {
+            addAll(currentKeys)
+        }
+        val boundedKeys = if (mergedKeys.size > 500) {
+            val retained = HashSet<String>(currentKeys)
+            for (key in existingKeys) {
+                if (retained.size >= 500) break
+                retained.add(key)
+            }
+            retained
+        } else {
+            mergedKeys
+        }
+        prefs.saveSeenTrafficAlertKeys(boundedKeys)
+    }
+
     fun ensureChannel(context: Context) {
         NotificationChannels.ensureAllChannels(context)
     }

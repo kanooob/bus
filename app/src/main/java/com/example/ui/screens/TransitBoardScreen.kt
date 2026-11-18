@@ -145,6 +145,7 @@ fun TransitBoardScreen(
     LaunchedEffect(uiState.trafficInfoPromptVisible) {
         if (uiState.trafficInfoPromptVisible) {
             isTrafficInfoOpen = true
+            viewModel.setTrafficMenuOpen(true)
             viewModel.refreshTrafficAlerts(notifyIfNew = false)
             viewModel.consumeTrafficInfoPrompt()
         }
@@ -220,6 +221,7 @@ fun TransitBoardScreen(
                 onStopClick = { isStopPickerOpen = true },
                 onTrafficInfoClick = {
                     isTrafficInfoOpen = true
+                    viewModel.setTrafficMenuOpen(true)
                     viewModel.refreshTrafficAlerts(notifyIfNew = false)
                 },
                 onSettingsClick = {
@@ -227,7 +229,7 @@ fun TransitBoardScreen(
                     viewModel.loadCurrentVersionReleaseNotes(forceRefresh = false)
                     isSettingsOpen = true
                 },
-                trafficAlertCount = uiState.trafficAlerts.size,
+                trafficAlertCount = uiState.unreadTrafficAlertCount,
                 isDarkTheme = effectiveDarkTheme
             )
 
@@ -430,7 +432,10 @@ fun TransitBoardScreen(
                 isLoading = uiState.isTrafficLoading,
                 errorMessage = uiState.trafficErrorMessage,
                 onRefresh = { viewModel.refreshTrafficAlerts(notifyIfNew = false, forceRefresh = true) },
-                onDismissRequest = { isTrafficInfoOpen = false },
+                onDismissRequest = {
+                    isTrafficInfoOpen = false
+                    viewModel.setTrafficMenuOpen(false)
+                },
                 isDarkTheme = effectiveDarkTheme
             )
         }

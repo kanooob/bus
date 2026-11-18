@@ -388,4 +388,53 @@ class IdelisWebScraperTest {
         """.trimIndent()
         assertEquals(null, service.parseCurrentPeriodFromHtml(legendOnlyHtml))
     }
+
+    @Test
+    fun testQuaiOnlyExtractionAndBosquetPlaceDEspagneParsing() {
+        val html = """
+            <div class="ligne-group">
+                <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/F.png" alt="Ligne F" /></div></div>
+                <div class="row"><div class="col-12"><span class="text-black-50"> Direction: PAU Gare de Pau -  Arrêt: Pl. d'Espagne - Bosquet Quai A - </span></div></div>
+                <div class="row"><div class="col-3"><div class="p-1 text-center border rounded text-white bg-primary">2 min</div></div></div>
+                <div class="row"><div class="col-12"><span class="text-black-50"> Direction: PAU Hôpital F. Mitterrand -  Arrêt: Pl. d'Espagne - Bosquet Quai B - </span></div></div>
+                <div class="row"><div class="col-3"><div class="p-1 text-center border rounded text-white bg-primary">4 min</div></div></div>
+            </div>
+            <div class="ligne-group">
+                <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/5.png" alt="Ligne 5" /></div></div>
+                <div class="row"><div class="col-12"><span class="text-black-50"> Direction: MAZERES-LEZONS L'Arriou -  Arrêt: Gare de Pau Quai C - </span></div></div>
+                <div class="row"><div class="col-3"><div class="p-1 text-center border rounded text-white bg-primary">7 min</div></div></div>
+            </div>
+            <div class="ligne-group">
+                <div class="row"><div class="col-12"><img class="picto-ligne" src="/fileadmin/user_upload/pictos/6.png" alt="Ligne 6" /></div></div>
+                <div class="row"><div class="col-12"><span class="text-black-50"> Direction: PAU Bosquet -  Arrêt: Pau Université - </span></div></div>
+                <div class="row"><div class="col-3"><div class="p-1 text-center border rounded text-white bg-primary">9 min</div></div></div>
+            </div>
+        """.trimIndent()
+
+        val parsed = service.parseStopMonitoringHtml("Bosquet", html)
+        assertEquals(4, parsed.departures.size)
+
+        assertEquals("PAU Gare de Pau", parsed.departures[0].direction)
+        assertEquals("Quai A", parsed.departures[0].stopQuai)
+
+        assertEquals("PAU Hôpital F. Mitterrand", parsed.departures[1].direction)
+        assertEquals("Quai B", parsed.departures[1].stopQuai)
+
+        assertEquals("MAZERES-LEZONS L'Arriou", parsed.departures[2].direction)
+        assertEquals("Quai C", parsed.departures[2].stopQuai)
+
+        assertEquals("PAU Bosquet", parsed.departures[3].direction)
+        assertEquals(null, parsed.departures[3].stopQuai)
+
+        val comparisons = service.convertToDepartureComparisons(parsed.departures, "Bosquet")
+        assertEquals("PAU Gare de Pau (Quai A)", comparisons[0].destinationName)
+        assertEquals("PAU Hôpital F. Mitterrand (Quai B)", comparisons[1].destinationName)
+        assertEquals("MAZERES-LEZONS L'Arriou (Quai C)", comparisons[2].destinationName)
+        assertEquals("PAU Bosquet", comparisons[3].destinationName)
+
+        assertEquals("Quai A", IdelisWebScraperService.extractQuaiLabel("Pl. d'Espagne - Bosquet Quai A"))
+        assertEquals("Quai 1", IdelisWebScraperService.extractQuaiLabel("Verdun Camou Quai 1"))
+        assertEquals(null, IdelisWebScraperService.extractQuaiLabel("Quai du Gave"))
+        assertEquals(null, IdelisWebScraperService.extractQuaiLabel("Pl. d'Espagne"))
+    }
 }

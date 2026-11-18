@@ -52,6 +52,7 @@ class PreferencesManager(context: Context) {
         private const val KEY_WIDGET_UPDATE_NOTIFICATIONS_ENABLED = "widget_update_notifications_enabled"
         private const val KEY_LAST_TRAFFIC_REFRESH_TIME = "last_traffic_refresh_timestamp"
         private const val KEY_KNOWN_TRAFFIC_ALERT_KEYS = "known_traffic_alert_keys"
+        private const val KEY_SEEN_TRAFFIC_ALERT_KEYS = "seen_traffic_alert_keys"
         private const val KEY_TRAFFIC_BASELINE_INITIALIZED = "traffic_baseline_initialized"
         private const val KEY_APP_UPDATE_CHECK_FREQ = "app_update_check_frequency"
         private const val KEY_UPDATE_NETWORK_MODE = "update_network_mode"
@@ -186,6 +187,13 @@ class PreferencesManager(context: Context) {
 
     fun saveKnownTrafficAlertKeys(keys: Set<String>) {
         prefs.edit().putStringSet(KEY_KNOWN_TRAFFIC_ALERT_KEYS, keys).apply()
+    }
+
+    fun getSeenTrafficAlertKeys(): Set<String> =
+        prefs.getStringSet(KEY_SEEN_TRAFFIC_ALERT_KEYS, emptySet()) ?: emptySet()
+
+    fun saveSeenTrafficAlertKeys(keys: Set<String>) {
+        prefs.edit().putStringSet(KEY_SEEN_TRAFFIC_ALERT_KEYS, HashSet(keys)).apply()
     }
 
     fun hasTrafficBaselineInitialized(): Boolean =

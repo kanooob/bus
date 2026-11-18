@@ -2,6 +2,8 @@ package com.example
 
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -269,7 +271,7 @@ class SettingsModalRobolectricTest {
     }
 
     @Test
-    fun `top bar shows alert badge and traffic info modal hides En cours idelis fr`() {
+    fun `top bar clears alert badge after opening menu and period bubble wraps text width`() {
         val alerts = listOf(
             com.example.data.model.TrafficAlert(
                 id = "t1",
@@ -282,14 +284,15 @@ class SettingsModalRobolectricTest {
             )
         )
         composeTestRule.setContent {
+            var unreadCount by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(2) }
             MyApplicationTheme(darkTheme = false) {
                 androidx.compose.foundation.layout.Column {
                     com.example.ui.components.IdelisSketchTopBar(
                         stopName = "Pôle Bosquet",
                         onStopClick = {},
-                        onTrafficInfoClick = {},
+                        onTrafficInfoClick = { unreadCount = 0 },
                         onSettingsClick = {},
-                        trafficAlertCount = 2
+                        trafficAlertCount = unreadCount
                     )
                     com.example.ui.components.TrafficInfoModal(
                         alerts = alerts,
@@ -306,8 +309,23 @@ class SettingsModalRobolectricTest {
         composeTestRule.onNodeWithTag("traffic_info_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("settings_button").assertIsDisplayed()
         composeTestRule.onNodeWithText("2").assertIsDisplayed()
+
+        // L'ouverture du menu Info Trafic supprime la pastille
+        composeTestRule.onNodeWithTag("traffic_info_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("2").assertDoesNotExist()
+
         composeTestRule.onNodeWithText("Voir le plan").assertExists()
-        composeTestRule.onNodeWithText("Période Orange • Lundi au vendredi (scolaire)").assertExists()
+        composeTestRule.onNodeWithText("Période Orange").assertExists()
+        composeTestRule.onNodeWithText("Lundi au vendredi (scolaire)", substring = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("1 alerte").assertDoesNotExist()
         composeTestRule.onNodeWithText("En cours • idelis.fr").assertDoesNotExist()
+
+        val dialogBounds = composeTestRule.onNodeWithTag("traffic_info_dialog").fetchSemanticsNode().boundsInRoot
+        val periodBounds = composeTestRule.onNodeWithTag("traffic_period_badge").fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue(
+            "La bulle de période doit s'adapter au texte au lieu de prendre toute la largeur (${periodBounds.width} vs ${dialogBounds.width})",
+            periodBounds.width < dialogBounds.width * 0.8f
+        )
     }
 }
