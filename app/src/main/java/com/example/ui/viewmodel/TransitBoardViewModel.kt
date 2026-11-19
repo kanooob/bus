@@ -106,8 +106,6 @@ data class TransitBoardUiState(
     // Détail d'itinéraire et liste des arrêts ordonnés de la ligne
     val selectedDepartureForRouteDetail: DepartureComparison? = null,
     val selectedRouteDetail: com.example.data.model.RouteLineDetail? = null,
-    val routeDetailIsTerminusAtTop: Boolean = true,
-    val routeDetailChosenDirection: String? = null,
     // Autocomplétion et recherche en direct idelis.fr (?type=777)
     val webSuggestions: List<com.example.data.model.IdelisWebStop> = emptyList(),
     val isWebSearching: Boolean = false,
@@ -289,10 +287,20 @@ class TransitBoardViewModel(
                         )
                     }
                 }
+                val refreshedRouteDetail = current.selectedDepartureForRouteDetail?.let { openDep ->
+                    val currentStopName = current.selectedStop?.stopName ?: "Pôle Bosquet"
+                    repository.getRouteDetail(
+                        departure = openDep,
+                        currentStopName = currentStopName,
+                        chosenDirection = openDep.destinationName,
+                        isTerminusAtTop = true
+                    )
+                }
                 current.copy(
                     departures = reenriched,
                     filteredDepartures = reenrichedFiltered,
                     notServedEntries = reenrichedNotServed,
+                    selectedRouteDetail = refreshedRouteDetail ?: current.selectedRouteDetail,
                     isDownloadingData = false,
                     downloadStatus = result.getOrNull() ?: "Données locales actives",
                     activePeriod = repository.getCurrentPeriod(),
@@ -944,68 +952,43 @@ class TransitBoardViewModel(
 
     /**
      * Ouvre la vue des arrêts d'une ligne lors d'un appui sur un bus sur le premier écran.
-     * Respecte la consigne utilisateur :
-     * Affiche tous les arrêts dans l'ordre, avec en haut le terminus et en bas le début.
+     * Affiche le terminus fixe en haut et tous les arrêts dans l'ordre jusqu'au départ en bas.
      */
     fun selectDepartureForRouteDetail(departure: DepartureComparison) {
         val currentStop = _uiState.value.selectedStop?.stopName ?: "Pôle Bosquet"
-        val isTerminusAtTop = _uiState.value.routeDetailIsTerminusAtTop
         val detail = repository.getRouteDetail(
             departure = departure,
             currentStopName = currentStop,
             chosenDirection = departure.destinationName,
-            isTerminusAtTop = isTerminusAtTop
+            isTerminusAtTop = true
         )
         _uiState.update {
             it.copy(
                 selectedDepartureForRouteDetail = departure,
-                selectedRouteDetail = detail,
-                routeDetailChosenDirection = detail.selectedDirection
-            )
-        }
-    }
-
-    /**
-     * Permet de changer la direction de la ligne (ex: aller vs retour).
-     * Met à jour la liste des arrêts avec le terminus correspondant en haut et le début en bas.
-     */
-    fun switchRouteDetailDirection(newDirection: String) {
-        val departure = _uiState.value.selectedDepartureForRouteDetail ?: return
-        val currentStop = _uiState.value.selectedStop?.stopName ?: "Pôle Bosquet"
-        val isTerminusAtTop = _uiState.value.routeDetailIsTerminusAtTop
-        val detail = repository.getRouteDetail(
-            departure = departure,
-            currentStopName = currentStop,
-            chosenDirection = newDirection,
-            isTerminusAtTop = isTerminusAtTop
-        )
-        _uiState.update {
-            it.copy(
-                selectedRouteDetail = detail,
-                routeDetailChosenDirection = newDirection
-            )
-        }
-    }
-
-    /**
-     * Permet d'inverser l'ordre des arrêts (Terminus en haut ⇄ Début en haut).
-     */
-    fun toggleRouteDetailOrder() {
-        val departure = _uiState.value.selectedDepartureForRouteDetail ?: return
-        val currentStop = _uiState.value.selectedStop?.stopName ?: "Pôle Bosquet"
-        val nextOrder = !_uiState.value.routeDetailIsTerminusAtTop
-        val direction = _uiState.value.routeDetailChosenDirection
-        val detail = repository.getRouteDetail(
-            departure = departure,
-            currentStopName = currentStop,
-            chosenDirection = direction,
-            isTerminusAtTop = nextOrder
-        )
-        _uiState.update {
-            it.copy(
-                routeDetailIsTerminusAtTop = nextOrder,
                 selectedRouteDetail = detail
             )
+        }
+        if (com.example.data.remote.GtfsScheduleIndex.current == null) {
+            viewModelScope.launch {
+                repository.hydrateScheduleAndStopsFromDiskIfNeeded()
+                val currentState = _uiState.value
+                if (currentState.selectedDepartureForRouteDetail?.id == departure.id) {
+                    val stopName = currentState.selectedStop?.stopName ?: "Pôle Bosquet"
+                    val updatedDetail = repository.getRouteDetail(
+                        departure = departure,
+                        currentStopName = stopName,
+                        chosenDirection = departure.destinationName,
+                        isTerminusAtTop = true
+                    )
+                    _uiState.update { latest ->
+                        if (latest.selectedDepartureForRouteDetail?.id == departure.id) {
+                            latest.copy(selectedRouteDetail = updatedDetail)
+                        } else {
+                            latest
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1016,8 +999,7 @@ class TransitBoardViewModel(
         _uiState.update {
             it.copy(
                 selectedDepartureForRouteDetail = null,
-                selectedRouteDetail = null,
-                routeDetailChosenDirection = null
+                selectedRouteDetail = null
             )
         }
     }
@@ -1028,15 +1010,18 @@ class TransitBoardViewModel(
      */
     fun selectStopFromRouteDetail(stopName: String) {
         val canonical = IdelisRepository.getCanonicalStopName(stopName)
+        val cachedServing = IdelisRepository.globalServingsByStopName[canonical.lowercase(Locale.ROOT)]?.firstOrNull()
         val match = _uiState.value.allStops.firstOrNull {
             it.stopName.equals(stopName, ignoreCase = true) ||
                 it.stopName.equals(canonical, ignoreCase = true) ||
                 IdelisRepository.getCanonicalStopName(it.stopName).equals(canonical, ignoreCase = true)
         } ?: IdelisRepository.buildWebStop(
-            com.example.data.model.IdelisWebStop(
-                pole = canonical,
+            webStop = com.example.data.model.IdelisWebStop(
+                pole = cachedServing?.pole?.takeIf { it.isNotBlank() } ?: canonical,
                 name = stopName
-            )
+            ),
+            lat = cachedServing?.lat ?: 0.0,
+            lon = cachedServing?.lon ?: 0.0
         )
         clearSelectedRouteDetail()
         selectStop(match)
@@ -1171,10 +1156,20 @@ class TransitBoardViewModel(
                 } else {
                     reenriched
                 }
+                val refreshedRouteDetail = current.selectedDepartureForRouteDetail?.let { openDep ->
+                    val currentStopName = current.selectedStop?.stopName ?: "Pôle Bosquet"
+                    repository.getRouteDetail(
+                        departure = openDep,
+                        currentStopName = currentStopName,
+                        chosenDirection = openDep.destinationName,
+                        isTerminusAtTop = true
+                    )
+                }
                 current.copy(
                     departures = reenriched,
                     filteredDepartures = reenrichedFiltered,
                     notServedEntries = repository.reenrichNotServedEntriesWithCurrentCaches(current.notServedEntries),
+                    selectedRouteDetail = refreshedRouteDetail ?: current.selectedRouteDetail,
                     isGtfsSyncing = false,
                     gtfsSyncReport = report,
                     activePeriod = repository.getCurrentPeriod(),

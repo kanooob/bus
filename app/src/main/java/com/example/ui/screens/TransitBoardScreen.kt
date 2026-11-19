@@ -382,13 +382,11 @@ fun TransitBoardScreen(
             }
         }
 
-        // Modale affichant l'itinéraire complet et les arrêts de la ligne dans l'ordre (terminus en haut, début en bas)
+        // Modale affichant le terminus en haut et l'ensemble des arrêts de la ligne dans l'ordre
         if (uiState.selectedRouteDetail != null) {
             com.example.ui.components.RouteStopsModal(
                 routeDetail = uiState.selectedRouteDetail!!,
                 currentStopName = uiState.selectedStop?.stopName ?: "Pôle Bosquet",
-                onDirectionSelected = { newDir -> viewModel.switchRouteDetailDirection(newDir) },
-                onToggleOrder = { viewModel.toggleRouteDetailOrder() },
                 onStopSelected = { stopName -> viewModel.selectStopFromRouteDetail(stopName) },
                 onDismissRequest = { viewModel.clearSelectedRouteDetail() },
                 isDarkTheme = effectiveDarkTheme

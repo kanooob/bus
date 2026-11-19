@@ -2017,4 +2017,118 @@ class ExampleRobolectricTest {
             com.example.data.repository.IdelisRepository.globalServingsByStopName = prevServings
         }
     }
+
+    @Test
+    fun `gtfs stop_sequence orders all stops accurately for bus info modal without index 1 injection`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val baos = java.io.ByteArrayOutputStream()
+        // stop_times.txt volontairement dans le désordre pour vérifier le tri par stop_sequence
+        val zipFiles = mapOf(
+            "calendar.txt" to "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nSEM,1,1,1,1,1,1,1,20260101,20271231\n",
+            "routes.txt" to "route_id,route_short_name,route_long_name,route_color,route_text_color\n13,13,Ligne 13,009BD9,FFFFFF\n",
+            "stops.txt" to listOf(
+                "stop_id,stop_name,stop_lat,stop_lon",
+                "S1,PAU Gare de Pau Quai A,43.293,-0.369",
+                "S2,Barthou - Beaumont,43.295,-0.368",
+                "S3,Place d'Espagne - Bosquet Quai B,43.299,-0.367",
+                "S4,Alliés - Alsace Lorraine,43.303,-0.365",
+                "S5,LONS Mairie,43.314,-0.410",
+                "S6,LESCAR Soleil,43.332,-0.425"
+            ).joinToString("\n") + "\n",
+            "trips.txt" to listOf(
+                "trip_id,route_id,service_id,trip_headsign",
+                "T_SHORT,13,SEM,LESCAR Soleil",
+                "T_FULL,13,SEM,LESCAR Soleil",
+                "T_REV,13,SEM,PAU Gare de Pau"
+            ).joinToString("\n") + "\n",
+            "stop_times.txt" to listOf(
+                "trip_id,arrival_time,departure_time,stop_id,stop_sequence",
+                // Trajet complet dans le désordre dans le CSV
+                "T_FULL,10:25:00,10:25:00,S6,6",
+                "T_FULL,10:05:00,10:05:00,S2,2",
+                "T_FULL,10:15:00,10:15:00,S4,4",
+                "T_FULL,10:00:00,10:00:00,S1,1",
+                "T_FULL,10:20:00,10:20:00,S5,5",
+                "T_FULL,10:10:00,10:10:00,S3,3",
+                // Variante partielle qui saute S2
+                "T_SHORT,11:00:00,11:00:00,S1,1",
+                "T_SHORT,11:10:00,11:10:00,S3,2",
+                "T_SHORT,11:25:00,11:25:00,S6,3",
+                // Sens retour
+                "T_REV,12:00:00,12:00:00,S6,1",
+                "T_REV,12:15:00,12:15:00,S3,2",
+                "T_REV,12:30:00,12:30:00,S1,3"
+            ).joinToString("\n") + "\n"
+        )
+        java.util.zip.ZipOutputStream(baos).use { zos ->
+            for ((name, content) in zipFiles) {
+                zos.putNextEntry(java.util.zip.ZipEntry(name))
+                zos.write(content.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+        }
+
+        try {
+            val snap = com.example.data.remote.GtfsScheduleIndex.updateFromZipBytes(baos.toByteArray())
+            org.junit.Assert.assertNotNull(snap)
+
+            val repo = com.example.data.repository.RouteStopsRepository(context)
+            val dep = com.example.data.model.DepartureComparison(
+                id = "dep_13",
+                lineRef = "13",
+                lineName = "Ligne 13",
+                destinationName = "LESCAR Soleil (Quai B)",
+                routeColorHex = "009BD9",
+                routeTextColorHex = "FFFFFF",
+                aimedDepartureTimeFormatted = "10:08",
+                expectedDepartureTimeFormatted = "10:10",
+                delayMinutes = 2,
+                status = com.example.data.model.DepartureStatus.DELAYED,
+                isRealTime = true,
+                minutesUntilDeparture = 4L,
+                comparisonLabel = "10:08 -> 10:10"
+            )
+
+            // 1. L'itinéraire complet à 6 arrêts est sélectionné dans l'ordre exact (Terminus en haut, Début en bas)
+            val detail = repo.getRouteDetail(
+                departure = dep,
+                currentStopName = "Barthou - Beaumont",
+                isTerminusAtTop = true
+            )
+            assertEquals(6, detail.totalStopsCount)
+            assertEquals("Quai B", detail.quaiLabel)
+            assertEquals(4L, detail.waitMinutes)
+            assertEquals(2, detail.delayMinutes)
+            assertEquals("10:08", detail.aimedTimeFormatted)
+            assertEquals("10:10", detail.expectedTimeFormatted)
+            assertEquals(4, detail.stopsRemainingToTerminus)
+
+            // Terminus en haut (seq 6) -> Début en bas (seq 1)
+            assertEquals("LESCAR Soleil", detail.stops.first().stopName)
+            assertTrue(detail.stops.first().isTerminus)
+            assertEquals(6, detail.stops.first().sequenceIndex)
+
+            assertEquals("Gare de Pau", detail.stops.last().stopName)
+            assertTrue(detail.stops.last().isStart)
+            assertEquals(1, detail.stops.last().sequenceIndex)
+            assertTrue("Le départ déjà passé avant l'arrêt actuel doit être marqué passé", detail.stops.last().isPassedBeforeCurrent)
+
+            val currentItem = detail.stops.first { it.isCurrentStop }
+            assertEquals("Barthou - Beaumont", currentItem.stopName)
+            assertEquals(2, currentItem.sequenceIndex)
+            assertFalse(currentItem.isPassedBeforeCurrent)
+
+            // 2. Un arrêt non présent dans la liste ne doit JAMAIS être injecté artificiellement à l'index 1
+            val detailMissingStop = repo.getRouteDetail(
+                departure = dep,
+                currentStopName = "Arrêt Inexistant",
+                isTerminusAtTop = true
+            )
+            assertEquals(6, detailMissingStop.totalStopsCount)
+            assertFalse(detailMissingStop.stops.any { it.stopName == "Arrêt Inexistant" })
+            assertEquals(null, detailMissingStop.stopsRemainingToTerminus)
+        } finally {
+            com.example.data.remote.GtfsScheduleIndex.resetForTesting()
+        }
+    }
 }

@@ -10,13 +10,14 @@ data class RouteStopItem(
     val isTerminus: Boolean = false,
     val isStart: Boolean = false,
     val isCurrentStop: Boolean = false,
+    val isPassedBeforeCurrent: Boolean = false,
     val connectingLines: List<String> = emptyList(),
     val commune: String? = null
 )
 
 /**
  * Détail complet d'une ligne de bus avec l'ensemble de ses arrêts ordonnés
- * selon la direction choisie.
+ * selon la direction du bus sélectionné.
  */
 data class RouteLineDetail(
     val lineCode: String,
@@ -31,5 +32,14 @@ data class RouteLineDetail(
     val startName: String,
     val totalStopsCount: Int,
     val stops: List<RouteStopItem>, // Liste ordonnée selon isTerminusAtTop
-    val isTerminusAtTop: Boolean = true // Par défaut : Terminus en haut et Début en bas
+    val isTerminusAtTop: Boolean = true, // Par défaut : Terminus en haut et Début en bas
+    val quaiLabel: String? = null,
+    val waitMinutes: Long? = null,
+    val aimedTimeFormatted: String? = null,
+    val expectedTimeFormatted: String? = null,
+    val delayMinutes: Int = 0,
+    val departureStatus: DepartureStatus? = null,
+    val isRealTime: Boolean = true,
+    val isDelayIndeterminate: Boolean = false,
+    val stopsRemainingToTerminus: Int? = null
 )

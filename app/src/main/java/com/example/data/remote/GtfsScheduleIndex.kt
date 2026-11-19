@@ -24,13 +24,19 @@ object GtfsScheduleIndex {
     private const val TAG = "GtfsScheduleIndex"
     val PARIS_TZ: TimeZone = TimeZone.getTimeZone("Europe/Paris")
 
+    data class RouteDirectionStops(
+        val headsign: String,
+        val stopPatterns: List<List<String>>
+    )
+
     data class Snapshot(
         val dateStr: String,
         val activePeriod: IdelisPeriod,
         val worksNotes: List<String>,
         val departuresByCanonicalStop: Map<String, List<GtfsTheoreticalDeparture>>,
         val departuresByNormalizedStop: Map<String, List<GtfsTheoreticalDeparture>>,
-        val activeServiceIds: Set<String>
+        val activeServiceIds: Set<String>,
+        val routeDirectionsByLine: Map<String, List<RouteDirectionStops>> = emptyMap()
     )
 
     private data class RouteMeta(
@@ -49,7 +55,15 @@ object GtfsScheduleIndex {
     private data class TripMeta(
         val routeId: String,
         val serviceId: String,
-        val headsign: String
+        val headsign: String,
+        val isActive: Boolean,
+        val collectRouteStops: Boolean
+    )
+
+    private data class TripStopPoint(
+        val sequence: Int,
+        val rowOrder: Int,
+        val stopName: String
     )
 
     @Volatile
@@ -60,6 +74,11 @@ object GtfsScheduleIndex {
     private var cachedZipBytes: ByteArray? = null
 
     fun getCachedZipBytes(): ByteArray? = cachedZipBytes
+
+    internal fun resetForTesting() {
+        current = null
+        cachedZipBytes = null
+    }
 
     fun currentDateString(cal: Calendar = Calendar.getInstance(PARIS_TZ)): String {
         return SimpleDateFormat("yyyyMMdd", Locale.FRANCE).apply {
@@ -190,6 +209,67 @@ object GtfsScheduleIndex {
         return emptyList()
     }
 
+    fun getRouteDirectionsForLine(lineCode: String): List<RouteDirectionStops> {
+        val map = current?.routeDirectionsByLine ?: return emptyList()
+        val upper = lineCode.trim()
+            .removePrefix("Ligne ")
+            .removePrefix("ligne ")
+            .removePrefix("LIGNE ")
+            .removePrefix("Chronobus ")
+            .trim()
+            .uppercase(Locale.ROOT)
+        if (upper.isBlank()) return emptyList()
+
+        val candidates = buildList {
+            add(upper)
+            val strippedZeros = upper.trimStart('0')
+            if (strippedZeros.isNotBlank() && upper.all { it.isDigit() }) {
+                add(strippedZeros)
+            }
+            when (upper) {
+                "F", "FÉBUS", "FEBUS" -> {
+                    add("F")
+                    add("FÉBUS")
+                    add("FEBUS")
+                }
+                "COXI", "COXITIS" -> {
+                    add("COXI")
+                    add("COXITIS")
+                }
+            }
+        }.distinct()
+
+        for (key in candidates) {
+            val found = map[key]
+            if (!found.isNullOrEmpty()) return found
+        }
+        return emptyList()
+    }
+
+    private fun cleanStopNameForRouteDisplay(rawName: String): String {
+        val trimmed = rawName.trim()
+        if (trimmed.isBlank()) return trimmed
+        val lower = trimmed.lowercase(Locale.ROOT)
+        if (lower.contains("bosquet") ||
+            lower.contains("gare de pau") ||
+            lower.contains("gare sncf") ||
+            lower.contains("verdun") ||
+            lower.contains("catherine de bourbon") ||
+            lower.contains("universit") ||
+            lower.contains("cité multimédia") ||
+            lower.contains("cite multimedia") ||
+            lower.contains("hôpital") ||
+            lower.contains("hopital")
+        ) {
+            return IdelisRepository.getCanonicalStopName(trimmed)
+        }
+        val withoutQuai = trimmed
+            .replace(Regex("""(?i)\s+quai[s]?\s+[a-z0-9]+"""), "")
+            .replace(Regex("""(?i)\s+quai[s]?"""), "")
+            .trim()
+        return withoutQuai.ifBlank { trimmed }
+    }
+
     internal fun buildSnapshotFromZipBytes(
         bytes: ByteArray,
         targetCal: Calendar = Calendar.getInstance(PARIS_TZ)
@@ -228,13 +308,14 @@ object GtfsScheduleIndex {
 
             val routesMap = routesText?.let { parseRoutes(it) }.orEmpty()
             val stopsMap = stopsText?.let { parseStops(it) }.orEmpty()
-            val activeTripsMap = tripsText?.let { parseActiveTrips(it, activeServiceIds) }.orEmpty()
+            val tripsMap = tripsText?.let { parseTripsForSnapshot(it, activeServiceIds) }.orEmpty()
 
             val byCanonical = HashMap<String, MutableList<GtfsTheoreticalDeparture>>()
             val byNormalized = HashMap<String, MutableList<GtfsTheoreticalDeparture>>()
+            val tripStopPoints = HashMap<String, MutableList<TripStopPoint>>()
 
-            // Passe 2 : streaming de stop_times.txt en filtrant uniquement les trajets actifs du jour
-            if (activeTripsMap.isNotEmpty() && stopsMap.isNotEmpty()) {
+            // Passe 2 : streaming de stop_times.txt (horaires du jour + séquences complètes d'arrêts par trajet)
+            if (tripsMap.isNotEmpty() && stopsMap.isNotEmpty()) {
                 ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
                     var entry = zis.nextEntry
                     while (entry != null) {
@@ -247,40 +328,54 @@ object GtfsScheduleIndex {
                             val arrIdx = headers.indexOf("arrival_time")
                             val depIdx = headers.indexOf("departure_time")
                             val stopIdx = headers.indexOf("stop_id")
+                            val seqIdx = headers.indexOf("stop_sequence")
 
                             if (tripIdx >= 0 && stopIdx >= 0) {
+                                var rowOrder = 0
                                 var line = reader.readLine()
                                 while (line != null) {
                                     if (line.isNotBlank()) {
                                         val parts = parseCsvLine(line)
                                         if (parts.size > maxOf(tripIdx, stopIdx)) {
                                             val tripId = parts[tripIdx].trim()
-                                            val trip = activeTripsMap[tripId]
+                                            val trip = tripsMap[tripId]
                                             if (trip != null) {
                                                 val stopId = parts[stopIdx].trim()
                                                 val stopMeta = stopsMap[stopId]
                                                 if (stopMeta != null) {
-                                                    val rawDep = when {
-                                                        depIdx in parts.indices && parts[depIdx].isNotBlank() -> parts[depIdx].trim()
-                                                        arrIdx in parts.indices && parts[arrIdx].isNotBlank() -> parts[arrIdx].trim()
-                                                        else -> ""
+                                                    if (trip.collectRouteStops) {
+                                                        val seq = if (seqIdx in parts.indices) {
+                                                            parts[seqIdx].trim().toIntOrNull() ?: Int.MAX_VALUE
+                                                        } else {
+                                                            Int.MAX_VALUE
+                                                        }
+                                                        tripStopPoints
+                                                            .getOrPut(tripId) { ArrayList(24) }
+                                                            .add(TripStopPoint(seq, rowOrder++, stopMeta.stopName))
                                                     }
-                                                    if (rawDep.isNotBlank()) {
-                                                        val routeMeta = routesMap[trip.routeId]
-                                                        val dep = GtfsTheoreticalDeparture(
-                                                            stopId = stopId,
-                                                            stopName = stopMeta.stopName,
-                                                            routeId = trip.routeId,
-                                                            routeShortName = routeMeta?.shortName ?: trip.routeId,
-                                                            routeLongName = routeMeta?.longName ?: "Ligne ${trip.routeId}",
-                                                            routeColor = routeMeta?.colorHex ?: "009BD9",
-                                                            routeTextColor = routeMeta?.textColorHex ?: "FFFFFF",
-                                                            tripHeadsign = trip.headsign,
-                                                            departureTime = rawDep
-                                                        )
-                                                        byCanonical.getOrPut(stopMeta.canonicalLower) { mutableListOf() }.add(dep)
-                                                        if (stopMeta.normalizedKey.isNotBlank()) {
-                                                            byNormalized.getOrPut(stopMeta.normalizedKey) { mutableListOf() }.add(dep)
+                                                    if (trip.isActive) {
+                                                        val rawDep = when {
+                                                            depIdx in parts.indices && parts[depIdx].isNotBlank() -> parts[depIdx].trim()
+                                                            arrIdx in parts.indices && parts[arrIdx].isNotBlank() -> parts[arrIdx].trim()
+                                                            else -> ""
+                                                        }
+                                                        if (rawDep.isNotBlank()) {
+                                                            val routeMeta = routesMap[trip.routeId]
+                                                            val dep = GtfsTheoreticalDeparture(
+                                                                stopId = stopId,
+                                                                stopName = stopMeta.stopName,
+                                                                routeId = trip.routeId,
+                                                                routeShortName = routeMeta?.shortName ?: trip.routeId,
+                                                                routeLongName = routeMeta?.longName ?: "Ligne ${trip.routeId}",
+                                                                routeColor = routeMeta?.colorHex ?: "009BD9",
+                                                                routeTextColor = routeMeta?.textColorHex ?: "FFFFFF",
+                                                                tripHeadsign = trip.headsign,
+                                                                departureTime = rawDep
+                                                            )
+                                                            byCanonical.getOrPut(stopMeta.canonicalLower) { mutableListOf() }.add(dep)
+                                                            if (stopMeta.normalizedKey.isNotBlank()) {
+                                                                byNormalized.getOrPut(stopMeta.normalizedKey) { mutableListOf() }.add(dep)
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -298,12 +393,18 @@ object GtfsScheduleIndex {
                 }
             }
 
+            val routeDirectionsByLine = buildRouteDirectionsByLine(
+                tripsMap = tripsMap,
+                routesMap = routesMap,
+                tripStopPoints = tripStopPoints
+            )
+
             val todayStr = currentDateString(targetCal)
             Log.d(
                 TAG,
                 "Index GTFS prêt pour $todayStr (${activePeriod.label}) : " +
-                    "${activeServiceIds.size} services actifs, ${activeTripsMap.size} trajets, " +
-                    "${byCanonical.size} arrêts indexés"
+                    "${activeServiceIds.size} services actifs, ${tripsMap.size} trajets, " +
+                    "${byCanonical.size} arrêts indexés, ${routeDirectionsByLine.size} lignes ordonnées"
             )
 
             Snapshot(
@@ -312,12 +413,97 @@ object GtfsScheduleIndex {
                 worksNotes = worksNotes,
                 departuresByCanonicalStop = byCanonical,
                 departuresByNormalizedStop = byNormalized,
-                activeServiceIds = activeServiceIds
+                activeServiceIds = activeServiceIds,
+                routeDirectionsByLine = routeDirectionsByLine
             )
         } catch (e: Exception) {
             Log.w(TAG, "Erreur indexation GTFS : ${e.message}")
             null
         }
+    }
+
+    private fun buildRouteDirectionsByLine(
+        tripsMap: Map<String, TripMeta>,
+        routesMap: Map<String, RouteMeta>,
+        tripStopPoints: Map<String, List<TripStopPoint>>
+    ): Map<String, List<RouteDirectionStops>> {
+        if (tripStopPoints.isEmpty()) return emptyMap()
+
+        // Regrouper par (code ligne majuscule, headsign normalisé)
+        val grouped = HashMap<String, MutableMap<String, MutableList<List<String>>>>()
+        val displayHeadsigns = HashMap<String, String>()
+
+        for ((tripId, points) in tripStopPoints) {
+            if (points.isEmpty()) continue
+            val trip = tripsMap[tripId] ?: continue
+            val sorted = points.sortedWith(compareBy<TripStopPoint>({ it.sequence }, { it.rowOrder }))
+
+            val orderedClean = ArrayList<String>(sorted.size)
+            var prevCanon: String? = null
+            for (pt in sorted) {
+                val cleaned = cleanStopNameForRouteDisplay(pt.stopName)
+                val canon = IdelisRepository.getCanonicalStopName(cleaned).lowercase(Locale.ROOT)
+                if (canon != prevCanon) {
+                    orderedClean.add(cleaned)
+                    prevCanon = canon
+                }
+            }
+            if (orderedClean.isEmpty()) continue
+
+            val rawShort = routesMap[trip.routeId]?.shortName ?: trip.routeId
+            val lineKey = rawShort.trim()
+                .removePrefix("Ligne ")
+                .removePrefix("ligne ")
+                .removePrefix("LIGNE ")
+                .removePrefix("Chronobus ")
+                .trim()
+                .uppercase(Locale.ROOT)
+            if (lineKey.isBlank()) continue
+
+            val headsign = trip.headsign.trim().ifBlank { orderedClean.last() }
+            val dirNormKey = "${lineKey}|${headsign.lowercase(Locale.ROOT)}"
+            displayHeadsigns.putIfAbsent(dirNormKey, headsign)
+
+            val dirMap = grouped.getOrPut(lineKey) { LinkedHashMap() }
+            dirMap.getOrPut(dirNormKey) { mutableListOf() }.add(orderedClean)
+        }
+
+        val result = HashMap<String, List<RouteDirectionStops>>()
+        for ((lineKey, dirMap) in grouped) {
+            val dirList = dirMap.entries.mapNotNull { (dirNormKey, rawPatterns) ->
+                val headsign = displayHeadsigns[dirNormKey] ?: return@mapNotNull null
+                // Dédupliquer les tracés identiques et garder les plus complets en premier
+                val uniquePatterns = LinkedHashMap<String, List<String>>()
+                for (pattern in rawPatterns) {
+                    val signature = pattern.joinToString("|") {
+                        IdelisRepository.getCanonicalStopName(it).lowercase(Locale.ROOT)
+                    }
+                    val existing = uniquePatterns[signature]
+                    if (existing == null || pattern.size > existing.size) {
+                        uniquePatterns[signature] = pattern
+                    }
+                }
+                val sortedPatterns = uniquePatterns.values
+                    .sortedByDescending { it.size }
+                    .take(8)
+                RouteDirectionStops(
+                    headsign = headsign,
+                    stopPatterns = sortedPatterns
+                )
+            }
+            if (dirList.isNotEmpty()) {
+                result[lineKey] = dirList
+                val strippedZeros = lineKey.trimStart('0')
+                if (strippedZeros.isNotBlank() && strippedZeros != lineKey && lineKey.all { it.isDigit() }) {
+                    result.putIfAbsent(strippedZeros, dirList)
+                }
+                when (lineKey) {
+                    "FÉBUS", "FEBUS" -> result.putIfAbsent("F", dirList)
+                    "COXITIS" -> result.putIfAbsent("COXI", dirList)
+                }
+            }
+        }
+        return result
     }
 
     internal data class ResolvedCalendar(
@@ -558,7 +744,7 @@ object GtfsScheduleIndex {
         return map
     }
 
-    private fun parseActiveTrips(
+    private fun parseTripsForSnapshot(
         content: String,
         activeServiceIds: Set<String>
     ): Map<String, TripMeta> {
@@ -571,8 +757,18 @@ object GtfsScheduleIndex {
         val headsignIdx = headers.indexOf("trip_headsign")
         if (tripIdIdx < 0 || routeIdIdx < 0) return emptyMap()
 
-        val map = HashMap<String, TripMeta>()
+        data class RawTrip(
+            val tripId: String,
+            val routeId: String,
+            val serviceId: String,
+            val headsign: String,
+            val isActive: Boolean
+        )
+
+        val rawTrips = ArrayList<RawTrip>(1024)
+        val activeRouteHeadsigns = HashSet<String>()
         val filterByService = activeServiceIds.isNotEmpty()
+
         while (lines.hasNext()) {
             val line = lines.next()
             if (line.isBlank()) continue
@@ -582,9 +778,33 @@ object GtfsScheduleIndex {
             val serviceId = parts.getOrNull(serviceIdIdx)?.trim().orEmpty()
             val headsign = parts.getOrNull(headsignIdx)?.trim().orEmpty()
             if (tripId.isNotBlank() && routeId.isNotBlank()) {
-                if (!filterByService || serviceId in activeServiceIds) {
-                    map[tripId] = TripMeta(routeId, serviceId, headsign)
+                val isActive = !filterByService || serviceId in activeServiceIds
+                if (isActive) {
+                    activeRouteHeadsigns.add("$routeId|${headsign.lowercase(Locale.ROOT)}")
                 }
+                rawTrips.add(RawTrip(tripId, routeId, serviceId, headsign, isActive))
+            }
+        }
+
+        val map = HashMap<String, TripMeta>(rawTrips.size)
+        val inactiveSampled = HashSet<String>()
+        for (rt in rawTrips) {
+            val routeHeadKey = "${rt.routeId}|${rt.headsign.lowercase(Locale.ROOT)}"
+            val collectStops = if (rt.isActive) {
+                true
+            } else if (routeHeadKey !in activeRouteHeadsigns && inactiveSampled.add(routeHeadKey)) {
+                true
+            } else {
+                false
+            }
+            if (rt.isActive || collectStops) {
+                map[rt.tripId] = TripMeta(
+                    routeId = rt.routeId,
+                    serviceId = rt.serviceId,
+                    headsign = rt.headsign,
+                    isActive = rt.isActive,
+                    collectRouteStops = collectStops
+                )
             }
         }
         return map
