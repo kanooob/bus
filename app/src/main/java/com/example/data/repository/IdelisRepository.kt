@@ -331,13 +331,15 @@ class IdelisRepository(
         departure: DepartureComparison,
         currentStopName: String,
         chosenDirection: String? = null,
-        isTerminusAtTop: Boolean = true
+        isTerminusAtTop: Boolean = true,
+        isLoadingStops: Boolean = false
     ): com.example.data.model.RouteLineDetail {
         return routeStopsRepository.getRouteDetail(
             departure = departure,
             currentStopName = currentStopName,
             chosenDirection = chosenDirection,
-            isTerminusAtTop = isTerminusAtTop
+            isTerminusAtTop = isTerminusAtTop,
+            isLoadingStops = isLoadingStops
         )
     }
 

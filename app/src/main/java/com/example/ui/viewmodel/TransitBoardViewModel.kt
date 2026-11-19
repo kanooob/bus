@@ -188,6 +188,7 @@ class TransitBoardViewModel(
     private var downloadDataJob: Job? = null
     private var gtfsSyncJob: Job? = null
     private var usageStatsPingJob: Job? = null
+    private var routeDetailLoadJob: Job? = null
 
     @Volatile
     private var initialDeparturesRequested: Boolean = false
@@ -289,11 +290,13 @@ class TransitBoardViewModel(
                 }
                 val refreshedRouteDetail = current.selectedDepartureForRouteDetail?.let { openDep ->
                     val currentStopName = current.selectedStop?.stopName ?: "Pôle Bosquet"
+                    val gtfsStillPending = shouldSyncGtfsNow && com.example.data.remote.GtfsScheduleIndex.current == null
                     repository.getRouteDetail(
                         departure = openDep,
                         currentStopName = currentStopName,
                         chosenDirection = openDep.destinationName,
-                        isTerminusAtTop = true
+                        isTerminusAtTop = true,
+                        isLoadingStops = gtfsStillPending
                     )
                 }
                 current.copy(
@@ -955,39 +958,67 @@ class TransitBoardViewModel(
      * Affiche le terminus fixe en haut et tous les arrêts dans l'ordre jusqu'au départ en bas.
      */
     fun selectDepartureForRouteDetail(departure: DepartureComparison) {
+        routeDetailLoadJob?.cancel()
         val currentStop = _uiState.value.selectedStop?.stopName ?: "Pôle Bosquet"
-        val detail = repository.getRouteDetail(
+        val needsHydrateOrFetch = com.example.data.remote.GtfsScheduleIndex.current == null ||
+            IdelisRepository.globalDownloadedStopsCache.isEmpty()
+
+        val initialDetail = repository.getRouteDetail(
             departure = departure,
             currentStopName = currentStop,
             chosenDirection = departure.destinationName,
-            isTerminusAtTop = true
+            isTerminusAtTop = true,
+            isLoadingStops = needsHydrateOrFetch
         )
         _uiState.update {
             it.copy(
                 selectedDepartureForRouteDetail = departure,
-                selectedRouteDetail = detail
+                selectedRouteDetail = initialDetail
             )
         }
-        if (com.example.data.remote.GtfsScheduleIndex.current == null) {
-            viewModelScope.launch {
-                repository.hydrateScheduleAndStopsFromDiskIfNeeded()
-                val currentState = _uiState.value
-                if (currentState.selectedDepartureForRouteDetail?.id == departure.id) {
-                    val stopName = currentState.selectedStop?.stopName ?: "Pôle Bosquet"
-                    val updatedDetail = repository.getRouteDetail(
+
+        if (needsHydrateOrFetch) {
+            routeDetailLoadJob = viewModelScope.launch {
+                fun updateModalIfStillOpen(stillLoading: Boolean) {
+                    val stateNow = _uiState.value
+                    if (stateNow.selectedDepartureForRouteDetail?.id != departure.id) return
+                    val stopName = stateNow.selectedStop?.stopName ?: "Pôle Bosquet"
+                    val updated = repository.getRouteDetail(
                         departure = departure,
                         currentStopName = stopName,
                         chosenDirection = departure.destinationName,
-                        isTerminusAtTop = true
+                        isTerminusAtTop = true,
+                        isLoadingStops = stillLoading
                     )
                     _uiState.update { latest ->
                         if (latest.selectedDepartureForRouteDetail?.id == departure.id) {
-                            latest.copy(selectedRouteDetail = updatedDetail)
+                            latest.copy(selectedRouteDetail = updated)
                         } else {
                             latest
                         }
                     }
                 }
+
+                // 1. Hydrater depuis le disque (rapide)
+                repository.hydrateCachesFromDiskIfNeeded()
+                updateModalIfStillOpen(
+                    stillLoading = com.example.data.remote.GtfsScheduleIndex.current == null ||
+                        IdelisRepository.globalDownloadedStopsCache.isEmpty()
+                )
+
+                // 2. Télécharger les arrêts OpenDataSoft si absents (contient toutes les lignes et arrêts)
+                if (IdelisRepository.globalDownloadedStopsCache.isEmpty()) {
+                    repository.ensureStopsCacheLoaded(forceRefresh = true)
+                    repository.ensureOfficialRoutesLoaded(forceRefresh = false)
+                    updateModalIfStillOpen(stillLoading = com.example.data.remote.GtfsScheduleIndex.current == null)
+                }
+
+                // 3. Télécharger / indexer le GTFS ZIP si encore absent (ordre stop_sequence exact)
+                if (com.example.data.remote.GtfsScheduleIndex.current == null) {
+                    repository.downloadOpenDataOnLaunch(forceRefresh = false, skipGtfsZip = false)
+                }
+
+                updateModalIfStillOpen(stillLoading = false)
             }
         }
     }
@@ -996,6 +1027,7 @@ class TransitBoardViewModel(
      * Ferme la modale du détail des arrêts de la ligne.
      */
     fun clearSelectedRouteDetail() {
+        routeDetailLoadJob?.cancel()
         _uiState.update {
             it.copy(
                 selectedDepartureForRouteDetail = null,
@@ -1575,6 +1607,7 @@ class TransitBoardViewModel(
         downloadDataJob?.cancel()
         gtfsSyncJob?.cancel()
         usageStatsPingJob?.cancel()
+        routeDetailLoadJob?.cancel()
     }
 }
 

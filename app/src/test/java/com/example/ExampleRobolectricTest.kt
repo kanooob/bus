@@ -2131,4 +2131,139 @@ class ExampleRobolectricTest {
             com.example.data.remote.GtfsScheduleIndex.resetForTesting()
         }
     }
+
+    @Test
+    fun `line aliases inactive gtfs trips opendata cache and empty state behave accurately`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prevStopsCache = com.example.data.repository.IdelisRepository.globalDownloadedStopsCache
+        val prevServings = com.example.data.repository.IdelisRepository.globalServingsByStopName
+
+        try {
+            // 1. Tester une ligne absente des stubs statiques avec GTFS vide et cache OpenData vide :
+            //    Ne doit JAMAIS inventer de faux arrêts "Départ de la ligne / Pôle Bosquet / Terminus Principal"
+            com.example.data.remote.GtfsScheduleIndex.resetForTesting()
+            com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = emptyList()
+            val repo = com.example.data.repository.RouteStopsRepository(context)
+
+            val depLine15 = com.example.data.model.DepartureComparison(
+                id = "dep_15",
+                lineRef = "Ligne 15",
+                lineName = "Ligne 15",
+                destinationName = "PAU Cité Multimédia",
+                routeColorHex = "1565C0",
+                routeTextColorHex = "FFFFFF",
+                aimedDepartureTimeFormatted = "11:00",
+                expectedDepartureTimeFormatted = "11:00",
+                delayMinutes = 0,
+                status = com.example.data.model.DepartureStatus.ON_TIME,
+                isRealTime = true,
+                minutesUntilDeparture = 5L,
+                comparisonLabel = "11:00"
+            )
+            val emptyLoadingDetail = repo.getRouteDetail(
+                departure = depLine15,
+                currentStopName = "Université",
+                isLoadingStops = true
+            )
+            assertTrue("Aucun arrêt fictif ne doit être injecté", emptyLoadingDetail.stops.isEmpty())
+            assertEquals(0, emptyLoadingDetail.totalStopsCount)
+            assertTrue(emptyLoadingDetail.isLoadingStops)
+            assertEquals("PAU Cité Multimédia", emptyLoadingDetail.terminusName)
+            assertEquals("", emptyLoadingDetail.startName)
+
+            // 2. Tester le cache OpenData complet :
+            //    - Ligne 5 (stub statique tronqué à 6 arrêts) -> doit utiliser les 9 arrêts réels du cache OpenData
+            //    - Même avec code ligne "05" et un libellé de direction ne matchant pas littéralement un nom d'arrêt
+            val line5Stops = listOf(
+                com.example.data.remote.StopServing(1, "Place de Verdun", "Verdun", "05", "Vers L'Arriou", 1, "Pau", 43.2980, -0.3760),
+                com.example.data.remote.StopServing(2, "Pôle Bosquet", "Bosquet", "05", "Vers L'Arriou", 1, "Pau", 43.2970, -0.3690),
+                com.example.data.remote.StopServing(3, "Gare de Pau", "Gare", "05", "Vers L'Arriou", 1, "Pau", 43.2920, -0.3690),
+                com.example.data.remote.StopServing(4, "Pont d'Oly", "Pont d'Oly", "05", "Vers L'Arriou", 1, "Gelos", 43.2850, -0.3680),
+                com.example.data.remote.StopServing(5, "Mazères Mairie", "Mazères", "05", "Vers L'Arriou", 1, "Mazères", 43.2790, -0.3580),
+                com.example.data.remote.StopServing(6, "Allées d'Aragon", "Aragon", "05", "Vers L'Arriou", 1, "Mazères", 43.2750, -0.3540),
+                com.example.data.remote.StopServing(7, "L'Arriou", "L'Arriou", "05", "Vers L'Arriou", 1, "Mazères-Lezons", 43.2710, -0.3500)
+            )
+            // Ordre volontairement mélangé dans le cache JSON
+            com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = line5Stops.reversed()
+
+            val depLine5 = depLine15.copy(
+                id = "dep_5",
+                lineRef = "5",
+                lineName = "Ligne 5",
+                destinationName = "MAZERES-LEZONS L'Arriou"
+            )
+            val openDataDetail = repo.getRouteDetail(
+                departure = depLine5,
+                currentStopName = "Pôle Bosquet",
+                isTerminusAtTop = true,
+                isLoadingStops = false
+            )
+            assertEquals(7, openDataDetail.totalStopsCount)
+            assertEquals("L'Arriou", openDataDetail.stops.first().stopName)
+            assertEquals("Place de Verdun", openDataDetail.stops.last().stopName)
+
+            // 3. Tester GTFS avec service INACTIF ce jour-là, headsign vide + direction_id 0/1,
+            //    et correspondance par alias ("L05" vs "5", "FEBUS" vs "F")
+            val baos = java.io.ByteArrayOutputStream()
+            val zipFiles = mapOf(
+                // Période expirée (service inactif aujourd'hui -> test de la collecte inactive multi-trajets)
+                "calendar.txt" to "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nPAST,1,1,1,1,1,1,1,20200101,20200131\n",
+                "routes.txt" to listOf(
+                    "route_id,route_short_name,route_long_name,route_color,route_text_color",
+                    "R14,L14,Ligne 14,43A047,FFFFFF"
+                ).joinToString("\n") + "\n",
+                "stops.txt" to listOf(
+                    "stop_id,stop_name,stop_lat,stop_lon",
+                    "A1,PAU Bosquet Quai D,43.297,-0.369",
+                    "A2,Stade Tissié,43.293,-0.365",
+                    "A3,Trespoey,43.295,-0.355",
+                    "A4,IDRON Mairie,43.291,-0.320"
+                ).joinToString("\n") + "\n",
+                "trips.txt" to listOf(
+                    "trip_id,route_id,service_id,trip_headsign,direction_id",
+                    "TR_14_0,R14,PAST,,0",
+                    "TR_14_1,R14,PAST,,1"
+                ).joinToString("\n") + "\n",
+                "stop_times.txt" to listOf(
+                    "trip_id,arrival_time,departure_time,stop_id,stop_sequence",
+                    "TR_14_0,08:00:00,08:00:00,A1,1",
+                    "TR_14_0,08:05:00,08:05:00,A2,2",
+                    "TR_14_0,08:10:00,08:10:00,A3,3",
+                    "TR_14_0,08:18:00,08:18:00,A4,4",
+                    "TR_14_1,09:00:00,09:00:00,A4,1",
+                    "TR_14_1,09:08:00,09:08:00,A3,2",
+                    "TR_14_1,09:13:00,09:13:00,A2,3",
+                    "TR_14_1,09:18:00,09:18:00,A1,4"
+                ).joinToString("\n") + "\n"
+            )
+            java.util.zip.ZipOutputStream(baos).use { zos ->
+                for ((name, content) in zipFiles) {
+                    zos.putNextEntry(java.util.zip.ZipEntry(name))
+                    zos.write(content.toByteArray(Charsets.UTF_8))
+                    zos.closeEntry()
+                }
+            }
+            com.example.data.remote.GtfsScheduleIndex.updateFromZipBytes(baos.toByteArray())
+
+            val dep14 = depLine15.copy(
+                id = "dep_14",
+                lineRef = "14",
+                lineName = "Ligne 14",
+                destinationName = "IDRON Mairie"
+            )
+            val detail14 = repo.getRouteDetail(
+                departure = dep14,
+                currentStopName = "Stade Tissié",
+                isTerminusAtTop = true
+            )
+            assertEquals(4, detail14.totalStopsCount)
+            assertEquals("IDRON Mairie", detail14.stops.first().stopName)
+            assertEquals("Pôle Bosquet", detail14.stops.last().stopName)
+            assertTrue(detail14.stops.any { it.isCurrentStop && it.stopName == "Stade Tissié" })
+        } finally {
+            com.example.data.remote.GtfsScheduleIndex.resetForTesting()
+            com.example.data.repository.IdelisRepository.globalDownloadedStopsCache = prevStopsCache
+            com.example.data.repository.IdelisRepository.globalServingsByStopName = prevServings
+        }
+    }
 }

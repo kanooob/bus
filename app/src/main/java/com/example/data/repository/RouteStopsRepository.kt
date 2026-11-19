@@ -204,7 +204,8 @@ class RouteStopsRepository(
         departure: DepartureComparison,
         currentStopName: String,
         chosenDirection: String? = null,
-        isTerminusAtTop: Boolean = true
+        isTerminusAtTop: Boolean = true,
+        isLoadingStops: Boolean = false
     ): RouteLineDetail {
         val cleanLineCode = cleanLineRef(departure.lineRef)
         val rawTargetDirection = chosenDirection?.takeIf { it.isNotBlank() } ?: departure.destinationName
@@ -236,45 +237,71 @@ class RouteStopsRepository(
             }
         }
 
-        // 2. Repli : référentiel officiel embarqué (si GTFS non encore téléchargé ou incomplet)
+        // 2. Priorité 2 : référentiel complet OpenDataSoft (tous les arrêts réels par ligne/sens)
+        //    avant les extraits statiques partiels (`OFFICIAL_NETWORK_STOPS`).
+        // 3. Priorité 3 : référentiel officiel embarqué (repli si OpenData et GTFS absents ou partiels).
         if (chronologicalStops.isEmpty()) {
-            val staticDirections = OFFICIAL_NETWORK_STOPS[cleanLineCode.uppercase(Locale.ROOT)]
-                ?: OFFICIAL_NETWORK_STOPS.entries.firstOrNull { it.key.equals(cleanLineCode, ignoreCase = true) }?.value
+            val cacheDirections = dynamicDirectionsFromCache(cleanLineCode, currentStopName)
+            val staticDirections = resolveStaticDirections(cleanLineCode)
 
-            val resolvedDirections = staticDirections ?: dynamicDirectionsFromCache(cleanLineCode)
-            availableDirections = resolvedDirections.keys.toList()
-            activeDirection = when {
-                resolvedDirections.containsKey(cleanTargetDirection) -> cleanTargetDirection
-                cleanTargetDirection.isNotBlank() -> findBestMatchingDirection(cleanTargetDirection, availableDirections)
-                else -> availableDirections.firstOrNull() ?: cleanTargetDirection
-            }
-            chronologicalStops = resolvedDirections[activeDirection].orEmpty()
-            if (chronologicalStops.isEmpty()) {
-                chronologicalStops = dynamicStopsFromCache(cleanLineCode, activeDirection)
+            val (cacheDirName, cacheStops) = pickBestDirectionAndStops(
+                directionsMap = cacheDirections,
+                targetDirection = cleanTargetDirection,
+                currentStopName = currentStopName
+            )
+            val (staticDirName, staticStops) = pickBestDirectionAndStops(
+                directionsMap = staticDirections,
+                targetDirection = cleanTargetDirection,
+                currentStopName = currentStopName
+            )
+
+            val useCache = cacheStops.size >= 2 && cacheStops.size >= staticStops.size
+            val chosenMap = if (useCache) cacheDirections else staticDirections
+            val chosenDir = if (useCache) cacheDirName else staticDirName
+            val chosenStops = if (useCache) cacheStops else staticStops
+
+            if (chosenStops.isNotEmpty()) {
+                availableDirections = chosenMap.keys.toList()
+                activeDirection = chosenDir.ifBlank { cleanTargetDirection }
+                chronologicalStops = chosenStops
             }
         }
 
-        // 3. Recherche exacte/floue de l'arrêt actuel dans l'ordre réel (sans jamais injecter à l'index 1)
+        // 4. Recherche exacte/floue de l'arrêt actuel dans l'ordre réel (sans jamais injecter à l'index 1)
         val currentIdx = findBestMatchingStopIndex(chronologicalStops, currentStopName)
 
-        val startStopName = chronologicalStops.firstOrNull() ?: "Départ de la ligne"
-        val terminusStopName = chronologicalStops.lastOrNull() ?: activeDirection.ifBlank { cleanTargetDirection }
-        val stopsRemaining = if (currentIdx >= 0) {
+        val formattedLineLabel = when {
+            cleanLineCode.equals("F", ignoreCase = true) -> "Fébus"
+            cleanLineCode.equals("COXI", ignoreCase = true) -> "Coxitis"
+            cleanLineCode.startsWith("T", ignoreCase = true) && cleanLineCode.drop(1).all { it.isDigit() } ->
+                "Chronobus $cleanLineCode"
+            cleanLineCode.startsWith("Ligne", ignoreCase = true) -> cleanLineCode
+            cleanLineCode.isNotBlank() -> "Ligne $cleanLineCode"
+            else -> departure.lineName.ifBlank { "Ligne de bus" }
+        }
+
+        val startStopName = chronologicalStops.firstOrNull() ?: ""
+        val terminusStopName = chronologicalStops.lastOrNull()
+            ?: cleanTargetDirection.ifBlank { activeDirection.ifBlank { formattedLineLabel } }
+        val stopsRemaining = if (chronologicalStops.isNotEmpty() && currentIdx >= 0) {
             (chronologicalStops.lastIndex - currentIdx).coerceAtLeast(0)
         } else {
             null
         }
 
-        // 4. Correspondances & communes par arrêt
+        // 5. Correspondances & communes par arrêt
         val servingsByStop = IdelisRepository.globalServingsByStopName
 
-        // 5. Construction des RouteStopItem dans l'ordre chronologique officiel (1 = début .. N = terminus)
+        // 6. Construction des RouteStopItem dans l'ordre chronologique officiel (1 = début .. N = terminus)
         val itemsInTravelOrder = chronologicalStops.mapIndexed { index, stopName ->
             val canon = IdelisRepository.getCanonicalStopName(stopName)
             val stopServings = servingsByStop[canon.lowercase(Locale.ROOT)]
+            val lineAliases = GtfsScheduleIndex.buildLineCodeAliases(cleanLineCode).toSet()
             val connections = stopServings
-                ?.map { it.lineRef.uppercase(Locale.ROOT) }
-                ?.filter { it != cleanLineCode.uppercase(Locale.ROOT) }
+                ?.map { cleanLineRef(it.lineRef).uppercase(Locale.ROOT) }
+                ?.filter { conn ->
+                    conn.isNotBlank() && GtfsScheduleIndex.buildLineCodeAliases(conn).none { it in lineAliases }
+                }
                 ?.distinct()
                 ?.sorted()
                 ?: emptyList()
@@ -293,19 +320,11 @@ class RouteStopsRepository(
             )
         }
 
-        // 6. Terminus en haut et Début en bas par défaut
+        // 7. Terminus en haut et Début en bas par défaut
         val finalOrderedStops = if (isTerminusAtTop) {
             itemsInTravelOrder.asReversed()
         } else {
             itemsInTravelOrder
-        }
-
-        val formattedLineLabel = when {
-            cleanLineCode.equals("F", ignoreCase = true) -> "Fébus"
-            cleanLineCode.equals("COXI", ignoreCase = true) -> "Coxitis"
-            cleanLineCode.startsWith("T", ignoreCase = true) -> "Chronobus $cleanLineCode"
-            cleanLineCode.startsWith("Ligne", ignoreCase = true) -> cleanLineCode
-            else -> "Ligne $cleanLineCode"
         }
 
         return RouteLineDetail(
@@ -330,8 +349,47 @@ class RouteStopsRepository(
             departureStatus = departure.status,
             isRealTime = departure.isRealTime,
             isDelayIndeterminate = departure.isDelayIndeterminate,
-            stopsRemainingToTerminus = stopsRemaining
+            stopsRemainingToTerminus = stopsRemaining,
+            isLoadingStops = isLoadingStops && chronologicalStops.isEmpty()
         )
+    }
+
+    private fun resolveStaticDirections(cleanLineCode: String): Map<String, List<String>> {
+        val aliases = GtfsScheduleIndex.buildLineCodeAliases(cleanLineCode)
+        for (alias in aliases) {
+            OFFICIAL_NETWORK_STOPS[alias]?.let { return it }
+            OFFICIAL_NETWORK_STOPS.entries.firstOrNull { it.key.equals(alias, ignoreCase = true) }?.value?.let {
+                return it
+            }
+        }
+        return emptyMap()
+    }
+
+    private fun pickBestDirectionAndStops(
+        directionsMap: Map<String, List<String>>,
+        targetDirection: String,
+        currentStopName: String
+    ): Pair<String, List<String>> {
+        if (directionsMap.isEmpty()) return "" to emptyList()
+        if (targetDirection.isNotBlank()) {
+            directionsMap.entries.firstOrNull { it.key.equals(targetDirection, ignoreCase = true) }?.let {
+                if (it.value.isNotEmpty()) return it.key to it.value
+            }
+            val bestEntry = directionsMap.entries.maxByOrNull { (dir, stops) ->
+                val dirScore = directionMatchScore(targetDirection, dir) * 100
+                val termScore = stops.lastOrNull()?.let { directionMatchScore(targetDirection, it) * 90 } ?: 0
+                val currentBonus = if (findBestMatchingStopIndex(stops, currentStopName) >= 0) 40 else 0
+                maxOf(dirScore, termScore) + currentBonus + stops.size.coerceAtMost(39)
+            }
+            if (bestEntry != null && bestEntry.value.isNotEmpty()) {
+                return bestEntry.key to bestEntry.value
+            }
+        }
+        val withCurrent = directionsMap.entries.firstOrNull { (_, stops) ->
+            findBestMatchingStopIndex(stops, currentStopName) >= 0 && stops.isNotEmpty()
+        }
+        val fallback = withCurrent ?: directionsMap.entries.maxByOrNull { it.value.size }
+        return if (fallback != null) fallback.key to fallback.value else "" to emptyList()
     }
 
     private fun selectBestGtfsDirection(
@@ -426,30 +484,50 @@ class RouteStopsRepository(
         return if (bestScore > 0) bestIdx else -1
     }
 
-    private fun dynamicDirectionsFromCache(lineCode: String): Map<String, List<String>> {
+    private fun matchesLineCode(candidateLine: String, targetCleanCode: String): Boolean {
+        val targetAliases = GtfsScheduleIndex.buildLineCodeAliases(targetCleanCode)
+        if (targetAliases.isEmpty()) return false
+        val targetSet = targetAliases.toSet()
+        return GtfsScheduleIndex.buildLineCodeAliases(candidateLine).any { it in targetSet }
+    }
+
+    private fun dynamicDirectionsFromCache(
+        lineCode: String,
+        currentStopName: String = ""
+    ): Map<String, List<String>> {
         val cache = IdelisRepository.globalDownloadedStopsCache
-        if (cache.isNotEmpty()) {
-            val lineServings = cache.filter { it.lineRef.equals(lineCode, ignoreCase = true) }
-            if (lineServings.isNotEmpty()) {
-                val grouped = lineServings.groupBy { it.direction }
-                val result = LinkedHashMap<String, List<String>>()
-                for ((dir, servings) in grouped) {
-                    val orderedNames = orderServingsGeographicallyTowardTerminus(servings, dir)
-                    if (orderedNames.isNotEmpty()) {
-                        result[dir] = orderedNames
-                    }
-                }
-                if (result.isNotEmpty()) return result
+        if (cache.isEmpty()) return emptyMap()
+
+        val lineServings = cache.filter { matchesLineCode(it.lineRef, lineCode) }
+        if (lineServings.isEmpty()) return emptyMap()
+
+        // Regrouper par sens normalisé pour fusionner d'éventuelles variations mineures d'intitulé
+        val grouped = lineServings.groupBy { s ->
+            val cleanDir = stripQuaiSuffix(s.direction)
+            val normDir = IdelisRepository.normalizeDirection(cleanDir)
+            normDir.ifBlank { "sens_${s.sens}" }
+        }
+        val result = LinkedHashMap<String, List<String>>()
+        for ((_, servings) in grouped) {
+            val displayDir = servings.map { stripQuaiSuffix(it.direction) }
+                .firstOrNull { it.isNotBlank() }
+                ?: "Direction ${servings.first().sens}"
+            val orderedNames = orderServingsGeographicallyTowardTerminus(
+                servings = servings,
+                direction = displayDir,
+                currentStopName = currentStopName
+            )
+            if (orderedNames.isNotEmpty()) {
+                result[displayDir] = orderedNames
             }
         }
-        return mapOf(
-            "Terminus Principal" to listOf("Départ de la ligne", "Pôle Bosquet", "Terminus Principal")
-        )
+        return result
     }
 
     private fun orderServingsGeographicallyTowardTerminus(
         servings: List<StopServing>,
-        direction: String
+        direction: String,
+        currentStopName: String = ""
     ): List<String> {
         data class UniqueStop(
             val displayName: String,
@@ -481,13 +559,47 @@ class RouteStopsRepository(
         if (withCoords.size < 2) return allUnique.map { it.displayName }
 
         val cleanDir = stripQuaiSuffix(direction)
-        val terminusIdx = findBestMatchingStopIndex(withCoords.map { it.displayName }, cleanDir)
-        if (terminusIdx < 0) {
-            return allUnique.map { it.displayName }
+        val stopNamesWithCoords = withCoords.map { it.displayName }
+        val terminusIdx = findBestMatchingStopIndex(stopNamesWithCoords, cleanDir)
+        val terminusStop: UniqueStop = if (terminusIdx >= 0) {
+            withCoords[terminusIdx]
+        } else {
+            // Si le libellé de direction ne correspond exactement à aucun nom d'arrêt,
+            // identifier les deux extrémités géographiques de la ligne puis orienter vers le terminus.
+            var endA = withCoords.first()
+            var endB = withCoords.last()
+            var maxDist = -1.0
+            for (i in 0 until withCoords.size) {
+                for (j in i + 1 until withCoords.size) {
+                    val d = haversineMeters(withCoords[i].lat, withCoords[i].lon, withCoords[j].lat, withCoords[j].lon)
+                    if (d > maxDist) {
+                        maxDist = d
+                        endA = withCoords[i]
+                        endB = withCoords[j]
+                    }
+                }
+            }
+            val scoreA = directionMatchScore(cleanDir, endA.displayName)
+            val scoreB = directionMatchScore(cleanDir, endB.displayName)
+            when {
+                scoreB > scoreA -> endB
+                scoreA > scoreB -> endA
+                currentStopName.isNotBlank() -> {
+                    val curIdx = findBestMatchingStopIndex(stopNamesWithCoords, currentStopName)
+                    if (curIdx >= 0) {
+                        val cur = withCoords[curIdx]
+                        val dToA = haversineMeters(cur.lat, cur.lon, endA.lat, endA.lon)
+                        val dToB = haversineMeters(cur.lat, cur.lon, endB.lat, endB.lon)
+                        if (dToB >= dToA) endB else endA
+                    } else {
+                        endB
+                    }
+                }
+                else -> endB
+            }
         }
-        val terminusStop: UniqueStop = withCoords[terminusIdx]
 
-        // Chaînage par plus proche voisin en remontant depuis le terminus réel
+        // Chaînage par plus proche voisin en remontant depuis le terminus
         val remaining = withCoords.toMutableList()
         val reversedChain = ArrayList<UniqueStop>(withCoords.size)
         var current: UniqueStop = terminusStop
@@ -523,11 +635,6 @@ class RouteStopsRepository(
         return r * c
     }
 
-    private fun dynamicStopsFromCache(lineCode: String, direction: String): List<String> {
-        val dirs = dynamicDirectionsFromCache(lineCode)
-        return dirs[direction] ?: dirs.values.firstOrNull() ?: listOf("Départ $lineCode", "Pôle Bosquet", direction)
-    }
-
     private fun directionMatchScore(target: String, candidate: String): Int {
         val cleanedTarget = target.replace(GENERIC_PAREN_SUFFIX_REGEX, "").trim().ifBlank { target }
         val normTarget = normalizeString(cleanedTarget)
@@ -554,17 +661,29 @@ class RouteStopsRepository(
         return overlap * 100 - kotlin.math.abs(targetWords.size - candWords.size)
     }
 
-    private fun findBestMatchingDirection(target: String, directions: List<String>): String {
-        if (directions.isEmpty()) return target
-        return directions.maxByOrNull { dir -> directionMatchScore(target, dir) } ?: directions.first()
-    }
-
     private fun cleanLineRef(raw: String): String {
-        return raw.trim()
-            .removePrefix("Ligne ")
-            .removePrefix("ligne ")
-            .removePrefix("Chronobus ")
+        val upper = raw.trim().uppercase(Locale.ROOT)
+        if (upper.isBlank()) return ""
+        val clean = upper
             .removePrefix("LIGNE ")
+            .removePrefix("LIGNE_")
+            .removePrefix("LIGNE-")
+            .removePrefix("CHRONOBUS ")
+            .removePrefix("CHRONOBUS_")
+            .removePrefix("CHRONOBUS-")
+            .removePrefix("PICTO ")
+            .removePrefix("PICTO_")
+            .removePrefix("PICTO-")
+            .removePrefix("BUS ")
             .trim()
+        val noL = clean.removePrefix("L").takeIf {
+            clean.startsWith("L") && it.isNotBlank() && it.all { ch -> ch.isDigit() }
+        } ?: clean
+        return when {
+            noL == "F" || noL == "FÉBUS" || noL == "FEBUS" -> "F"
+            noL == "COXI" || noL == "COXITIS" || noL == "NAVETTE" || noL == "NCV" -> "COXI"
+            noL.all { it.isDigit() } -> noL.trimStart('0').ifEmpty { "0" }
+            else -> noL
+        }
     }
 }

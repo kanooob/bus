@@ -56,6 +56,7 @@ object GtfsScheduleIndex {
         val routeId: String,
         val serviceId: String,
         val headsign: String,
+        val directionId: String,
         val isActive: Boolean,
         val collectRouteStops: Boolean
     )
@@ -209,37 +210,61 @@ object GtfsScheduleIndex {
         return emptyList()
     }
 
-    fun getRouteDirectionsForLine(lineCode: String): List<RouteDirectionStops> {
-        val map = current?.routeDirectionsByLine ?: return emptyList()
-        val upper = lineCode.trim()
-            .removePrefix("Ligne ")
-            .removePrefix("ligne ")
+    internal fun buildLineCodeAliases(rawCode: String): List<String> {
+        val trimmed = rawCode.trim()
+        if (trimmed.isBlank()) return emptyList()
+        val upper = trimmed.uppercase(Locale.ROOT)
+        val clean = upper
             .removePrefix("LIGNE ")
-            .removePrefix("Chronobus ")
+            .removePrefix("LIGNE_")
+            .removePrefix("LIGNE-")
+            .removePrefix("CHRONOBUS ")
+            .removePrefix("CHRONOBUS_")
+            .removePrefix("CHRONOBUS-")
+            .removePrefix("PICTO ")
+            .removePrefix("PICTO_")
+            .removePrefix("PICTO-")
+            .removePrefix("BUS ")
             .trim()
-            .uppercase(Locale.ROOT)
-        if (upper.isBlank()) return emptyList()
-
-        val candidates = buildList {
+        return buildList {
             add(upper)
-            val strippedZeros = upper.trimStart('0')
-            if (strippedZeros.isNotBlank() && upper.all { it.isDigit() }) {
-                add(strippedZeros)
+            if (clean.isNotBlank()) add(clean)
+            val noLPrefix = clean.removePrefix("L").takeIf {
+                clean.startsWith("L") && it.isNotBlank() && it.all { ch -> ch.isDigit() }
             }
-            when (upper) {
+            if (noLPrefix != null) add(noLPrefix)
+
+            val numericPart = when {
+                clean.all { it.isDigit() } -> clean
+                noLPrefix != null -> noLPrefix
+                else -> null
+            }
+            if (numericPart != null) {
+                val strippedZeros = numericPart.trimStart('0').ifEmpty { "0" }
+                add(strippedZeros)
+                if (strippedZeros.length == 1) {
+                    add("0$strippedZeros")
+                }
+            }
+            when (clean) {
                 "F", "FÉBUS", "FEBUS" -> {
                     add("F")
                     add("FÉBUS")
                     add("FEBUS")
                 }
-                "COXI", "COXITIS" -> {
+                "COXI", "COXITIS", "NAVETTE", "NCV" -> {
                     add("COXI")
                     add("COXITIS")
+                    add("NAVETTE")
+                    add("NCV")
                 }
             }
-        }.distinct()
+        }.filter { it.isNotBlank() }.distinct()
+    }
 
-        for (key in candidates) {
+    fun getRouteDirectionsForLine(lineCode: String): List<RouteDirectionStops> {
+        val map = current?.routeDirectionsByLine ?: return emptyList()
+        for (key in buildLineCodeAliases(lineCode)) {
             val found = map[key]
             if (!found.isNullOrEmpty()) return found
         }
@@ -285,7 +310,7 @@ object GtfsScheduleIndex {
             ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
-                    val name = entry.name.substringAfterLast('/')
+                    val name = entry.name.substringAfterLast('/').lowercase(Locale.ROOT)
                     when (name) {
                         "calendar.txt" -> calendarText = zis.bufferedReader(Charsets.UTF_8).readText()
                         "calendar_dates.txt" -> calendarDatesText = zis.bufferedReader(Charsets.UTF_8).readText()
@@ -319,7 +344,7 @@ object GtfsScheduleIndex {
                 ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
                     var entry = zis.nextEntry
                     while (entry != null) {
-                        val name = entry.name.substringAfterLast('/')
+                        val name = entry.name.substringAfterLast('/').lowercase(Locale.ROOT)
                         if (name == "stop_times.txt") {
                             val reader = zis.bufferedReader(Charsets.UTF_8)
                             val headerLine = reader.readLine()?.removePrefix("\uFEFF") ?: break
@@ -429,9 +454,10 @@ object GtfsScheduleIndex {
     ): Map<String, List<RouteDirectionStops>> {
         if (tripStopPoints.isEmpty()) return emptyMap()
 
-        // Regrouper par (code ligne majuscule, headsign normalisé)
+        // Regrouper par (code ligne normalisé, direction/headsign)
         val grouped = HashMap<String, MutableMap<String, MutableList<List<String>>>>()
         val displayHeadsigns = HashMap<String, String>()
+        val rawRouteIdsByLine = HashMap<String, MutableSet<String>>()
 
         for ((tripId, points) in tripStopPoints) {
             if (points.isEmpty()) continue
@@ -451,17 +477,17 @@ object GtfsScheduleIndex {
             if (orderedClean.isEmpty()) continue
 
             val rawShort = routesMap[trip.routeId]?.shortName ?: trip.routeId
-            val lineKey = rawShort.trim()
-                .removePrefix("Ligne ")
-                .removePrefix("ligne ")
-                .removePrefix("LIGNE ")
-                .removePrefix("Chronobus ")
-                .trim()
-                .uppercase(Locale.ROOT)
-            if (lineKey.isBlank()) continue
+            val aliases = buildLineCodeAliases(rawShort)
+            val lineKey = aliases.firstOrNull { !it.startsWith("LIGNE") && !it.startsWith("CHRONOBUS") }
+                ?: aliases.firstOrNull()
+                ?: continue
+            rawRouteIdsByLine.getOrPut(lineKey) { HashSet() }.add(trip.routeId)
 
-            val headsign = trip.headsign.trim().ifBlank { orderedClean.last() }
-            val dirNormKey = "${lineKey}|${headsign.lowercase(Locale.ROOT)}"
+            val rawHead = trip.headsign.trim()
+            val headsign = rawHead.ifBlank { orderedClean.last() }
+            // Inclure direction_id si le headsign était vide dans trips.txt pour ne jamais fusionner Aller et Retour
+            val dirSuffix = if (rawHead.isBlank()) "|dir:${trip.directionId}" else ""
+            val dirNormKey = "${lineKey}|${headsign.lowercase(Locale.ROOT)}$dirSuffix"
             displayHeadsigns.putIfAbsent(dirNormKey, headsign)
 
             val dirMap = grouped.getOrPut(lineKey) { LinkedHashMap() }
@@ -472,7 +498,6 @@ object GtfsScheduleIndex {
         for ((lineKey, dirMap) in grouped) {
             val dirList = dirMap.entries.mapNotNull { (dirNormKey, rawPatterns) ->
                 val headsign = displayHeadsigns[dirNormKey] ?: return@mapNotNull null
-                // Dédupliquer les tracés identiques et garder les plus complets en premier
                 val uniquePatterns = LinkedHashMap<String, List<String>>()
                 for (pattern in rawPatterns) {
                     val signature = pattern.joinToString("|") {
@@ -485,21 +510,20 @@ object GtfsScheduleIndex {
                 }
                 val sortedPatterns = uniquePatterns.values
                     .sortedByDescending { it.size }
-                    .take(8)
+                    .take(24)
                 RouteDirectionStops(
                     headsign = headsign,
                     stopPatterns = sortedPatterns
                 )
             }
             if (dirList.isNotEmpty()) {
-                result[lineKey] = dirList
-                val strippedZeros = lineKey.trimStart('0')
-                if (strippedZeros.isNotBlank() && strippedZeros != lineKey && lineKey.all { it.isDigit() }) {
-                    result.putIfAbsent(strippedZeros, dirList)
+                for (alias in buildLineCodeAliases(lineKey)) {
+                    result.putIfAbsent(alias, dirList)
                 }
-                when (lineKey) {
-                    "FÉBUS", "FEBUS" -> result.putIfAbsent("F", dirList)
-                    "COXITIS" -> result.putIfAbsent("COXI", dirList)
+                rawRouteIdsByLine[lineKey]?.forEach { routeId ->
+                    for (alias in buildLineCodeAliases(routeId)) {
+                        result.putIfAbsent(alias, dirList)
+                    }
                 }
             }
         }
@@ -755,6 +779,7 @@ object GtfsScheduleIndex {
         val routeIdIdx = headers.indexOf("route_id")
         val serviceIdIdx = headers.indexOf("service_id")
         val headsignIdx = headers.indexOf("trip_headsign")
+        val directionIdIdx = headers.indexOf("direction_id")
         if (tripIdIdx < 0 || routeIdIdx < 0) return emptyMap()
 
         data class RawTrip(
@@ -762,6 +787,7 @@ object GtfsScheduleIndex {
             val routeId: String,
             val serviceId: String,
             val headsign: String,
+            val directionId: String,
             val isActive: Boolean
         )
 
@@ -777,31 +803,37 @@ object GtfsScheduleIndex {
             val routeId = parts.getOrNull(routeIdIdx)?.trim().orEmpty()
             val serviceId = parts.getOrNull(serviceIdIdx)?.trim().orEmpty()
             val headsign = parts.getOrNull(headsignIdx)?.trim().orEmpty()
+            val directionId = parts.getOrNull(directionIdIdx)?.trim().orEmpty()
             if (tripId.isNotBlank() && routeId.isNotBlank()) {
                 val isActive = !filterByService || serviceId in activeServiceIds
                 if (isActive) {
-                    activeRouteHeadsigns.add("$routeId|${headsign.lowercase(Locale.ROOT)}")
+                    activeRouteHeadsigns.add("$routeId|$directionId|${headsign.lowercase(Locale.ROOT)}")
                 }
-                rawTrips.add(RawTrip(tripId, routeId, serviceId, headsign, isActive))
+                rawTrips.add(RawTrip(tripId, routeId, serviceId, headsign, directionId, isActive))
             }
         }
 
         val map = HashMap<String, TripMeta>(rawTrips.size)
-        val inactiveSampled = HashSet<String>()
+        val inactiveSampleCounts = HashMap<String, Int>()
         for (rt in rawTrips) {
-            val routeHeadKey = "${rt.routeId}|${rt.headsign.lowercase(Locale.ROOT)}"
-            val collectStops = if (rt.isActive) {
-                true
-            } else if (routeHeadKey !in activeRouteHeadsigns && inactiveSampled.add(routeHeadKey)) {
-                true
-            } else {
-                false
+            val routeHeadKey = "${rt.routeId}|${rt.directionId}|${rt.headsign.lowercase(Locale.ROOT)}"
+            val count = inactiveSampleCounts[routeHeadKey] ?: 0
+            // Collecter tous les trajets actifs, et jusqu'à 16 trajets par sens/destination si aucun service actif
+            // afin de capturer le tracé complet même si les premiers trajets du fichier sont des courses partielles.
+            val collectStops = when {
+                rt.isActive -> true
+                routeHeadKey !in activeRouteHeadsigns && count < 16 -> {
+                    inactiveSampleCounts[routeHeadKey] = count + 1
+                    true
+                }
+                else -> false
             }
             if (rt.isActive || collectStops) {
                 map[rt.tripId] = TripMeta(
                     routeId = rt.routeId,
                     serviceId = rt.serviceId,
                     headsign = rt.headsign,
+                    directionId = rt.directionId,
                     isActive = rt.isActive,
                     collectRouteStops = collectStops
                 )

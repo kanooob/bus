@@ -72,8 +72,8 @@ class IdelisExploreService(
         const val URL_EXPORTS_ICONS = "$BASE_EXPLORE_URL/$DATASET_LINE_ICONS/exports/json/?lang=fr&timezone=Europe%2FParis"
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(8, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(45, TimeUnit.SECONDS)
             .build()
     }
 
@@ -109,11 +109,19 @@ class IdelisExploreService(
             }
 
             val list = mutableListOf<OfficialRouteGtfs>()
-            val jsonArray = JSONArray(jsonString)
+            val trimmed = jsonString.trim().removePrefix("\uFEFF").trim()
+            val jsonArray = when {
+                trimmed.startsWith("[") -> JSONArray(trimmed)
+                trimmed.startsWith("{") -> JSONObject(trimmed).optJSONArray("results") ?: JSONArray()
+                else -> JSONArray()
+            }
 
             for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val lineCode = obj.optString("ndeg_de_ligne", "").trim()
+                val obj = jsonArray.optJSONObject(i) ?: continue
+                val lineCode = (obj.optNullableString("ndeg_de_ligne")
+                    ?: obj.optNullableString("ligne")
+                    ?: obj.optNullableString("route_short_name")
+                    ?: "").trim()
                 if (lineCode.isNotBlank()) {
                     list.add(
                         OfficialRouteGtfs(
@@ -122,7 +130,9 @@ class IdelisExploreService(
                             descriptifParSens = obj.optNullableString("descriptif_par_sens"),
                             terminus1 = obj.optNullableString("terminus_1"),
                             terminus2 = obj.optNullableString("terminus_2"),
-                            colorHex = obj.optNullableString("couleur_hexa") ?: "#E50914",
+                            colorHex = obj.optNullableString("couleur_hexa")
+                                ?: obj.optNullableString("couleur_de_ligne")
+                                ?: "#E50914",
                             sens = obj.optInt("sens", 1)
                         )
                     )
@@ -161,13 +171,33 @@ class IdelisExploreService(
             }
 
             val list = mutableListOf<StopServing>()
-            val jsonArray = JSONArray(jsonString)
+            val trimmed = jsonString.trim().removePrefix("\uFEFF").trim()
+            val jsonArray = when {
+                trimmed.startsWith("[") -> JSONArray(trimmed)
+                trimmed.startsWith("{") -> JSONObject(trimmed).optJSONArray("results") ?: JSONArray()
+                else -> JSONArray()
+            }
 
             for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val stopName = obj.optString("libelle", "").trim()
-                val lineRef = obj.optString("ligne", "").trim()
-                val direction = obj.optString("direction", "").trim()
+                val obj = jsonArray.optJSONObject(i) ?: continue
+                val stopName = (obj.optNullableString("libelle")
+                    ?: obj.optNullableString("nom")
+                    ?: obj.optNullableString("nom_arret")
+                    ?: "").trim()
+                val lineRef = (obj.optNullableString("ligne")
+                    ?: obj.optNullableString("ndeg_de_ligne")
+                    ?: obj.optNullableString("line")
+                    ?: "").trim()
+                val direction = (obj.optNullableString("direction")
+                    ?: obj.optNullableString("destination")
+                    ?: "").trim()
+                val geoPoint = obj.optJSONObject("geo_point_2d")
+                val lat = obj.optDouble("latitude", Double.NaN).takeIf { !it.isNaN() }
+                    ?: geoPoint?.optDouble("lat", Double.NaN)?.takeIf { !it.isNaN() }
+                    ?: 43.3000
+                val lon = obj.optDouble("longitude", Double.NaN).takeIf { !it.isNaN() }
+                    ?: geoPoint?.optDouble("lon", Double.NaN)?.takeIf { !it.isNaN() }
+                    ?: -0.3700
 
                 if (stopName.isNotBlank() && lineRef.isNotBlank()) {
                     list.add(
@@ -178,9 +208,11 @@ class IdelisExploreService(
                             lineRef = lineRef,
                             direction = if (direction.isNotBlank()) direction else "Destination Idelis",
                             sens = obj.optInt("sens", 1),
-                            commune = obj.optNullableString("communes"),
-                            lat = obj.optDouble("latitude", 43.3000),
-                            lon = obj.optDouble("longitude", -0.3700)
+                            commune = obj.optNullableString("communes")
+                                ?: obj.optNullableString("commune")
+                                ?: obj.optNullableString("code_commune"),
+                            lat = lat,
+                            lon = lon
                         )
                     )
                 }

@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -312,17 +313,18 @@ fun RouteStopsModal(
                             modifier = Modifier.testTag("route_terminus_name")
                         )
 
-                        Spacer(modifier = Modifier.height(2.dp))
-
-                        Text(
-                            text = "Depuis ${routeDetail.startName}",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = textSecondaryColor,
-                                fontWeight = FontWeight.Medium
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (routeDetail.startName.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Depuis ${routeDetail.startName}",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = textSecondaryColor,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
 
                         // Bandeau d'infos du bus (Attente, Heure de passage, Ponctualité)
                         if (waitLabel != null || displayArrivalTime != null) {
@@ -442,7 +444,11 @@ fun RouteStopsModal(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "${routeDetail.totalStopsCount} arrêts dans l'ordre",
+                                        text = when {
+                                            routeDetail.totalStopsCount > 0 -> "${routeDetail.totalStopsCount} arrêts dans l'ordre"
+                                            routeDetail.isLoadingStops -> "Chargement des arrêts..."
+                                            else -> "Liste d'arrêts indisponible"
+                                        },
                                         fontSize = 11.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = textPrimaryColor
@@ -525,45 +531,91 @@ fun RouteStopsModal(
                 HorizontalDivider(color = dividerColor, thickness = 1.dp)
 
                 // 4. Liste complète et ordonnée des arrêts (Terminus en haut -> Début en bas)
-                if (filteredStops.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Aucun arrêt ne correspond à \"$searchQuery\"",
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                color = textSecondaryColor,
-                                textAlign = TextAlign.Center
-                            )
-                        )
+                when {
+                    routeDetail.stops.isEmpty() && routeDetail.isLoadingStops -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(24.dp)
+                                .testTag("route_stops_loading"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                CircularProgressIndicator(color = routeColor)
+                                Text(
+                                    text = "Chargement de tous les arrêts de la ligne...",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        color = textSecondaryColor,
+                                        textAlign = TextAlign.Center,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                )
+                            }
+                        }
                     }
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .testTag("route_stops_list"),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                    ) {
-                        itemsIndexed(
-                            items = filteredStops,
-                            key = { index, item -> "${item.stopName}_${item.sequenceIndex}_$index" }
-                        ) { index, item ->
-                            RouteStopTimelineRow(
-                                item = item,
-                                routeColor = routeColor,
-                                isFirstItem = (index == 0),
-                                isLastItem = (index == filteredStops.lastIndex),
-                                isDarkTheme = isDarkTheme,
-                                onStopClick = {
-                                    onStopSelected?.invoke(item.stopName)
-                                }
+                    routeDetail.stops.isEmpty() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(24.dp)
+                                .testTag("route_stops_empty"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Aucun arrêt détaillé disponible pour cette ligne pour le moment.",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = textSecondaryColor,
+                                    textAlign = TextAlign.Center
+                                )
                             )
+                        }
+                    }
+                    filteredStops.isEmpty() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Aucun arrêt ne correspond à \"$searchQuery\"",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = textSecondaryColor,
+                                    textAlign = TextAlign.Center
+                                )
+                            )
+                        }
+                    }
+                    else -> {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .testTag("route_stops_list"),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            itemsIndexed(
+                                items = filteredStops,
+                                key = { index, item -> "${item.stopName}_${item.sequenceIndex}_$index" }
+                            ) { index, item ->
+                                RouteStopTimelineRow(
+                                    item = item,
+                                    routeColor = routeColor,
+                                    isFirstItem = (index == 0),
+                                    isLastItem = (index == filteredStops.lastIndex),
+                                    isDarkTheme = isDarkTheme,
+                                    onStopClick = {
+                                        onStopSelected?.invoke(item.stopName)
+                                    }
+                                )
+                            }
                         }
                     }
                 }
