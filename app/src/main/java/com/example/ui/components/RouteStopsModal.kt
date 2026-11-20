@@ -1,7 +1,13 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,15 +16,19 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -30,17 +40,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -60,7 +66,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -77,10 +87,11 @@ import com.example.ui.theme.TransitDarkBg
 import java.text.Normalizer
 
 /**
- * Modale « Plus d'info sur le bus » affichant :
- * - En haut : le Terminus fixe du bus sélectionné (sans changement de direction),
- *   les informations temps réel (attente, passage, retard/avance, quai, arrêts restants)
- * - En dessous : l'ensemble des arrêts de la ligne dans l'ordre exact (Terminus en haut, Début en bas).
+ * Modale « Plus d'info sur le bus » :
+ * - En-tête compact teinté aux couleurs de la ligne avec Terminus fixe, quai, horaire & ponctualité.
+ * - Recherche rapide dépliable à la demande pour laisser un maximum de place au tracé.
+ * - Tracé vertical continu avec marge inférieure généreuse au-dessus de la barre de navigation
+ *   afin que l'arrêt le plus bas (« Départ de la ligne ») reste toujours parfaitement visible.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -95,14 +106,15 @@ fun RouteStopsModal(
     BackHandler(onBack = onDismissRequest)
 
     var searchQuery by remember { mutableStateOf("") }
+    var isSearchExpanded by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val bgColor = if (isDarkTheme) TransitDarkBg else SketchWhite
-    val surfaceCardColor = if (isDarkTheme) Color(0xFF171E29) else Color(0xFFF8FAFC)
-    val innerPillColor = if (isDarkTheme) Color(0xFF222B3A) else Color(0xFFFFFFFF)
-    val textPrimaryColor = if (isDarkTheme) Color.White else Color(0xFF111827)
+    val cardSurfaceColor = if (isDarkTheme) Color(0xFF172030) else Color(0xFFF6F8FB)
+    val pillBgColor = if (isDarkTheme) Color(0xFF1E293B) else Color(0xFFFFFFFF)
+    val textPrimaryColor = if (isDarkTheme) Color(0xFFF8FAFC) else Color(0xFF0F172A)
     val textSecondaryColor = if (isDarkTheme) Color(0xFF94A3B8) else Color(0xFF475569)
-    val dividerColor = if (isDarkTheme) Color(0xFF263040) else Color(0xFFE2E8F0)
+    val dividerColor = if (isDarkTheme) Color(0xFF263244) else Color(0xFFE2E8F0)
 
     val routeColor = remember(routeDetail.colorHex) {
         try {
@@ -169,137 +181,184 @@ fun RouteStopsModal(
 
     Dialog(
         onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Surface(
             modifier = modifier
                 .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .imePadding()
                 .testTag("route_stops_modal"),
             color = bgColor
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // 1. Barre supérieure : Badge de la ligne, libellé, et bouton Fermer
-                Row(
+                // 1. En-tête teinté compact (statut + ligne + Terminus + infos temps réel)
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .drawBehind {
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    colors = listOf(
+                                        routeColor.copy(alpha = if (isDarkTheme) 0.24f else 0.14f),
+                                        routeColor.copy(alpha = if (isDarkTheme) 0.06f else 0.03f),
+                                        bgColor
+                                    )
+                                )
+                            )
+                        }
+                        .windowInsetsPadding(
+                            WindowInsets.safeDrawing.only(
+                                WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                            )
+                        )
+                        .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 10.dp)
+                        .testTag("route_terminus_header_card")
                 ) {
-                    IdelisLineIconBadge(
-                        lineRef = routeDetail.lineCode,
-                        iconUrl = routeDetail.iconUrl,
-                        routeColor = routeColor,
-                        routeTextColor = routeTextColor,
-                        size = 44.dp,
-                        contentDescription = "Icône ${routeDetail.lineLabel}"
-                    )
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = routeDetail.lineLabel,
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Black,
-                                color = textPrimaryColor
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                    // Barre supérieure : icône ligne, nom de la ligne, quai, recherche & fermeture
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IdelisLineIconBadge(
+                            lineRef = routeDetail.lineCode,
+                            iconUrl = routeDetail.iconUrl,
+                            routeColor = routeColor,
+                            routeTextColor = routeTextColor,
+                            size = 40.dp,
+                            contentDescription = "Icône ${routeDetail.lineLabel}"
                         )
-                        val subtitle = routeDetail.routeLongName
-                            .takeIf { it.isNotBlank() && !it.equals(routeDetail.lineLabel, ignoreCase = true) }
-                            ?: "Détails du trajet et arrêts desservis"
-                        Text(
-                            text = subtitle,
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = textSecondaryColor,
-                                fontWeight = FontWeight.Medium
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = routeDetail.lineLabel,
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Black,
+                                        color = textPrimaryColor
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (!routeDetail.quaiLabel.isNullOrBlank()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = routeColor.copy(alpha = if (isDarkTheme) 0.24f else 0.16f)
+                                    ) {
+                                        Text(
+                                            text = routeDetail.quaiLabel,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = textPrimaryColor,
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            val subtitle = routeDetail.routeLongName
+                                .takeIf { it.isNotBlank() && !it.equals(routeDetail.lineLabel, ignoreCase = true) }
+                            if (subtitle != null) {
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = textSecondaryColor,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        if (routeDetail.stops.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    if (isSearchExpanded) {
+                                        isSearchExpanded = false
+                                        searchQuery = ""
+                                    } else {
+                                        isSearchExpanded = true
+                                    }
+                                },
+                                modifier = Modifier
+                                    .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                    .testTag("toggle_search_stop_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = if (isSearchExpanded) "Masquer la recherche" else "Rechercher un arrêt",
+                                    tint = if (isSearchExpanded || searchQuery.isNotBlank()) routeColor else textPrimaryColor
+                                )
+                            }
+                        }
+
+                        IconButton(
+                            onClick = onDismissRequest,
+                            modifier = Modifier
+                                .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                .testTag("close_route_stops_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Fermer",
+                                tint = textPrimaryColor
+                            )
+                        }
                     }
 
-                    IconButton(
-                        onClick = onDismissRequest,
-                        modifier = Modifier
-                            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                            .testTag("close_route_stops_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Fermer",
-                            tint = textPrimaryColor
-                        )
-                    }
-                }
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                // 2. Carte Hero fixe en haut : TERMINUS + Infos temps réel du bus sélectionné
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .testTag("route_terminus_header_card"),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = surfaceCardColor),
-                    border = BorderStroke(1.dp, routeColor.copy(alpha = if (isDarkTheme) 0.45f else 0.35f))
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp)
-                    ) {
-                        // Ligne de tête : badge TERMINUS + badge Quai éventuel
+                    // Bloc Terminus compact
+                    Column(modifier = Modifier.padding(end = 8.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = routeColor.copy(alpha = 0.16f)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Flag,
-                                        contentDescription = null,
-                                        tint = routeColor,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "TERMINUS",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Black,
-                                        letterSpacing = 0.6.sp,
-                                        color = if (isDarkTheme) Color.White else textPrimaryColor
-                                    )
-                                }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Flag,
+                                    contentDescription = null,
+                                    tint = Color(0xFFD32F2F),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = "DIRECTION TERMINUS",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 0.7.sp,
+                                    color = textSecondaryColor
+                                )
                             }
 
-                            if (!routeDetail.quaiLabel.isNullOrBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (isDarkTheme) Color(0xFF283344) else Color(0xFFE2E8F0)
-                                ) {
-                                    Text(
-                                        text = routeDetail.quaiLabel,
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = textPrimaryColor,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = if (isDarkTheme) Color(0xFF1F2B3D) else Color(0xFFE9EFF6)
+                            ) {
+                                Text(
+                                    text = when {
+                                        routeDetail.totalStopsCount > 0 -> "${routeDetail.totalStopsCount} arrêts"
+                                        routeDetail.isLoadingStops -> "Chargement..."
+                                        else -> "0 arrêt"
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = textPrimaryColor,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
 
-                        // Nom du Terminus bien visible en haut
                         Text(
                             text = routeDetail.terminusName,
                             style = MaterialTheme.typography.titleLarge.copy(
@@ -326,26 +385,26 @@ fun RouteStopsModal(
                             )
                         }
 
-                        // Bandeau d'infos du bus (Attente, Heure de passage, Ponctualité)
-                        if (waitLabel != null || displayArrivalTime != null) {
+                        // Bandeau compact temps réel du passage sélectionné
+                        val remaining = routeDetail.stopsRemainingToTerminus
+                        if (waitLabel != null || displayArrivalTime != null || remaining != null) {
                             Spacer(modifier = Modifier.height(10.dp))
                             Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = innerPillColor,
+                                shape = RoundedCornerShape(12.dp),
+                                color = pillBgColor,
                                 border = BorderStroke(1.dp, dividerColor),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        .padding(horizontal = 12.dp, vertical = 9.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    // Temps d'attente + arrêt actuel
                                     Column(modifier = Modifier.weight(1f)) {
-                                        if (waitLabel != null) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (waitLabel != null) {
                                                 Icon(
                                                     imageVector = Icons.Default.AccessTime,
                                                     contentDescription = null,
@@ -355,9 +414,30 @@ fun RouteStopsModal(
                                                 Spacer(modifier = Modifier.width(5.dp))
                                                 Text(
                                                     text = waitLabel,
-                                                    fontSize = 15.sp,
+                                                    fontSize = 14.5.sp,
                                                     fontWeight = FontWeight.Black,
                                                     color = if (waitIsImminent) Color(0xFFD32F2F) else textPrimaryColor
+                                                )
+                                            }
+                                            if (remaining != null) {
+                                                if (waitLabel != null) {
+                                                    Text(
+                                                        text = "  •  ",
+                                                        fontSize = 12.sp,
+                                                        color = textSecondaryColor
+                                                    )
+                                                }
+                                                Text(
+                                                    text = when (remaining) {
+                                                        0 -> "Terminus atteint"
+                                                        1 -> "1 arrêt restant"
+                                                        else -> "$remaining arrêts restants"
+                                                    },
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = textSecondaryColor,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
                                             }
                                         }
@@ -371,9 +451,9 @@ fun RouteStopsModal(
                                         )
                                     }
 
-                                    // Passage prévu / estimé & statut ponctualité
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        if (displayArrivalTime != null) {
+                                    if (displayArrivalTime != null) {
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(horizontalAlignment = Alignment.End) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Icon(
                                                     imageVector = Icons.Default.Schedule,
@@ -383,34 +463,20 @@ fun RouteStopsModal(
                                                 )
                                                 Spacer(modifier = Modifier.width(4.dp))
                                                 Text(
-                                                    text = "Passage $displayArrivalTime",
-                                                    fontSize = 13.sp,
-                                                    fontWeight = FontWeight.Bold,
+                                                    text = displayArrivalTime,
+                                                    fontSize = 13.5.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
                                                     color = textPrimaryColor
                                                 )
                                             }
-                                        }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            if (routeDetail.delayMinutes != 0 &&
-                                                !routeDetail.aimedTimeFormatted.isNullOrBlank() &&
-                                                routeDetail.aimedTimeFormatted != displayArrivalTime
-                                            ) {
-                                                Text(
-                                                    text = "Prévu ${routeDetail.aimedTimeFormatted}",
-                                                    fontSize = 11.sp,
-                                                    color = textSecondaryColor
-                                                )
-                                            }
+                                            Spacer(modifier = Modifier.height(2.dp))
                                             Surface(
                                                 shape = RoundedCornerShape(5.dp),
-                                                color = statusColor.copy(alpha = 0.13f)
+                                                color = statusColor.copy(alpha = 0.14f)
                                             ) {
                                                 Text(
                                                     text = statusText,
-                                                    fontSize = 11.sp,
+                                                    fontSize = 10.5.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = statusColor,
                                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
@@ -421,200 +487,165 @@ fun RouteStopsModal(
                                 }
                             }
                         }
-
-                        // Résumé des arrêts & progression vers le terminus
-                        Spacer(modifier = Modifier.height(8.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (isDarkTheme) Color(0xFF232C3B) else Color(0xFFEAF0F6)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Route,
-                                        contentDescription = null,
-                                        tint = routeColor,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = when {
-                                            routeDetail.totalStopsCount > 0 -> "${routeDetail.totalStopsCount} arrêts dans l'ordre"
-                                            routeDetail.isLoadingStops -> "Chargement des arrêts..."
-                                            else -> "Liste d'arrêts indisponible"
-                                        },
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = textPrimaryColor
-                                    )
-                                }
-                            }
-
-                            val remaining = routeDetail.stopsRemainingToTerminus
-                            if (remaining != null) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = routeColor.copy(alpha = 0.12f)
-                                ) {
-                                    Text(
-                                        text = when (remaining) {
-                                            0 -> "Terminus atteint"
-                                            1 -> "1 arrêt jusqu'au terminus"
-                                            else -> "$remaining arrêts jusqu'au terminus"
-                                        },
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isDarkTheme) Color.White else textPrimaryColor,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
-                                }
-                            }
-                        }
                     }
-                }
 
-                // 3. Champ de recherche rapide d'un arrêt sur la ligne
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .testTag("search_stop_in_route_input"),
-                    placeholder = {
-                        Text(
-                            text = "Filtrer les ${routeDetail.totalStopsCount} arrêts...",
-                            style = MaterialTheme.typography.bodySmall.copy(color = textSecondaryColor)
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Rechercher",
-                            tint = textSecondaryColor,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(
-                                onClick = { searchQuery = "" },
-                                modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                            ) {
+                    // 2. Barre de recherche dépliable (n'encombre pas l'écran par défaut)
+                    AnimatedVisibility(
+                        visible = isSearchExpanded || searchQuery.isNotEmpty(),
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp, end = 8.dp)
+                                .testTag("search_stop_in_route_input"),
+                            placeholder = {
+                                Text(
+                                    text = "Filtrer les ${routeDetail.totalStopsCount} arrêts...",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = textSecondaryColor)
+                                )
+                            },
+                            leadingIcon = {
                                 Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Effacer",
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "Rechercher",
                                     tint = textSecondaryColor,
                                     modifier = Modifier.size(18.dp)
                                 )
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = routeColor,
-                        unfocusedBorderColor = dividerColor,
-                        focusedContainerColor = surfaceCardColor,
-                        unfocusedContainerColor = surfaceCardColor,
-                        focusedTextColor = textPrimaryColor,
-                        unfocusedTextColor = textPrimaryColor
-                    )
-                )
+                            },
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = {
+                                        searchQuery = ""
+                                        isSearchExpanded = false
+                                    },
+                                    modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Effacer",
+                                        tint = textSecondaryColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = routeColor,
+                                unfocusedBorderColor = dividerColor,
+                                focusedContainerColor = cardSurfaceColor,
+                                unfocusedContainerColor = cardSurfaceColor,
+                                focusedTextColor = textPrimaryColor,
+                                unfocusedTextColor = textPrimaryColor
+                            )
+                        )
+                    }
+                }
 
                 HorizontalDivider(color = dividerColor, thickness = 1.dp)
 
-                // 4. Liste complète et ordonnée des arrêts (Terminus en haut -> Début en bas)
-                when {
-                    routeDetail.stops.isEmpty() && routeDetail.isLoadingStops -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(24.dp)
-                                .testTag("route_stops_loading"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                // 3. Liste complète et ordonnée des arrêts (Terminus en haut -> Début en bas)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .windowInsetsPadding(
+                            WindowInsets.safeDrawing.only(
+                                WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal
+                            )
+                        )
+                ) {
+                    when {
+                        routeDetail.stops.isEmpty() && routeDetail.isLoadingStops -> {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(24.dp)
+                                    .testTag("route_stops_loading"),
+                                contentAlignment = Alignment.Center
                             ) {
-                                CircularProgressIndicator(color = routeColor)
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    CircularProgressIndicator(color = routeColor)
+                                    Text(
+                                        text = "Chargement de tous les arrêts de la ligne...",
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            color = textSecondaryColor,
+                                            textAlign = TextAlign.Center,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        routeDetail.stops.isEmpty() -> {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(24.dp)
+                                    .testTag("route_stops_empty"),
+                                contentAlignment = Alignment.Center
+                            ) {
                                 Text(
-                                    text = "Chargement de tous les arrêts de la ligne...",
+                                    text = "Aucun arrêt détaillé disponible pour cette ligne pour le moment.",
                                     style = MaterialTheme.typography.bodyMedium.copy(
                                         color = textSecondaryColor,
-                                        textAlign = TextAlign.Center,
-                                        fontWeight = FontWeight.Medium
+                                        textAlign = TextAlign.Center
                                     )
                                 )
                             }
                         }
-                    }
-                    routeDetail.stops.isEmpty() -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(24.dp)
-                                .testTag("route_stops_empty"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Aucun arrêt détaillé disponible pour cette ligne pour le moment.",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = textSecondaryColor,
-                                    textAlign = TextAlign.Center
+                        filteredStops.isEmpty() -> {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Aucun arrêt ne correspond à \"$searchQuery\"",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        color = textSecondaryColor,
+                                        textAlign = TextAlign.Center
+                                    )
                                 )
-                            )
+                            }
                         }
-                    }
-                    filteredStops.isEmpty() -> {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Aucun arrêt ne correspond à \"$searchQuery\"",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = textSecondaryColor,
-                                    textAlign = TextAlign.Center
+                        else -> {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("route_stops_list"),
+                                contentPadding = PaddingValues(
+                                    start = 14.dp,
+                                    end = 14.dp,
+                                    top = 10.dp,
+                                    bottom = 32.dp
                                 )
-                            )
-                        }
-                    }
-                    else -> {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .testTag("route_stops_list"),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                        ) {
-                            itemsIndexed(
-                                items = filteredStops,
-                                key = { index, item -> "${item.stopName}_${item.sequenceIndex}_$index" }
-                            ) { index, item ->
-                                RouteStopTimelineRow(
-                                    item = item,
-                                    routeColor = routeColor,
-                                    isFirstItem = (index == 0),
-                                    isLastItem = (index == filteredStops.lastIndex),
-                                    isDarkTheme = isDarkTheme,
-                                    onStopClick = {
-                                        onStopSelected?.invoke(item.stopName)
-                                    }
-                                )
+                            ) {
+                                itemsIndexed(
+                                    items = filteredStops,
+                                    key = { index, item -> "${item.stopName}_${item.sequenceIndex}_$index" }
+                                ) { index, item ->
+                                    RouteStopTimelineRow(
+                                        item = item,
+                                        routeColor = routeColor,
+                                        isTerminusAtTop = routeDetail.isTerminusAtTop,
+                                        isFirstItem = (index == 0),
+                                        isLastItem = (index == filteredStops.lastIndex),
+                                        isDarkTheme = isDarkTheme,
+                                        onStopClick = {
+                                            onStopSelected?.invoke(item.stopName)
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -630,40 +661,68 @@ private fun normalizeQuery(raw: String): String {
 }
 
 /**
- * Ligne d'arrêt avec tracé vertical et distinction claire des arrêts déjà passés vs à venir.
+ * Ligne d'arrêt avec tracé vertical continu (Canvas + IntrinsicSize.Min) et mise en valeur nette
+ * du Terminus (haut), de la position actuelle et de l'arrêt de départ (bas).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RouteStopTimelineRow(
     item: RouteStopItem,
     routeColor: Color,
+    isTerminusAtTop: Boolean,
     isFirstItem: Boolean,
     isLastItem: Boolean,
     isDarkTheme: Boolean,
     onStopClick: () -> Unit
 ) {
-    val textPrimaryColor = if (isDarkTheme) Color.White else Color(0xFF111827)
+    val bgColor = if (isDarkTheme) TransitDarkBg else SketchWhite
+    val textPrimaryColor = if (isDarkTheme) Color(0xFFF8FAFC) else Color(0xFF0F172A)
     val textSecondaryColor = if (isDarkTheme) Color(0xFF94A3B8) else Color(0xFF475569)
-    val trackUpcomingColor = routeColor.copy(alpha = 0.85f)
+    val trackUpcomingColor = routeColor.copy(alpha = 0.90f)
     val trackPassedColor = if (isDarkTheme) Color(0xFF334155) else Color(0xFFCBD5E1)
-    val trackColor = if (item.isPassedBeforeCurrent) trackPassedColor else trackUpcomingColor
-    val contentAlpha = if (item.isPassedBeforeCurrent && !item.isStart) 0.65f else 1f
 
-    val rowContainerColor = if (item.isCurrentStop) {
-        routeColor.copy(alpha = if (isDarkTheme) 0.18f else 0.10f)
+    val isTopSegmentPassed = if (isTerminusAtTop) {
+        item.isPassedBeforeCurrent
     } else {
-        Color.Transparent
+        item.isPassedBeforeCurrent || item.isCurrentStop
     }
+    val isBottomSegmentPassed = if (isTerminusAtTop) {
+        item.isPassedBeforeCurrent || item.isCurrentStop
+    } else {
+        item.isPassedBeforeCurrent
+    }
+
+    val topTrackColor = if (isTopSegmentPassed) trackPassedColor else trackUpcomingColor
+    val bottomTrackColor = if (isBottomSegmentPassed) trackPassedColor else trackUpcomingColor
+
+    // Conserver une lisibilité maximale sur l'arrêt le plus bas (départ) et l'arrêt actuel
+    val contentAlpha = if (item.isPassedBeforeCurrent && !item.isStart && !item.isCurrentStop) 0.72f else 1f
+
+    val rowContainerColor = when {
+        item.isCurrentStop -> routeColor.copy(alpha = if (isDarkTheme) 0.18f else 0.11f)
+        item.isTerminus -> Color(0xFFD32F2F).copy(alpha = if (isDarkTheme) 0.12f else 0.06f)
+        item.isStart -> Color(0xFF1976D2).copy(alpha = if (isDarkTheme) 0.14f else 0.07f)
+        else -> Color.Transparent
+    }
+    val rowBorderColor = when {
+        item.isCurrentStop -> routeColor.copy(alpha = 0.70f)
+        item.isTerminus -> Color(0xFFD32F2F).copy(alpha = 0.30f)
+        item.isStart -> Color(0xFF1976D2).copy(alpha = 0.35f)
+        else -> null
+    }
+    val isCardHighlighted = item.isCurrentStop || item.isTerminus || item.isStart
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .height(IntrinsicSize.Min)
+            .defaultMinSize(minHeight = 52.dp)
+            .padding(vertical = if (isCardHighlighted) 3.dp else 0.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(rowContainerColor)
             .then(
-                if (item.isCurrentStop) {
-                    Modifier.border(1.dp, routeColor.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                if (rowBorderColor != null) {
+                    Modifier.border(1.dp, rowBorderColor, RoundedCornerShape(12.dp))
                 } else {
                     Modifier
                 }
@@ -672,27 +731,41 @@ private fun RouteStopTimelineRow(
                 onClick = onStopClick,
                 onClickLabel = "Voir les prochains passages à ${item.stopName}"
             )
-            .padding(end = 8.dp, top = 2.dp, bottom = 2.dp)
+            .padding(end = 10.dp)
             .testTag("stop_item_${item.sequenceIndex}"),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Colonne gauche : tracé vertical + marqueur
+        // Colonne gauche : tracé continu adaptatif quelle que soit la hauteur de la ligne
         Box(
             modifier = Modifier
-                .width(42.dp)
-                .height(if (item.isCurrentStop || item.isTerminus || item.isStart) 66.dp else 50.dp),
+                .width(44.dp)
+                .fillMaxHeight(),
             contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .fillMaxHeight()
-                    .padding(
-                        top = if (isFirstItem) 24.dp else 0.dp,
-                        bottom = if (isLastItem) 24.dp else 0.dp
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val centerX = size.width / 2f
+                val centerY = size.height / 2f
+                val strokePx = 4.dp.toPx()
+
+                if (!isFirstItem) {
+                    drawLine(
+                        color = topTrackColor,
+                        start = Offset(centerX, 0f),
+                        end = Offset(centerX, centerY),
+                        strokeWidth = strokePx,
+                        cap = StrokeCap.Butt
                     )
-                    .background(trackColor)
-            )
+                }
+                if (!isLastItem) {
+                    drawLine(
+                        color = bottomTrackColor,
+                        start = Offset(centerX, centerY),
+                        end = Offset(centerX, size.height),
+                        strokeWidth = strokePx,
+                        cap = StrokeCap.Butt
+                    )
+                }
+            }
 
             when {
                 item.isTerminus -> {
@@ -700,31 +773,41 @@ private fun RouteStopTimelineRow(
                         modifier = Modifier
                             .size(26.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFFD32F2F)),
+                            .background(Color(0xFFD32F2F))
+                            .border(2.dp, bgColor, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Flag,
                             contentDescription = "Terminus",
                             tint = Color.White,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
                     }
                 }
                 item.isCurrentStop -> {
                     Box(
                         modifier = Modifier
-                            .size(24.dp)
+                            .size(28.dp)
                             .clip(CircleShape)
-                            .background(routeColor),
+                            .background(routeColor.copy(alpha = 0.25f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(10.dp)
+                                .size(20.dp)
                                 .clip(CircleShape)
-                                .background(Color.White)
-                        )
+                                .background(routeColor)
+                                .border(2.dp, Color.White, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White)
+                            )
+                        }
                     }
                 }
                 item.isStart -> {
@@ -732,23 +815,24 @@ private fun RouteStopTimelineRow(
                         modifier = Modifier
                             .size(26.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF1976D2)),
+                            .background(Color(0xFF1976D2))
+                            .border(2.dp, bgColor, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.DirectionsBus,
                             contentDescription = "Début de ligne",
                             tint = Color.White,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
                     }
                 }
                 else -> {
                     Box(
                         modifier = Modifier
-                            .size(13.dp)
+                            .size(12.dp)
                             .clip(CircleShape)
-                            .background(if (isDarkTheme) TransitDarkBg else SketchWhite)
+                            .background(bgColor)
                             .border(
                                 width = 2.5.dp,
                                 color = if (item.isPassedBeforeCurrent) trackPassedColor else routeColor,
@@ -759,71 +843,76 @@ private fun RouteStopTimelineRow(
             }
         }
 
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(6.dp))
 
-        // Colonne centrale : tags contextuels, nom de l'arrêt, correspondances
+        // Colonne centrale : tags compacts, nom de l'arrêt, commune et correspondances
         Column(
             modifier = Modifier
                 .weight(1f)
                 .alpha(contentAlpha)
-                .padding(vertical = 6.dp)
+                .padding(vertical = if (isCardHighlighted) 10.dp else 8.dp)
         ) {
-            if (item.isTerminus) {
-                Surface(
-                    shape = RoundedCornerShape(5.dp),
-                    color = Color(0xFFD32F2F).copy(alpha = 0.14f),
-                    modifier = Modifier.padding(bottom = 3.dp)
+            if (item.isTerminus || item.isStart || item.isCurrentStop) {
+                FlowRow(
+                    modifier = Modifier.padding(bottom = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = "TERMINUS",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.5.sp,
-                        color = Color(0xFFD32F2F),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                    )
-                }
-            } else if (item.isStart) {
-                Surface(
-                    shape = RoundedCornerShape(5.dp),
-                    color = Color(0xFF1976D2).copy(alpha = 0.14f),
-                    modifier = Modifier.padding(bottom = 3.dp)
-                ) {
-                    Text(
-                        text = "DÉPART DE LA LIGNE",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.5.sp,
-                        color = Color(0xFF1976D2),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                    )
-                }
-            }
+                    if (item.isTerminus) {
+                        Surface(
+                            shape = RoundedCornerShape(5.dp),
+                            color = Color(0xFFD32F2F).copy(alpha = 0.16f)
+                        ) {
+                            Text(
+                                text = "TERMINUS",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.5.sp,
+                                color = Color(0xFFD32F2F),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else if (item.isStart) {
+                        Surface(
+                            shape = RoundedCornerShape(5.dp),
+                            color = Color(0xFF1976D2).copy(alpha = 0.16f)
+                        ) {
+                            Text(
+                                text = "DÉPART DE LA LIGNE",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.5.sp,
+                                color = if (isDarkTheme) Color(0xFF60A5FA) else Color(0xFF1565C0),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
 
-            if (item.isCurrentStop) {
-                Surface(
-                    shape = RoundedCornerShape(5.dp),
-                    color = routeColor.copy(alpha = 0.20f),
-                    modifier = Modifier.padding(bottom = 3.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.LocationOn,
-                            contentDescription = null,
-                            tint = if (isDarkTheme) Color.White else textPrimaryColor,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text(
-                            text = "VOUS ÊTES ICI",
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 0.4.sp,
-                            color = if (isDarkTheme) Color.White else textPrimaryColor
-                        )
+                    if (item.isCurrentStop) {
+                        Surface(
+                            shape = RoundedCornerShape(5.dp),
+                            color = routeColor.copy(alpha = 0.22f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    tint = if (isDarkTheme) Color.White else textPrimaryColor,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "VOUS ÊTES ICI",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 0.4.sp,
+                                    color = if (isDarkTheme) Color.White else textPrimaryColor
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -832,37 +921,49 @@ private fun RouteStopTimelineRow(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    text = item.stopName,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = if (item.isCurrentStop || item.isTerminus || item.isStart) {
-                            FontWeight.Black
-                        } else {
-                            FontWeight.SemiBold
-                        },
-                        fontSize = if (item.isCurrentStop || item.isTerminus || item.isStart) 15.5.sp else 14.5.sp,
-                        color = if (item.isCurrentStop && !isDarkTheme) textPrimaryColor else textPrimaryColor
-                    ),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.stopName,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = if (isCardHighlighted) FontWeight.Black else FontWeight.SemiBold,
+                            fontSize = if (isCardHighlighted) 15.5.sp else 14.5.sp,
+                            color = textPrimaryColor
+                        ),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (!item.commune.isNullOrBlank()) {
+                        Text(
+                            text = item.commune,
+                            fontSize = 11.5.sp,
+                            color = textSecondaryColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
 
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
-                Text(
-                    text = "${item.sequenceIndex}",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = textSecondaryColor.copy(alpha = 0.75f)
-                )
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (isDarkTheme) Color(0xFF1E293B) else Color(0xFFF1F5F9)
+                ) {
+                    Text(
+                        text = "${item.sequenceIndex}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textSecondaryColor,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
             }
 
             if (item.connectingLines.isNotEmpty()) {
                 FlowRow(
-                    modifier = Modifier.padding(top = 4.dp),
+                    modifier = Modifier.padding(top = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
                         text = "Corresp.",
@@ -873,7 +974,7 @@ private fun RouteStopTimelineRow(
                     )
                     item.connectingLines.take(6).forEach { conn ->
                         Surface(
-                            shape = RoundedCornerShape(4.dp),
+                            shape = RoundedCornerShape(5.dp),
                             color = if (isDarkTheme) Color(0xFF263040) else Color(0xFFE2E8F0)
                         ) {
                             Text(
@@ -881,7 +982,7 @@ private fun RouteStopTimelineRow(
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = textPrimaryColor,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
                             )
                         }
                     }
@@ -896,14 +997,5 @@ private fun RouteStopTimelineRow(
                 }
             }
         }
-
-        Spacer(modifier = Modifier.width(2.dp))
-
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = textSecondaryColor.copy(alpha = 0.55f),
-            modifier = Modifier.size(18.dp)
-        )
     }
 }
