@@ -1242,6 +1242,15 @@ class ExampleRobolectricTest {
         assertEquals(0, guarded[0].delayMinutes)
         assertEquals(com.example.data.model.DepartureStatus.ON_TIME, guarded[0].status)
         assertTrue(guarded[0].isDelayIndeterminate)
+        assertTrue((guarded[0].rawDelayMinutes ?: 0) in 504..506 || (guarded[0].rawDelayMinutes ?: 0) in -506..-504 || Math.abs(guarded[0].rawDelayMinutes ?: 0) > 45)
+
+        val detail = com.example.data.repository.RouteStopsRepository(context).getRouteDetail(
+            departure = guarded[0],
+            currentStopName = "Pôle Bosquet"
+        )
+        assertEquals(guarded[0].rawDelayMinutes, detail.rawDelayMinutes)
+        assertEquals(0, detail.delayMinutes)
+        assertTrue(detail.isDelayIndeterminate)
 
         // Cas 2 : retard réaliste de +4 min par rapport à un horaire GTFS concordant
         val nearCal = (nowCal.clone() as java.util.Calendar).apply { add(java.util.Calendar.MINUTE, 1) }

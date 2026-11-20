@@ -349,6 +349,7 @@ class RouteStopsRepository(
             departureStatus = departure.status,
             isRealTime = departure.isRealTime,
             isDelayIndeterminate = departure.isDelayIndeterminate,
+            rawDelayMinutes = departure.rawDelayMinutes,
             stopsRemainingToTerminus = stopsRemaining,
             isLoadingStops = isLoadingStops && chronologicalStops.isEmpty()
         )

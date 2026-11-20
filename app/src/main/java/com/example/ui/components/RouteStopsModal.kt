@@ -160,16 +160,22 @@ fun RouteStopsModal(
     val displayArrivalTime = routeDetail.expectedTimeFormatted?.takeIf { it.contains(":") }
         ?: routeDetail.aimedTimeFormatted?.takeIf { it.contains(":") }
 
+    val displayedDelayMinutes = if (routeDetail.isDelayIndeterminate && routeDetail.rawDelayMinutes != null) {
+        routeDetail.rawDelayMinutes
+    } else {
+        routeDetail.delayMinutes
+    }
+
     val statusText = when {
         !routeDetail.isRealTime -> "Théorique"
-        routeDetail.delayMinutes > 0 -> "+${routeDetail.delayMinutes} min"
-        routeDetail.delayMinutes < 0 -> "${routeDetail.delayMinutes} min"
+        displayedDelayMinutes > 0 -> "+$displayedDelayMinutes min"
+        displayedDelayMinutes < 0 -> "$displayedDelayMinutes min"
         else -> "À l'heure"
     }
     val statusColor = when {
         !routeDetail.isRealTime -> textSecondaryColor
-        routeDetail.delayMinutes > 0 -> Color(0xFFD32F2F)
-        routeDetail.delayMinutes < 0 -> Color(0xFF0288D1)
+        displayedDelayMinutes > 0 -> Color(0xFFD32F2F)
+        displayedDelayMinutes < 0 -> Color(0xFF0288D1)
         routeDetail.isDelayIndeterminate -> textSecondaryColor
         else -> Color(0xFF2E7D32)
     }
@@ -369,7 +375,8 @@ fun RouteStopsModal(
 
                     // Bandeau compact temps réel du passage sélectionné
                     val remaining = routeDetail.stopsRemainingToTerminus
-                    if (waitLabel != null || displayArrivalTime != null || remaining != null) {
+                    val hasRawAberrantDelay = routeDetail.isDelayIndeterminate && routeDetail.rawDelayMinutes != null
+                    if (waitLabel != null || displayArrivalTime != null || remaining != null || hasRawAberrantDelay) {
                         Spacer(modifier = Modifier.height(10.dp))
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -433,28 +440,31 @@ fun RouteStopsModal(
                                     )
                                 }
 
-                                if (displayArrivalTime != null) {
+                                if (displayArrivalTime != null || hasRawAberrantDelay) {
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column(horizontalAlignment = Alignment.End) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = Icons.Default.Schedule,
-                                                contentDescription = null,
-                                                tint = textSecondaryColor,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = displayArrivalTime,
-                                                fontSize = 13.5.sp,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                color = textPrimaryColor
-                                            )
+                                        if (displayArrivalTime != null) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Schedule,
+                                                    contentDescription = null,
+                                                    tint = textSecondaryColor,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(
+                                                    text = displayArrivalTime,
+                                                    fontSize = 13.5.sp,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = textPrimaryColor
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(2.dp))
                                         }
-                                        Spacer(modifier = Modifier.height(2.dp))
                                         Surface(
                                             shape = RoundedCornerShape(5.dp),
-                                            color = statusColor.copy(alpha = 0.14f)
+                                            color = statusColor.copy(alpha = 0.14f),
+                                            modifier = Modifier.testTag("route_status_badge")
                                         ) {
                                             Text(
                                                 text = statusText,

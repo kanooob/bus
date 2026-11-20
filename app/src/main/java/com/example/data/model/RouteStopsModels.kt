@@ -41,6 +41,7 @@ data class RouteLineDetail(
     val departureStatus: DepartureStatus? = null,
     val isRealTime: Boolean = true,
     val isDelayIndeterminate: Boolean = false,
+    val rawDelayMinutes: Int? = null,
     val stopsRemainingToTerminus: Int? = null,
     val isLoadingStops: Boolean = false
 )

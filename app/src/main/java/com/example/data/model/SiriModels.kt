@@ -47,5 +47,6 @@ data class DepartureComparison(
     val minutesUntilDeparture: Long,               // Estimation de temps d'attente
     val comparisonLabel: String,                   // "17:16 GTFS ➔ 17:17 Temps réel [+1 min]"
     val iconUrl: String? = null,                   // URL du PNG officiel (liste-des-icones-des-lignes)
-    val isDelayIndeterminate: Boolean = false      // true si retard aberrant / sans horaire théorique concordant
+    val isDelayIndeterminate: Boolean = false,     // true si retard aberrant / sans horaire théorique concordant
+    val rawDelayMinutes: Int? = null               // Écart brut en minutes avant garde-fou (affiché dans Plus d'info)
 )

@@ -1593,6 +1593,7 @@ class IdelisRepository(
             val isPlausibleMatch = bestTheo != null && abs(bestDelay) <= MAX_PLAUSIBLE_DELAY_MINUTES
             val matchedTheo = if (isPlausibleMatch) bestTheo else null
             val isDelayIndeterminate = !isPlausibleMatch
+            val rawDelayMinutes = if (bestTheo != null) bestDelay else null
 
             val aimedTimeFormatted = if (matchedTheo != null) {
                 String.format(Locale.FRANCE, "%02d:%02d", bestTheoHour % 24, bestTheoMin)
@@ -1656,7 +1657,8 @@ class IdelisRepository(
                 minutesUntilDeparture = waitMins,
                 comparisonLabel = comparisonLabel,
                 iconUrl = iconUrl,
-                isDelayIndeterminate = isDelayIndeterminate
+                isDelayIndeterminate = isDelayIndeterminate,
+                rawDelayMinutes = rawDelayMinutes
             )
         }.sortedBy { it.minutesUntilDeparture }
     }
@@ -1677,6 +1679,7 @@ class IdelisRepository(
             } else {
                 0
             }
+            var rawDiffMinutes: Int? = if (aimedTimeMs > 0 && expectedTimeMs > 0) diffMinutes else null
 
             var aimedFormatted = formatMillisToTime(aimedTimeMs).ifBlank {
                 extractSimpleTime(visit.aimedDepartureTime)
@@ -1721,6 +1724,9 @@ class IdelisRepository(
                             bestDiff = d
                             bestAimed = String.format(Locale.FRANCE, "%02d:%02d", h % 24, m)
                         }
+                    }
+                    if (bestDiff != Int.MAX_VALUE) {
+                        rawDiffMinutes = bestDiff
                     }
                     if (bestDiff != Int.MAX_VALUE && abs(bestDiff) <= MAX_PLAUSIBLE_DELAY_MINUTES) {
                         diffMinutes = bestDiff
@@ -1771,7 +1777,8 @@ class IdelisRepository(
                     minutesUntilDeparture = minutesUntil,
                     comparisonLabel = comparisonLabel,
                     iconUrl = iconUrl,
-                    isDelayIndeterminate = isDelayIndeterminate
+                    isDelayIndeterminate = isDelayIndeterminate,
+                    rawDelayMinutes = rawDiffMinutes
                 )
             )
         }
