@@ -11,7 +11,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -382,15 +384,28 @@ fun TransitBoardScreen(
             }
         }
 
-        // Modale affichant le terminus en haut et l'ensemble des arrêts de la ligne dans l'ordre
-        if (uiState.selectedRouteDetail != null) {
-            com.example.ui.components.RouteStopsModal(
-                routeDetail = uiState.selectedRouteDetail!!,
-                currentStopName = uiState.selectedStop?.stopName ?: "Pôle Bosquet",
-                onStopSelected = { stopName -> viewModel.selectStopFromRouteDetail(stopName) },
-                onDismissRequest = { viewModel.clearSelectedRouteDetail() },
-                isDarkTheme = effectiveDarkTheme
-            )
+        // Modale plein écran affichant direction + tous les arrêts de la ligne dans l'ordre
+        val routeDetailToShow = remember(uiState.selectedRouteDetail) {
+            uiState.selectedRouteDetail
+        }
+        var lastRouteDetail by remember { mutableStateOf(routeDetailToShow) }
+        if (routeDetailToShow != null) {
+            lastRouteDetail = routeDetailToShow
+        }
+        AnimatedVisibility(
+            visible = uiState.selectedRouteDetail != null,
+            enter = slideInVertically(tween(240)) { it / 5 } + fadeIn(tween(200)),
+            exit = slideOutVertically(tween(200)) { it / 5 } + fadeOut(tween(180))
+        ) {
+            lastRouteDetail?.let { detail ->
+                com.example.ui.components.RouteStopsModal(
+                    routeDetail = detail,
+                    currentStopName = uiState.selectedStop?.stopName ?: "Pôle Bosquet",
+                    onStopSelected = { stopName -> viewModel.selectStopFromRouteDetail(stopName) },
+                    onDismissRequest = { viewModel.clearSelectedRouteDetail() },
+                    isDarkTheme = effectiveDarkTheme
+                )
+            }
         }
 
         // Modale de sélection de l'arrêt avec autocomplétion idelis.fr et favoris
