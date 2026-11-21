@@ -302,6 +302,14 @@ fun TransitBoardScreen(
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        if (!uiState.departuresErrorMessage.isNullOrBlank()) {
+                            DeparturesErrorBanner(
+                                errorMessage = uiState.departuresErrorMessage!!,
+                                onRetry = { viewModel.refreshDepartures(isManual = true, forceRefresh = true) },
+                                onDismiss = { viewModel.dismissDeparturesError() }
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
                         StopNotServedCard(
                             message = uiState.notServedMessage,
                             notServedEntries = uiState.notServedEntries,
@@ -313,6 +321,62 @@ fun TransitBoardScreen(
                             style = MaterialTheme.typography.bodySmall.copy(color = Color.Gray),
                             textAlign = TextAlign.Center
                         )
+                    }
+                } else if (uiState.departures.isEmpty() && !uiState.departuresErrorMessage.isNullOrBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .testTag("departures_error_state"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(horizontal = 24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = "Erreur de chargement",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(54.dp)
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Text(
+                                text = "Impossible de charger les passages",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = contentTextColor
+                                ),
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = uiState.departuresErrorMessage!!,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(18.dp))
+                            Button(
+                                onClick = { viewModel.refreshDepartures(isManual = true, forceRefresh = true) },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("retry_departures_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Réessayer",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 } else if (uiState.departures.isEmpty()) {
                     Box(
@@ -355,6 +419,18 @@ fun TransitBoardScreen(
                             .testTag("departures_list"),
                         contentPadding = PaddingValues(vertical = 4.dp)
                     ) {
+                        if (!uiState.departuresErrorMessage.isNullOrBlank()) {
+                            item(key = "departures_error_banner") {
+                                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                                    DeparturesErrorBanner(
+                                        errorMessage = uiState.departuresErrorMessage!!,
+                                        onRetry = { viewModel.refreshDepartures(isManual = true, forceRefresh = true) },
+                                        onDismiss = { viewModel.dismissDeparturesError() }
+                                    )
+                                }
+                            }
+                        }
+
                         if (uiState.isStopNotServed) {
                             item(key = "stop_not_served_banner") {
                                 Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
@@ -420,10 +496,13 @@ fun TransitBoardScreen(
                 onSearchQueryChange = { query -> viewModel.updatePickerSearchQuery(query) },
                 webSuggestions = uiState.webSuggestions,
                 isWebSearching = uiState.isWebSearching,
+                webSearchErrorMessage = uiState.webSearchErrorMessage,
+                onRetryWebSearch = { viewModel.searchWebAutocomplete(uiState.searchQuery) },
                 isLocatingNearest = uiState.isLocatingNearest,
+                nearestStopErrorMessage = uiState.nearestStopErrorMessage,
                 onNearestStopRequested = { lat, lon, onComplete ->
-                    viewModel.selectNearestStopAsync(lat, lon) { _, _ ->
-                        onComplete()
+                    viewModel.selectNearestStopAsync(lat, lon) { stop, _ ->
+                        onComplete(stop != null)
                     }
                 },
                 onWebStopSelected = { webStop -> viewModel.selectWebStop(webStop) },
@@ -431,6 +510,7 @@ fun TransitBoardScreen(
                 onToggleFavoriteWebStop = { webStop -> viewModel.toggleFavoriteWebStop(webStop) },
                 onStopSelected = { stop -> viewModel.selectStop(stop) },
                 onDismissRequest = {
+                    viewModel.clearNearestStopError()
                     isStopPickerOpen = false
                 },
                 isDarkTheme = effectiveDarkTheme
@@ -518,6 +598,89 @@ fun TransitBoardScreen(
                 onRefreshCurrentVersionNotes = { viewModel.loadCurrentVersionReleaseNotes(forceRefresh = true) },
                 onDismissRequest = { isSettingsOpen = false }
             )
+        }
+    }
+}
+
+@Composable
+private fun DeparturesErrorBanner(
+    errorMessage: String,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val containerColor = MaterialTheme.colorScheme.errorContainer
+    val contentColor = MaterialTheme.colorScheme.onErrorContainer
+
+    Surface(
+        color = containerColor,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("departures_error_banner")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, top = 8.dp, bottom = 10.dp, end = 4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ErrorOutline,
+                    contentDescription = "Erreur d'actualisation",
+                    tint = contentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Actualisation impossible — horaires précédents conservés",
+                    color = contentColor,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("dismiss_departures_error_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Fermer le message d'erreur",
+                        tint = contentColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            Text(
+                text = errorMessage,
+                color = contentColor.copy(alpha = 0.9f),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(end = 12.dp)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = onRetry,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("retry_departures_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = null,
+                    tint = contentColor,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Réessayer",
+                    color = contentColor,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

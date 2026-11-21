@@ -25,6 +25,8 @@ import com.example.data.remote.AppUpdateNotifier
 import com.example.data.remote.AppUpdateState
 import com.example.data.remote.GitHubReleaseInfo
 import com.example.data.remote.IdelisSiriService
+import com.example.data.remote.NetworkErrorHelper
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import com.example.data.remote.TrafficAlertNotifier
 import com.example.data.remote.TrafficAlertSyncReceiver
 import com.example.data.repository.DeparturesResult
@@ -64,6 +66,7 @@ data class TransitBoardUiState(
     val isLoading: Boolean = false,
     val isManualRefreshing: Boolean = false,
     val isOfflineFallback: Boolean = false,
+    val departuresErrorMessage: String? = null,
     val isSimulationMode: Boolean = false, // Retards simulés désactivés, seuls les passages issus des requêtes réelles sont affichés
     val requestorRef: String = IdelisSiriService.DEFAULT_REQUESTOR_REF,
     val statusMessage: String = "",
@@ -109,7 +112,9 @@ data class TransitBoardUiState(
     // Autocomplétion et recherche en direct idelis.fr (?type=777)
     val webSuggestions: List<com.example.data.model.IdelisWebStop> = emptyList(),
     val isWebSearching: Boolean = false,
+    val webSearchErrorMessage: String? = null,
     val isLocatingNearest: Boolean = false,
+    val nearestStopErrorMessage: String? = null,
     // Paramètres avancés : URLs & Requêtes
     val webMonitoringUrl: String = com.example.data.local.PreferencesManager.DEFAULT_WEB_URL,
     val gtfsZipUrl: String = com.example.data.local.PreferencesManager.DEFAULT_GTFS_ZIP_URL,
@@ -208,10 +213,20 @@ class TransitBoardViewModel(
     @Volatile
     private var pendingExternalStopSelection: Boolean = false
 
+    @Volatile
+    private var isAppInForeground: Boolean = true
+
+    @Volatile
+    private var backgroundedAtMs: Long = 0L
+
+    @Volatile
+    private var lastDeparturesRefreshCompletedAtMs: Long = 0L
+
     private val stopUiCache = ConcurrentHashMap<String, Pair<Long, DeparturesResult>>()
 
     companion object {
         private const val STOP_UI_CACHE_TTL_MS = 90_000L
+        private const val FOREGROUND_REFRESH_MIN_BG_MS = 2_000L
     }
 
     init {
@@ -308,7 +323,14 @@ class TransitBoardViewModel(
                     notServedEntries = reenrichedNotServed,
                     selectedRouteDetail = refreshedRouteDetail ?: current.selectedRouteDetail,
                     isDownloadingData = false,
-                    downloadStatus = result.getOrNull() ?: "Données locales actives",
+                    downloadStatus = if (result.isSuccess) {
+                        result.getOrNull() ?: "Données locales actives"
+                    } else {
+                        NetworkErrorHelper.formatError(
+                            result.exceptionOrNull(),
+                            fallback = "Synchronisation OpenData partielle (mode local actif)"
+                        )
+                    },
                     activePeriod = repository.getCurrentPeriod(),
                     worksNotes = repository.getWorksAlerts()
                 )
@@ -316,7 +338,8 @@ class TransitBoardViewModel(
 
             // Ne re-déclencher stop_monitoring que si aucun départ n'a encore été chargé au démarrage
             val stateAfter = _uiState.value
-            if (stateAfter.departures.isEmpty() &&
+            if (isAppInForeground &&
+                stateAfter.departures.isEmpty() &&
                 !stateAfter.isStopNotServed &&
                 stateAfter.lastUpdatedFormatted.isBlank() &&
                 refreshJob?.isActive != true
@@ -466,10 +489,24 @@ class TransitBoardViewModel(
                         it.copy(
                             activePeriod = repository.getCurrentPeriod(),
                             isTrafficLoading = false,
-                            trafficErrorMessage = result.exceptionOrNull()?.localizedMessage
-                                ?: "Impossible de récupérer les infos trafic idelis.fr"
+                            trafficErrorMessage = NetworkErrorHelper.formatError(
+                                result.exceptionOrNull(),
+                                fallback = "Impossible de récupérer les infos trafic sur idelis.fr."
+                            )
                         )
                     }
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
+                _uiState.update {
+                    it.copy(
+                        activePeriod = repository.getCurrentPeriod(),
+                        isTrafficLoading = false,
+                        trafficErrorMessage = NetworkErrorHelper.formatError(
+                            e,
+                            fallback = "Impossible de récupérer les infos trafic sur idelis.fr."
+                        )
+                    )
                 }
             } finally {
                 isTrafficRefreshInProgress = false
@@ -498,7 +535,14 @@ class TransitBoardViewModel(
             _uiState.update {
                 it.copy(
                     isLoading = false,
-                    syncSuccessMessage = result.getOrNull() ?: "Données synchronisées avec succès.",
+                    syncSuccessMessage = if (result.isSuccess) {
+                        result.getOrNull() ?: "Données synchronisées avec succès."
+                    } else {
+                        NetworkErrorHelper.formatError(
+                            result.exceptionOrNull(),
+                            fallback = "Échec de la synchronisation des données Idelis."
+                        )
+                    },
                     activePeriod = repository.getCurrentPeriod(),
                     worksNotes = repository.getWorksAlerts()
                 )
@@ -771,8 +815,8 @@ class TransitBoardViewModel(
                 .distinct()
                 .take(PreferencesManager.MAX_RECENT_STOPS)
         val interval = _uiState.value.inAppRefreshFrequency.intervalSeconds
-        val cachedPair = stopUiCache[stop.stopId]?.takeIf { (ts, _) ->
-            System.currentTimeMillis() - ts < STOP_UI_CACHE_TTL_MS
+        val cachedPair = stopUiCache[stop.stopId]?.takeIf { (ts, res) ->
+            !res.isError && System.currentTimeMillis() - ts < STOP_UI_CACHE_TTL_MS
         }
         val cachedResult = cachedPair?.second
 
@@ -790,6 +834,7 @@ class TransitBoardViewModel(
                     isLoading = false,
                     isManualRefreshing = false,
                     isOfflineFallback = cachedResult.isOfflineFallback,
+                    departuresErrorMessage = null,
                     statusMessage = cachedResult.statusMessage,
                     isStopNotServed = cachedResult.isStopNotServed,
                     notServedMessage = cachedResult.notServedMessage,
@@ -806,6 +851,8 @@ class TransitBoardViewModel(
                     selectedLineFilter = null,
                     isLoading = true,
                     isManualRefreshing = false,
+                    isOfflineFallback = false,
+                    departuresErrorMessage = null,
                     isStopNotServed = false,
                     notServedMessage = null,
                     notServedEntries = emptyList(),
@@ -943,23 +990,51 @@ class TransitBoardViewModel(
         webSearchJob?.cancel()
         val trimmed = query.trim()
         if (trimmed.length < 2) {
-            _uiState.update { it.copy(webSuggestions = emptyList(), isWebSearching = false) }
+            _uiState.update {
+                it.copy(
+                    webSuggestions = emptyList(),
+                    isWebSearching = false,
+                    webSearchErrorMessage = null
+                )
+            }
             return
         }
 
         webSearchJob = viewModelScope.launch {
-            _uiState.update { it.copy(isWebSearching = true) }
-            delay(350L) // Débounce pour fluidité de frappe
-            val result = repository.searchWebStops(trimmed)
-            if (result.isSuccess) {
+            _uiState.update { it.copy(isWebSearching = true, webSearchErrorMessage = null) }
+            try {
+                delay(350L) // Débounce pour fluidité de frappe
+                val result = repository.searchWebStops(trimmed)
+                if (result.isSuccess) {
+                    _uiState.update {
+                        it.copy(
+                            webSuggestions = result.getOrNull().orEmpty(),
+                            isWebSearching = false,
+                            webSearchErrorMessage = null
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isWebSearching = false,
+                            webSearchErrorMessage = NetworkErrorHelper.formatError(
+                                result.exceptionOrNull(),
+                                fallback = "Impossible de rechercher l'arrêt sur idelis.fr."
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
                 _uiState.update {
                     it.copy(
-                        webSuggestions = result.getOrNull().orEmpty(),
-                        isWebSearching = false
+                        isWebSearching = false,
+                        webSearchErrorMessage = NetworkErrorHelper.formatError(
+                            e,
+                            fallback = "Impossible de rechercher l'arrêt sur idelis.fr."
+                        )
                     )
                 }
-            } else {
-                _uiState.update { it.copy(isWebSearching = false) }
             }
         }
     }
@@ -976,7 +1051,17 @@ class TransitBoardViewModel(
 
     fun clearWebSuggestions() {
         webSearchJob?.cancel()
-        _uiState.update { it.copy(webSuggestions = emptyList(), isWebSearching = false) }
+        _uiState.update {
+            it.copy(
+                webSuggestions = emptyList(),
+                isWebSearching = false,
+                webSearchErrorMessage = null
+            )
+        }
+    }
+
+    fun clearNearestStopError() {
+        _uiState.update { it.copy(nearestStopErrorMessage = null) }
     }
 
     /**
@@ -990,7 +1075,7 @@ class TransitBoardViewModel(
         onResolved: (GtfsStop?, String?) -> Unit = { _, _ -> }
     ) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLocatingNearest = true) }
+            _uiState.update { it.copy(isLocatingNearest = true, nearestStopErrorMessage = null) }
             try {
                 val resolution = repository.resolveAndSaveNearestStop(
                     userLat = userLat,
@@ -1005,14 +1090,34 @@ class TransitBoardViewModel(
                         String.format(Locale.FRANCE, "%.1f km", resolution.distanceMeters / 1000.0)
                     }
                     val feedback = "Arrêt le plus proche : ${resolution.stop.stopName} ($distLabel)"
-                    _uiState.update { it.copy(isLocatingNearest = false) }
+                    _uiState.update {
+                        it.copy(
+                            isLocatingNearest = false,
+                            nearestStopErrorMessage = null
+                        )
+                    }
                     onResolved(resolution.stop, feedback)
                 } else {
-                    _uiState.update { it.copy(isLocatingNearest = false) }
+                    _uiState.update {
+                        it.copy(
+                            isLocatingNearest = false,
+                            nearestStopErrorMessage = "Aucun arrêt géolocalisé trouvé à proximité. Vérifiez votre connexion."
+                        )
+                    }
                     onResolved(null, null)
                 }
-            } catch (_: Exception) {
-                _uiState.update { it.copy(isLocatingNearest = false) }
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
+                val errMsg = NetworkErrorHelper.formatError(
+                    e,
+                    fallback = "Impossible de trouver l'arrêt le plus proche."
+                )
+                _uiState.update {
+                    it.copy(
+                        isLocatingNearest = false,
+                        nearestStopErrorMessage = errMsg
+                    )
+                }
                 onResolved(null, null)
             }
         }
@@ -1176,60 +1281,146 @@ class TransitBoardViewModel(
         _uiState.update { it.copy(isAutoRefreshPaused = next) }
     }
 
+    fun onAppBackgrounded() {
+        isAppInForeground = false
+        if (backgroundedAtMs == 0L) {
+            backgroundedAtMs = System.currentTimeMillis()
+        }
+    }
+
+    fun onAppForegrounded() {
+        val wasBackgrounded = !isAppInForeground || backgroundedAtMs > 0L
+        val bgDurationMs = if (backgroundedAtMs > 0L) {
+            (System.currentTimeMillis() - backgroundedAtMs).coerceAtLeast(0L)
+        } else {
+            0L
+        }
+        isAppInForeground = true
+        backgroundedAtMs = 0L
+
+        if (!wasBackgrounded) return
+
+        repository.evictStaleConnections()
+        val freq = _uiState.value.inAppRefreshFrequency
+        if (freq != InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE && freq.intervalSeconds > 0 && tickerJob?.isActive != true) {
+            startAutoRefreshTicker()
+        }
+
+        val state = _uiState.value
+        if (state.selectedStop != null) {
+            val elapsedSinceLastRefresh = System.currentTimeMillis() - lastDeparturesRefreshCompletedAtMs
+            val shouldRefresh = state.departuresErrorMessage != null ||
+                (state.departures.isEmpty() && !state.isStopNotServed) ||
+                bgDurationMs >= FOREGROUND_REFRESH_MIN_BG_MS ||
+                lastDeparturesRefreshCompletedAtMs == 0L ||
+                elapsedSinceLastRefresh >= 5_000L
+
+            if (shouldRefresh && (refreshJob?.isActive != true || bgDurationMs >= 5_000L)) {
+                refreshDepartures(isManual = false, forceRefresh = true)
+            }
+        }
+    }
+
+    fun dismissDeparturesError() {
+        _uiState.update { it.copy(departuresErrorMessage = null) }
+    }
+
     fun refreshDepartures(isManual: Boolean = false, forceRefresh: Boolean = isManual) {
         val stop = _uiState.value.selectedStop ?: return
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             _uiState.update { current ->
                 current.copy(
-                    isLoading = current.departures.isEmpty(),
+                    isLoading = current.departures.isEmpty() && !current.isStopNotServed,
                     isManualRefreshing = isManual
                 )
             }
-            val result = repository.getDeparturesForStop(
-                stopId = stop.stopId,
-                useSimulationMode = false,
-                forceOffline = false,
-                requestorRef = _uiState.value.requestorRef,
-                stopOverride = stop,
-                forceRefresh = forceRefresh
-            )
-
-            if (_uiState.value.selectedStop?.stopId != stop.stopId) {
-                return@launch
-            }
-
-            if (!result.isOfflineFallback) {
-                stopUiCache[stop.stopId] = System.currentTimeMillis() to result
-            }
-
-            val lines = result.departures.map { it.lineRef }.distinct()
-            val currentFilter = _uiState.value.selectedLineFilter
-            val filtered = if (currentFilter != null) {
-                result.departures.filter { it.lineRef.equals(currentFilter, ignoreCase = true) }
-            } else {
-                result.departures
-            }
-
-            val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
-            val updatedStr = timeFormat.format(Date())
-            val nextInterval = _uiState.value.inAppRefreshFrequency.intervalSeconds
-
-            _uiState.update { current ->
-                current.copy(
-                    departures = result.departures,
-                    filteredDepartures = filtered,
-                    availableLines = lines,
-                    isLoading = false,
-                    isManualRefreshing = false,
-                    isOfflineFallback = result.isOfflineFallback,
-                    statusMessage = result.statusMessage,
-                    lastUpdatedFormatted = updatedStr,
-                    secondsUntilRefresh = nextInterval,
-                    isStopNotServed = result.isStopNotServed,
-                    notServedMessage = result.notServedMessage,
-                    notServedEntries = result.notServedEntries
+            try {
+                val result = repository.getDeparturesForStop(
+                    stopId = stop.stopId,
+                    useSimulationMode = false,
+                    forceOffline = false,
+                    requestorRef = _uiState.value.requestorRef,
+                    stopOverride = stop,
+                    forceRefresh = forceRefresh
                 )
+
+                if (_uiState.value.selectedStop?.stopId != stop.stopId) {
+                    return@launch
+                }
+
+                val nextInterval = _uiState.value.inAppRefreshFrequency.intervalSeconds
+
+                if (result.isError) {
+                    val errMsg = result.errorMessage ?: result.statusMessage
+                    _uiState.update { current ->
+                        val hasExistingData = current.departures.isNotEmpty() || current.isStopNotServed
+                        current.copy(
+                            isLoading = false,
+                            isManualRefreshing = false,
+                            isOfflineFallback = true,
+                            departuresErrorMessage = errMsg,
+                            statusMessage = if (hasExistingData) current.statusMessage else errMsg,
+                            secondsUntilRefresh = nextInterval
+                        )
+                    }
+                    return@launch
+                }
+
+                lastDeparturesRefreshCompletedAtMs = System.currentTimeMillis()
+                if (!result.isOfflineFallback) {
+                    stopUiCache[stop.stopId] = System.currentTimeMillis() to result
+                }
+
+                val lines = result.departures.map { it.lineRef }.distinct()
+                val currentFilter = _uiState.value.selectedLineFilter
+                val filtered = if (currentFilter != null) {
+                    result.departures.filter { it.lineRef.equals(currentFilter, ignoreCase = true) }
+                } else {
+                    result.departures
+                }
+
+                val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
+                val updatedStr = timeFormat.format(Date())
+
+                _uiState.update { current ->
+                    current.copy(
+                        departures = result.departures,
+                        filteredDepartures = filtered,
+                        availableLines = lines,
+                        isLoading = false,
+                        isManualRefreshing = false,
+                        isOfflineFallback = result.isOfflineFallback,
+                        departuresErrorMessage = null,
+                        statusMessage = result.statusMessage,
+                        lastUpdatedFormatted = updatedStr,
+                        secondsUntilRefresh = nextInterval,
+                        isStopNotServed = result.isStopNotServed,
+                        notServedMessage = result.notServedMessage,
+                        notServedEntries = result.notServedEntries
+                    )
+                }
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
+                if (_uiState.value.selectedStop?.stopId != stop.stopId) {
+                    return@launch
+                }
+                val errMsg = NetworkErrorHelper.formatError(
+                    e,
+                    fallback = "Impossible de récupérer les prochains passages. Vérifiez votre connexion."
+                )
+                val nextInterval = _uiState.value.inAppRefreshFrequency.intervalSeconds
+                _uiState.update { current ->
+                    val hasExistingData = current.departures.isNotEmpty() || current.isStopNotServed
+                    current.copy(
+                        isLoading = false,
+                        isManualRefreshing = false,
+                        isOfflineFallback = true,
+                        departuresErrorMessage = errMsg,
+                        statusMessage = if (hasExistingData) current.statusMessage else errMsg,
+                        secondsUntilRefresh = nextInterval
+                    )
+                }
             }
         }
     }
@@ -1244,7 +1435,8 @@ class TransitBoardViewModel(
             while (isActive) {
                 delay(1000L)
                 val currentFreq = _uiState.value.inAppRefreshFrequency
-                val isPaused = _uiState.value.isAutoRefreshPaused ||
+                val isPaused = !isAppInForeground ||
+                    _uiState.value.isAutoRefreshPaused ||
                     currentFreq == InAppRefreshFrequency.ON_OPEN_OR_STOP_CHANGE ||
                     currentFreq.intervalSeconds <= 0
                 if (!isPaused) {
@@ -1468,8 +1660,10 @@ class TransitBoardViewModel(
             preferencesManager?.saveLastAppUpdateCheckTimestamp(System.currentTimeMillis())
 
             if (checkRes.isFailure) {
-                val errMsg = checkRes.exceptionOrNull()?.localizedMessage
-                    ?: "Erreur lors de la vérification GitHub"
+                val errMsg = NetworkErrorHelper.formatError(
+                    checkRes.exceptionOrNull(),
+                    fallback = "Impossible de vérifier les mises à jour sur GitHub."
+                )
                 _uiState.update {
                     it.copy(
                         appUpdateState = if (manualCheck) AppUpdateState.Error(errMsg) else AppUpdateState.Idle
@@ -1605,7 +1799,10 @@ class TransitBoardViewModel(
             _uiState.update {
                 it.copy(
                     appUpdateState = AppUpdateState.Error(
-                        message = dlResult.exceptionOrNull()?.localizedMessage ?: "Échec du téléchargement de la mise à jour",
+                        message = NetworkErrorHelper.formatError(
+                            dlResult.exceptionOrNull(),
+                            fallback = "Échec du téléchargement de la mise à jour."
+                        ),
                         release = release
                     ),
                     updatePromptVisible = true
@@ -1691,7 +1888,10 @@ class TransitBoardViewModel(
                 _uiState.update {
                     it.copy(
                         isLoadingCurrentVersionNotes = false,
-                        currentVersionNotesError = result.exceptionOrNull()?.localizedMessage
+                        currentVersionNotesError = NetworkErrorHelper.formatError(
+                            result.exceptionOrNull(),
+                            fallback = "Impossible de charger les notes de version."
+                        )
                     )
                 }
             }
@@ -1711,6 +1911,10 @@ class TransitBoardViewModel(
         gtfsSyncJob?.cancel()
         usageStatsPingJob?.cancel()
         routeDetailLoadJob?.cancel()
+    }
+
+    internal fun onClearedForTesting() {
+        onCleared()
     }
 }
 

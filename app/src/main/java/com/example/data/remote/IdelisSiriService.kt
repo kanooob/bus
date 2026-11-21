@@ -5,6 +5,7 @@ import com.example.data.model.BusVehicle
 import com.example.data.model.GtfsTheoreticalDeparture
 import com.example.data.model.SiriMonitoredStopVisit
 import com.example.data.model.TrafficAlert
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -29,6 +30,7 @@ class IdelisSiriService(
         .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 ) {
 
@@ -87,17 +89,18 @@ class IdelisSiriService(
                 if (!response.isSuccessful) {
                     val errorMsg = "HTTP ${response.code}: ${response.message}"
                     Log.w(TAG, "Échec appel SOAP GetStopMonitoring: $errorMsg")
-                    return@withContext Result.failure(Exception(errorMsg))
+                    return@withContext Result.failure(HttpStatusException(response.code, response.message))
                 }
                 response.body?.string().orEmpty()
             }
             if (responseXml.isBlank()) {
-                return@withContext Result.failure(Exception("Réponse SOAP XML vide"))
+                return@withContext Result.failure(InvalidServerResponseException("Réponse SOAP XML vide du serveur SIRI."))
             }
 
             val visits = xmlParser.parseStopMonitoringResponse(responseXml)
             Result.success(visits)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Erreur réseau SOAP SIRI: ${e.message}")
             Result.failure(e)
         }

@@ -62,6 +62,16 @@ class MainActivity : ComponentActivity() {
     private var isInitialResume = true
     private var lastWidgetResumeRefreshMs = 0L
 
+    override fun onStart() {
+        super.onStart()
+        viewModel.onAppForegrounded()
+    }
+
+    override fun onStop() {
+        viewModel.onAppBackgrounded()
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         val now = System.currentTimeMillis()

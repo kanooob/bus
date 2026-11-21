@@ -37,10 +37,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBus
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.NearMe
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -200,8 +206,11 @@ fun StopPickerModal(
     onToggleFavoriteWebStop: (IdelisWebStop) -> Unit = {},
     webSuggestions: List<IdelisWebStop> = emptyList(),
     isWebSearching: Boolean = false,
+    webSearchErrorMessage: String? = null,
+    onRetryWebSearch: () -> Unit = {},
     isLocatingNearest: Boolean = false,
-    onNearestStopRequested: ((Double, Double, () -> Unit) -> Unit)? = null,
+    nearestStopErrorMessage: String? = null,
+    onNearestStopRequested: ((Double, Double, (Boolean) -> Unit) -> Unit)? = null,
     onWebStopSelected: (IdelisWebStop) -> Unit = {},
     onStopSelected: (GtfsStop) -> Unit,
     onDismissRequest: () -> Unit,
@@ -226,6 +235,7 @@ fun StopPickerModal(
     var userLocation by remember { mutableStateOf<Location?>(null) }
     var isLocating by remember { mutableStateOf(false) }
     var locationFeedback by remember { mutableStateOf<String?>(null) }
+    var localLocationError by remember { mutableStateOf<String?>(null) }
 
     val favoriteStops = remember(stops, favoriteStopIds) {
         stops.filter { favoriteStopIds.contains(it.stopId) }
@@ -286,6 +296,7 @@ fun StopPickerModal(
     // Système de localisation de l'arrêt de bus le plus proche via recherche officielle idelis.fr
     fun findAndSelectNearest(hasPermission: Boolean) {
         isLocating = true
+        localLocationError = null
         coroutineScope.launch {
             val freshLoc = if (hasPermission) fetchBestLocation(context) else null
             val loc = freshLoc ?: userLocation ?: getLastKnownLocation(context) ?: Location("default_pau").apply {
@@ -295,9 +306,11 @@ fun StopPickerModal(
             userLocation = loc
 
             if (onNearestStopRequested != null) {
-                onNearestStopRequested(loc.latitude, loc.longitude) {
+                onNearestStopRequested(loc.latitude, loc.longitude) { success ->
                     isLocating = false
-                    onDismissRequest()
+                    if (success) {
+                        onDismissRequest()
+                    }
                 }
                 return@launch
             }
@@ -479,6 +492,38 @@ fun StopPickerModal(
                     )
                 }
 
+                val effectiveNearestError = nearestStopErrorMessage ?: localLocationError
+                if (!effectiveNearestError.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("nearest_stop_error")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = "Erreur géolocalisation",
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = effectiveNearestError,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Champ de recherche d'arrêt envoyant la requête en direct à idelis.fr
@@ -543,7 +588,55 @@ fun StopPickerModal(
                 ) {
                     // CAS 1 : RECHERCHE ACTIVE -> Affiche EXCLUSIVEMENT les arrêts reçus par requête idelis.fr
                     if (isSearching) {
-                        if (webSuggestions.isEmpty() && !isWebSearching && searchQuery.trim().length >= 2) {
+                        if (!webSearchErrorMessage.isNullOrBlank() && !isWebSearching && searchQuery.trim().length >= 2) {
+                            item(key = "web_search_error") {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.errorContainer,
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp)
+                                        .testTag("stop_search_error")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ErrorOutline,
+                                            contentDescription = "Erreur de recherche",
+                                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = webSearchErrorMessage,
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                fontWeight = FontWeight.SemiBold
+                                            ),
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        OutlinedButton(
+                                            onClick = onRetryWebSearch,
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier
+                                                .heightIn(min = 48.dp)
+                                                .testTag("retry_stop_search_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Refresh,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Réessayer", fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (webSuggestions.isEmpty() && !isWebSearching && searchQuery.trim().length >= 2) {
                             item(key = "no_web_results") {
                                 Box(
                                     modifier = Modifier

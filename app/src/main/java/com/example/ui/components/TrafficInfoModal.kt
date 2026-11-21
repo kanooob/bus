@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -337,7 +338,13 @@ fun TrafficInfoModal(
                                 textAlign = TextAlign.Center
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedButton(onClick = onRefresh, shape = RoundedCornerShape(12.dp)) {
+                            OutlinedButton(
+                                onClick = onRefresh,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("retry_traffic_button")
+                            ) {
                                 Text("Réessayer", fontWeight = FontWeight.Bold, color = primaryColor)
                             }
                         }

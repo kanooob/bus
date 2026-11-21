@@ -26,6 +26,8 @@ import com.example.data.remote.GtfsScheduleIndex
 import com.example.data.remote.IdelisExploreService
 import com.example.data.remote.IdelisSiriService
 import com.example.data.remote.IdelisWebScraperService
+import com.example.data.remote.NetworkErrorHelper
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import com.example.data.remote.OfficialRouteGtfs
 import com.example.data.remote.StopServing
 import com.example.data.remote.UsageStatsPingService
@@ -57,7 +59,9 @@ data class DeparturesResult(
     val statusMessage: String,
     val isStopNotServed: Boolean = false,
     val notServedMessage: String? = null,
-    val notServedEntries: List<NotServedEntry> = emptyList()
+    val notServedEntries: List<NotServedEntry> = emptyList(),
+    val isError: Boolean = false,
+    val errorMessage: String? = null
 )
 
 data class NearestStopResolution(
@@ -301,6 +305,10 @@ class IdelisRepository(
      */
     suspend fun getWebStopMonitoring(poleName: String): Result<IdelisWebMonitoringResult> {
         return webScraperService.getStopMonitoring(poleName)
+    }
+
+    fun evictStaleConnections() {
+        webScraperService.evictStaleConnections()
     }
 
     /**
@@ -920,6 +928,7 @@ class IdelisRepository(
 
                 Result.success("Données Idelis actives (${getCurrentPeriod().label})")
             } catch (e: Exception) {
+                e.rethrowIfCancellation()
                 Log.w(TAG, "Erreur téléchargement initial : ${e.message}")
                 Result.failure(e)
             }
@@ -1011,7 +1020,7 @@ class IdelisRepository(
 
         if (!forceRefresh) {
             recentDeparturesCache[requestKey]?.let { (cachedAtMs, cachedResult) ->
-                if (System.currentTimeMillis() - cachedAtMs < DEPARTURES_COALESCE_WINDOW_MS) {
+                if (!cachedResult.isError && System.currentTimeMillis() - cachedAtMs < DEPARTURES_COALESCE_WINDOW_MS) {
                     return@withContext cachedResult
                 }
             }
@@ -1020,7 +1029,7 @@ class IdelisRepository(
         val deferred = departuresMutex.withLock {
             if (!forceRefresh) {
                 recentDeparturesCache[requestKey]?.let { (cachedAtMs, cachedResult) ->
-                    if (System.currentTimeMillis() - cachedAtMs < DEPARTURES_COALESCE_WINDOW_MS) {
+                    if (!cachedResult.isError && System.currentTimeMillis() - cachedAtMs < DEPARTURES_COALESCE_WINDOW_MS) {
                         return@withContext cachedResult
                     }
                 }
@@ -1037,10 +1046,24 @@ class IdelisRepository(
                             poleName = poleName,
                             requestorRef = requestorRef
                         )
-                        if (result.departures.isNotEmpty() || result.isStopNotServed) {
+                        if (!result.isError && (result.departures.isNotEmpty() || result.isStopNotServed)) {
                             recentDeparturesCache[requestKey] = System.currentTimeMillis() to result
                         }
                         result
+                    } catch (e: Exception) {
+                        e.rethrowIfCancellation()
+                        val msg = NetworkErrorHelper.formatError(
+                            e,
+                            fallback = "Impossible de récupérer les prochains passages."
+                        )
+                        DeparturesResult(
+                            departures = emptyList(),
+                            isOfflineFallback = true,
+                            isSimulation = false,
+                            statusMessage = msg,
+                            isError = true,
+                            errorMessage = msg
+                        )
                     } finally {
                         inFlightDepartures.remove(requestKey)
                     }
@@ -1064,6 +1087,7 @@ class IdelisRepository(
             try {
                 webScraperService.getStopMonitoring(poleName)
             } catch (e: Exception) {
+                e.rethrowIfCancellation()
                 Result.failure(e)
             }
         }
@@ -1168,31 +1192,46 @@ class IdelisRepository(
             Log.w(TAG, "Erreur lors de l'appel direct idelis.fr pour '$poleName': ${webResult.exceptionOrNull()?.message}")
         }
 
+        val webError = webResult.exceptionOrNull()
+
         // 2. Repli vers SOAP SIRI uniquement en cas d'échec réseau/HTTP du flux web direct
+        var siriError: Throwable? = null
         try {
             val siriResult = siriService.getStopMonitoring(stopId, requestorRef)
-            if (siriResult.isSuccess && siriResult.getOrNull()?.isNotEmpty() == true) {
-                val visits = siriResult.getOrNull()!!
-                val comparisons = compareSiriAndGtfs(visits, theoreticalDepartures)
-                if (comparisons.isNotEmpty()) {
-                    return@coroutineScope DeparturesResult(
-                        departures = comparisons,
-                        isOfflineFallback = false,
-                        isSimulation = false,
-                        statusMessage = "Flux temps réel SIRI connecté • ${comparisons.size} passages"
-                    )
+            if (siriResult.isSuccess) {
+                val visits = siriResult.getOrNull().orEmpty()
+                if (visits.isNotEmpty()) {
+                    val comparisons = compareSiriAndGtfs(visits, theoreticalDepartures)
+                    if (comparisons.isNotEmpty()) {
+                        return@coroutineScope DeparturesResult(
+                            departures = comparisons,
+                            isOfflineFallback = false,
+                            isSimulation = false,
+                            statusMessage = "Flux temps réel SIRI connecté • ${comparisons.size} passages"
+                        )
+                    }
                 }
+            } else {
+                siriError = siriResult.exceptionOrNull()
             }
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
+            siriError = e
             Log.w(TAG, "Erreur réseau SIRI SOAP: ${e.message}")
         }
 
-        // 3. Aucun passage temps réel retourné
+        // 3. Le flux principal web a échoué et SIRI n'a pas pu fournir de passages temps réel
+        val friendlyError = NetworkErrorHelper.formatError(
+            webError ?: siriError,
+            fallback = "Impossible de récupérer les prochains passages. Vérifiez votre connexion."
+        )
         DeparturesResult(
             departures = emptyList(),
-            isOfflineFallback = false,
+            isOfflineFallback = true,
             isSimulation = false,
-            statusMessage = "Aucun passage en temps réel retourné par le réseau pour cet arrêt"
+            statusMessage = friendlyError,
+            isError = true,
+            errorMessage = friendlyError
         )
     }
 

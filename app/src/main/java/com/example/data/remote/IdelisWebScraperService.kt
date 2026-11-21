@@ -9,7 +9,9 @@ import com.example.data.model.IdelisWebMonitoringResult
 import com.example.data.model.IdelisWebStop
 import com.example.data.model.IdelisWebTrafficAlert
 import com.example.data.model.NotServedEntry
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 import okhttp3.FormBody
@@ -17,6 +19,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+import java.io.IOException
 import java.text.Normalizer
 import java.util.Calendar
 import java.util.Locale
@@ -37,10 +40,46 @@ class IdelisWebScraperService(
         .connectionPool(ConnectionPool(5, 2, TimeUnit.MINUTES))
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build(),
     var customBaseUrl: String? = null,
     var customQueryParam: String? = null
 ) {
+
+    fun evictStaleConnections() {
+        try {
+            client.connectionPool.evictAll()
+        } catch (_: Exception) {
+        }
+    }
+
+    private suspend fun executePostHtmlWithRetry(request: Request): String {
+        var lastError: IOException? = null
+        for (attempt in 0..1) {
+            try {
+                return client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpStatusException(response.code, response.message)
+                    }
+                    response.body?.string().orEmpty()
+                }
+            } catch (e: HttpStatusException) {
+                throw e
+            } catch (e: IOException) {
+                lastError = e
+                evictStaleConnections()
+                if (attempt == 0) {
+                    delay(150L)
+                }
+            }
+        }
+        throw lastError ?: IOException("Erreur réseau inconnue")
+    }
+
+    private fun looksLikeFullHtmlPage(html: String): Boolean {
+        val sample = html.trimStart().take(600).lowercase(Locale.ROOT)
+        return sample.contains("<!doctype html") || sample.contains("<html")
+    }
 
     val effectiveUrl: String
         get() = customBaseUrl?.takeIf { it.isNotBlank() } ?: BASE_URL
@@ -134,13 +173,13 @@ class IdelisWebScraperService(
                 .header("Accept", "text/html, */*; q=0.01")
                 .build()
 
-            val html = client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
-                }
-                response.body?.string().orEmpty()
+            val html = executePostHtmlWithRetry(request)
+            if (html.trim().equals("ajax only", ignoreCase = true)) {
+                return@withContext Result.failure(
+                    InvalidServerResponseException("La recherche d'arrêts Idelis a renvoyé une réponse incomplète.")
+                )
             }
-            if (html.isBlank() || html.trim() == "ajax only") {
+            if (html.isBlank()) {
                 return@withContext Result.success(emptyList())
             }
 
@@ -174,7 +213,7 @@ class IdelisWebScraperService(
             }
 
             // Fallback si la structure HTML était un peu différente (ex: li simples sans attr data-pole explicite)
-            if (stopItems.isEmpty() && doc.select("li").isNotEmpty()) {
+            if (stopItems.isEmpty() && doc.select("li").isNotEmpty() && !looksLikeFullHtmlPage(html)) {
                 for (li in doc.select("li")) {
                     val text = li.text().trim()
                     if (text.isNotBlank() && seenPoles.add(text.lowercase(Locale.ROOT))) {
@@ -183,9 +222,16 @@ class IdelisWebScraperService(
                 }
             }
 
+            if (stopItems.isEmpty() && looksLikeFullHtmlPage(html)) {
+                return@withContext Result.failure(
+                    InvalidServerResponseException("Réponse inattendue du serveur Idelis pendant la recherche.")
+                )
+            }
+
             safeLogD("Autocomplétion pour '$searchTerm': ${stopItems.size} arrêts trouvés")
             Result.success(stopItems)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             safeLogE("Erreur autocomplétion pour '$searchTerm': ${e.message}", e)
             Result.failure(e)
         }
@@ -218,28 +264,29 @@ class IdelisWebScraperService(
                 .header("Accept", "text/html, */*; q=0.01")
                 .build()
 
-            val html = client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
-                }
-                response.body?.string().orEmpty()
-            }
-            if (html.isBlank() || html.trim() == "ajax only") {
-                return@withContext Result.success(
-                    IdelisWebMonitoringResult(
-                        pole = poleName,
-                        departures = emptyList(),
-                        alertMessage = "Réponse vide du serveur Idelis"
-                    )
+            val html = executePostHtmlWithRetry(request)
+            if (html.isBlank() || html.trim().equals("ajax only", ignoreCase = true)) {
+                return@withContext Result.failure(
+                    InvalidServerResponseException("Réponse vide ou incomplète du serveur Idelis. Veuillez réessayer.")
                 )
             }
 
             val parsed = parseStopMonitoringHtml(poleName, html)
+            if (parsed.departures.isEmpty() &&
+                !parsed.isStopNotServed &&
+                parsed.alertMessage == null &&
+                looksLikeFullHtmlPage(html)
+            ) {
+                return@withContext Result.failure(
+                    InvalidServerResponseException("Le serveur Idelis a renvoyé une page d'erreur ou une redirection.")
+                )
+            }
             safeLogD(
                 "Stop monitoring pour '$poleName': ${parsed.departures.size} passages, notServed=${parsed.isStopNotServed}"
             )
             Result.success(parsed)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             safeLogE("Erreur stop_monitoring pour '$poleName': ${e.message}", e)
             Result.failure(e)
         }
@@ -773,13 +820,13 @@ class IdelisWebScraperService(
                 .header("Accept", "text/html, */*; q=0.01")
                 .build()
 
-            val html = client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("Erreur HTTP ${response.code}: ${response.message}"))
-                }
-                response.body?.string().orEmpty()
+            val html = executePostHtmlWithRetry(request)
+            if (html.trim().equals("ajax only", ignoreCase = true)) {
+                return@withContext Result.failure(
+                    InvalidServerResponseException("Réponse incomplète du serveur Idelis pour les infos trafic.")
+                )
             }
-            if (html.isBlank() || html.trim() == "ajax only") {
+            if (html.isBlank()) {
                 return@withContext Result.success(emptyList())
             }
 
@@ -858,9 +905,16 @@ class IdelisWebScraperService(
                 }
             }
 
+            if (parsedRecent.isEmpty() && looksLikeFullHtmlPage(html)) {
+                return@withContext Result.failure(
+                    InvalidServerResponseException("Réponse inattendue du serveur Idelis pour les infos trafic.")
+                )
+            }
+
             safeLogD("Info trafic idelis.fr : ${resolvedAlerts.size} alerte(s) récente(s) extraite(s)")
             Result.success(resolvedAlerts)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             safeLogE("Erreur infostrafic: ${e.message}", e)
             Result.failure(e)
         }
