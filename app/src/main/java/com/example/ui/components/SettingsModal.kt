@@ -154,6 +154,11 @@ private enum class SettingsCategory(
         icon = Icons.Default.SystemUpdate,
         testTag = "settings_category_app_updates"
     ),
+    WIDGETS(
+        title = "Widgets d'écran d'accueil",
+        icon = Icons.Default.Widgets,
+        testTag = "settings_category_widgets"
+    ),
     ADVANCED(
         title = "Avancé",
         icon = Icons.Default.Tune,
@@ -516,6 +521,24 @@ fun SettingsModal(
                                         cardColor = cardColor,
                                         primaryColor = primaryColor,
                                         onClick = { selectedCategory = SettingsCategory.APP_UPDATES }
+                                    )
+                                }
+
+                                item {
+                                    val activeWidgetIds = remember(selectedCategory) {
+                                        com.example.ui.widget.IdelisWidgetPreferences.getActiveWidgetIds(context)
+                                    }
+                                    SettingsCategoryMenuCard(
+                                        category = SettingsCategory.WIDGETS,
+                                        summary = if (activeWidgetIds.isEmpty()) {
+                                            "Ajouter un widget sur votre écran d'accueil"
+                                        } else {
+                                            "${activeWidgetIds.size} widget(s) actif(s) • Style, arrêt et boutons"
+                                        },
+                                        badgeText = if (activeWidgetIds.isNotEmpty()) "${activeWidgetIds.size}" else null,
+                                        cardColor = cardColor,
+                                        primaryColor = primaryColor,
+                                        onClick = { selectedCategory = SettingsCategory.WIDGETS }
                                     )
                                 }
 
@@ -1058,6 +1081,265 @@ fun SettingsModal(
                                                         .padding(16.dp)
                                                         .testTag("settings_updates_current_version_card")
                                                 )
+                                            }
+                                        }
+                                    }
+
+                                    SettingsCategory.WIDGETS -> {
+                                        item {
+                                            var activeWidgetIds by remember {
+                                                mutableStateOf(
+                                                    com.example.ui.widget.IdelisWidgetPreferences.getActiveWidgetIds(context).toList()
+                                                )
+                                            }
+                                            var pinFeedback by remember { mutableStateOf<String?>(null) }
+
+                                            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                                SettingsSectionGroup(
+                                                    sectionTitle = "Épingler sur l'écran d'accueil",
+                                                    primaryColor = primaryColor,
+                                                    cardColor = cardColor
+                                                ) {
+                                                    Column(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(16.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "Suivez les prochains passages d'un arrêt ou de l'arrêt le plus proche directement depuis l'écran d'accueil.",
+                                                            style = MaterialTheme.typography.bodySmall.copy(color = mutedColor)
+                                                        )
+                                                        Button(
+                                                            onClick = {
+                                                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                                                    val mgr = android.appwidget.AppWidgetManager.getInstance(context)
+                                                                    val provider = android.content.ComponentName(
+                                                                        context,
+                                                                        com.example.ui.widget.IdelisAppWidgetProvider::class.java
+                                                                    )
+                                                                    if (mgr.isRequestPinAppWidgetSupported) {
+                                                                        val requested = mgr.requestPinAppWidget(provider, null, null)
+                                                                        pinFeedback = if (requested) {
+                                                                            "Demande d'ajout envoyée au lanceur d'accueil."
+                                                                        } else {
+                                                                            "Votre lanceur ne permet pas l'épinglage automatique. Faites un appui long sur l'écran d'accueil > Widgets > Mon Fébus."
+                                                                        }
+                                                                    } else {
+                                                                        pinFeedback = "Appui long sur l'écran d'accueil > Widgets > Mon Fébus pour placer le widget."
+                                                                    }
+                                                                } else {
+                                                                    pinFeedback = "Appui long sur l'écran d'accueil > Widgets > Mon Fébus pour placer le widget."
+                                                                }
+                                                            },
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .testTag("pin_widget_button"),
+                                                            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                                                            shape = RoundedCornerShape(12.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Widgets,
+                                                                contentDescription = null,
+                                                                modifier = Modifier.size(18.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(8.dp))
+                                                            Text("Ajouter un widget sur l'accueil", fontWeight = FontWeight.Bold)
+                                                        }
+
+                                                        if (!pinFeedback.isNullOrBlank()) {
+                                                            Text(
+                                                                text = pinFeedback!!,
+                                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                                    color = primaryColor,
+                                                                    fontWeight = FontWeight.SemiBold
+                                                                )
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                SettingsSectionGroup(
+                                                    sectionTitle = "Mes widgets actifs (${activeWidgetIds.size})",
+                                                    primaryColor = primaryColor,
+                                                    cardColor = cardColor
+                                                ) {
+                                                    if (activeWidgetIds.isEmpty()) {
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(16.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "Aucun widget placé pour le moment",
+                                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                                    fontWeight = FontWeight.SemiBold,
+                                                                    color = contentColor
+                                                                )
+                                                            )
+                                                            Text(
+                                                                text = "Une fois ajouté sur votre écran d'accueil, vous pourrez configurer ici son arrêt, son thème (clair/sombre/verre), ses lignes filtrées et ses boutons rapides.",
+                                                                style = MaterialTheme.typography.bodySmall.copy(color = mutedColor)
+                                                            )
+                                                        }
+                                                    } else {
+                                                        activeWidgetIds.forEachIndexed { index, id ->
+                                                            if (index > 0) SectionDivider()
+                                                            val wConfig = com.example.ui.widget.IdelisWidgetPreferences.getWidgetConfig(context, id)
+                                                            val filterNote = if (wConfig.filteredLines.isNotEmpty()) {
+                                                                " • Lignes ${wConfig.filteredLines.sorted().joinToString(",")}"
+                                                            } else ""
+                                                            val displayName = if (wConfig.isDynamicNearest) {
+                                                                val nearestName = com.example.ui.widget.IdelisWidgetPreferences
+                                                                    .getLastNearestStopName(context, id)
+                                                                    ?: wConfig.stopName.replace("📍", "").trim()
+                                                                        .takeIf { it.isNotBlank() && !it.equals("Arrêt le plus proche", ignoreCase = true) }
+                                                                    ?: "Pôle Bosquet"
+                                                                "$nearestName (GPS)"
+                                                            } else {
+                                                                wConfig.stopName.replace("📍", "").trim()
+                                                            }
+                                                            Row(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .clickable {
+                                                                        val intent = Intent(
+                                                                            context,
+                                                                            com.example.ui.widget.IdelisWidgetConfigureActivity::class.java
+                                                                        ).apply {
+                                                                            putExtra(android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                                                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                                        }
+                                                                        context.startActivity(intent)
+                                                                    }
+                                                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                                                                    .testTag("active_widget_row_$id"),
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                SettingsLeadingIcon(
+                                                                    icon = if (wConfig.isDynamicNearest) Icons.Default.LocationOn else Icons.Default.Widgets,
+                                                                    tint = primaryColor
+                                                                )
+                                                                Spacer(modifier = Modifier.width(12.dp))
+                                                                Column(modifier = Modifier.weight(1f)) {
+                                                                    Text(
+                                                                        text = displayName,
+                                                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                                                            fontWeight = FontWeight.SemiBold,
+                                                                            color = contentColor
+                                                                        ),
+                                                                        maxLines = 1,
+                                                                        overflow = TextOverflow.Ellipsis
+                                                                    )
+                                                                    Text(
+                                                                        text = "Thème ${wConfig.themeStyle.shortLabel} • ${wConfig.colorMode.shortLabel} • ${wConfig.densityMode.shortLabel}$filterNote",
+                                                                        style = MaterialTheme.typography.bodySmall.copy(
+                                                                            color = primaryColor,
+                                                                            fontWeight = FontWeight.Medium
+                                                                        ),
+                                                                        maxLines = 1,
+                                                                        overflow = TextOverflow.Ellipsis
+                                                                    )
+                                                                }
+                                                                IconButton(
+                                                                    onClick = {
+                                                                        val mgr = android.appwidget.AppWidgetManager.getInstance(context)
+                                                                        com.example.ui.widget.IdelisAppWidgetProvider.updateAppWidget(
+                                                                            context = context,
+                                                                            appWidgetManager = mgr,
+                                                                            appWidgetId = id,
+                                                                            postSilentNotification = false,
+                                                                            isManualTap = true
+                                                                        )
+                                                                        pinFeedback = "Actualisation du widget « $displayName » lancée."
+                                                                    }
+                                                                ) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.Refresh,
+                                                                        contentDescription = "Actualiser ce widget",
+                                                                        tint = primaryColor
+                                                                    )
+                                                                }
+                                                                Icon(
+                                                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                                                    contentDescription = "Configurer",
+                                                                    tint = mutedColor
+                                                                )
+                                                            }
+                                                        }
+
+                                                        SectionDivider()
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(14.dp)
+                                                        ) {
+                                                            OutlinedButton(
+                                                                onClick = {
+                                                                    com.example.ui.widget.IdelisAppWidgetProvider.refreshAllWidgets(
+                                                                        context = context,
+                                                                        postSilentNotification = false
+                                                                    )
+                                                                    activeWidgetIds = com.example.ui.widget.IdelisWidgetPreferences.getActiveWidgetIds(context).toList()
+                                                                    pinFeedback = "Tous les widgets ont été actualisés."
+                                                                },
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                shape = RoundedCornerShape(10.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Refresh,
+                                                                    contentDescription = null,
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                                Spacer(modifier = Modifier.width(6.dp))
+                                                                Text("Actualiser tous les widgets", fontWeight = FontWeight.SemiBold)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                SettingsSectionGroup(
+                                                    sectionTitle = "Actualisation et localisation",
+                                                    primaryColor = primaryColor,
+                                                    cardColor = cardColor
+                                                ) {
+                                                    SettingsOptionRow(
+                                                        icon = Icons.Default.Refresh,
+                                                        title = "Fréquence des widgets",
+                                                        currentValue = formatValueWithDefault(
+                                                            widgetRefreshFrequency.label,
+                                                            widgetRefreshFrequency == WidgetRefreshFrequency.EVERY_15_MIN
+                                                        ),
+                                                        onClick = { activeDialog = ActiveSettingsDialog.WIDGET_REFRESH },
+                                                        testTag = "widgets_menu_refresh_row"
+                                                    )
+                                                    SectionDivider()
+                                                    SettingsOptionRow(
+                                                        icon = Icons.Default.LocationOn,
+                                                        title = "Géolocalisation « Arrêt proche »",
+                                                        currentValue = formatValueWithDefault(
+                                                            widgetLocationFrequency.label,
+                                                            widgetLocationFrequency == WidgetLocationFrequency.EVERY_15_MIN
+                                                        ),
+                                                        onClick = { activeDialog = ActiveSettingsDialog.WIDGET_LOCATION },
+                                                        testTag = "widgets_menu_location_row"
+                                                    )
+                                                    SectionDivider()
+                                                    SettingsSwitchRow(
+                                                        icon = Icons.Default.Notifications,
+                                                        title = "Notifications actualisation widgets",
+                                                        subtitle = if (widgetUpdateNotificationsEnabled) {
+                                                            "Silencieuse uniquement pendant l'actualisation"
+                                                        } else {
+                                                            "Désactivées pour les widgets"
+                                                        },
+                                                        checked = widgetUpdateNotificationsEnabled,
+                                                        onCheckedChange = onToggleWidgetUpdateNotifications,
+                                                        testTag = "widgets_menu_notif_row",
+                                                        switchTestTag = "widgets_menu_notif_switch"
+                                                    )
+                                                }
                                             }
                                         }
                                     }

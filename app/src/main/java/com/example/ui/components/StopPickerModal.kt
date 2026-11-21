@@ -428,45 +428,45 @@ fun StopPickerModal(
 
             // OPTION : Arrêt le plus proche
             val effectiveLocating = isLocating || isLocatingNearest
-                Button(
-                    onClick = { onNearestStopClick() },
-                    enabled = !effectiveLocating,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("nearest_stop_button"),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = primaryColor,
-                        contentColor = onPrimaryColor
-                    ),
-                    shape = RoundedCornerShape(12.dp)
+            Button(
+                onClick = { onNearestStopClick() },
+                enabled = !effectiveLocating,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("nearest_stop_button"),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = primaryColor,
+                    contentColor = onPrimaryColor
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        if (effectiveLocating) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                color = onPrimaryColor,
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Recherche de l'arrêt le plus proche...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.NearMe,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Sélectionner l'arrêt le plus proche",
-                                fontWeight = FontWeight.Black,
-                                fontSize = 13.5.sp
-                            )
-                        }
+                    if (effectiveLocating) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = onPrimaryColor,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Recherche de l'arrêt le plus proche...", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.NearMe,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Sélectionner l'arrêt le plus proche",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 13.5.sp
+                        )
                     }
                 }
+            }
 
                 if (locationFeedback != null) {
                     Spacer(modifier = Modifier.height(4.dp))

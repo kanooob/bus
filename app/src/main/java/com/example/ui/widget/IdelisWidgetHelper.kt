@@ -282,13 +282,34 @@ object IdelisWidgetHelper {
      * Formate le temps d'attente restant de manière claire et concise.
      */
     fun formatWaitingTime(departure: DepartureComparison): String {
+        return formatWaitingTime(departure, WidgetTimeDisplayMode.COUNTDOWN)
+    }
+
+    /**
+     * Formate le temps d'attente selon le mode choisi par l'utilisateur pour ce widget.
+     */
+    fun formatWaitingTime(
+        departure: DepartureComparison,
+        mode: WidgetTimeDisplayMode
+    ): String {
         val minutes = departure.minutesUntilDeparture
-        return when {
-            minutes <= 0L -> "À l'approche"
-            minutes == 1L -> "Dans 1 min"
-            minutes < 60L -> "Dans $minutes min"
-            else -> departure.expectedDepartureTimeFormatted
-                ?: departure.aimedDepartureTimeFormatted
+        val clockStr = departure.expectedDepartureTimeFormatted
+            ?.takeIf { it.isNotBlank() }
+            ?: departure.aimedDepartureTimeFormatted
+
+        return when (mode) {
+            WidgetTimeDisplayMode.COUNTDOWN -> when {
+                minutes <= 0L -> "À l'approche"
+                minutes == 1L -> "Dans 1 min"
+                minutes < 60L -> "Dans $minutes min"
+                else -> clockStr
+            }
+            WidgetTimeDisplayMode.CLOCK -> clockStr
+            WidgetTimeDisplayMode.BOTH -> when {
+                minutes <= 0L -> "Imminent • $clockStr"
+                minutes < 60L -> "${minutes} min • $clockStr"
+                else -> clockStr
+            }
         }
     }
 
@@ -298,9 +319,9 @@ object IdelisWidgetHelper {
     fun formatStatusSubtitle(departure: DepartureComparison): String {
         val timeStr = departure.expectedDepartureTimeFormatted ?: departure.aimedDepartureTimeFormatted
         return when {
+            !departure.isRealTime -> "Horaire théorique • $timeStr"
             departure.delayMinutes > 0 -> "Prévu à $timeStr • Retard +${departure.delayMinutes} min"
             departure.delayMinutes < 0 -> "Prévu à $timeStr • Avance ${departure.delayMinutes} min"
-            departure.isRealTime -> "Prévu à $timeStr • À l'heure"
             else -> "Prévu à $timeStr • À l'heure"
         }
     }
