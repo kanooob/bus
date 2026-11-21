@@ -271,11 +271,11 @@ fun WidgetLivePreviewCard(
                     }
                     val pillColor = when {
                         !dep.isRealTime -> Color(0xFF475569)
-                        dep.minutesUntilDeparture <= 1L -> Color(0xFFDC2626)
+                        IdelisWidgetHelper.isRedImminentPill(dep) -> Color(0xFFDC2626)
                         else -> normalPillColor
                     }
                     val pillTextColor = when {
-                        !dep.isRealTime || dep.minutesUntilDeparture <= 1L -> Color.White
+                        !dep.isRealTime || IdelisWidgetHelper.isRedImminentPill(dep) -> Color.White
                         else -> normalPillTextColor
                     }
                     val delayColor = when {

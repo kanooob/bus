@@ -205,6 +205,9 @@ class TransitBoardViewModel(
     @Volatile
     private var isTrafficMenuCurrentlyOpen: Boolean = false
 
+    @Volatile
+    private var pendingExternalStopSelection: Boolean = false
+
     private val stopUiCache = ConcurrentHashMap<String, Pair<Long, DeparturesResult>>()
 
     companion object {
@@ -333,13 +336,17 @@ class TransitBoardViewModel(
                 _uiState.update { current ->
                     val savedStopId = preferencesManager?.getLastSelectedStopId()
                     val defaultStop = current.selectedStop
-                        ?: stops.firstOrNull { it.stopId == savedStopId }
-                        ?: stops.firstOrNull { current.favoriteStopIds.contains(it.stopId) }
-                        ?: stops.firstOrNull { it.stopId == "WEB_Bosquet" }
-                        ?: stops.firstOrNull { it.stopName.contains("Bosquet", true) }
-                        ?: stops.firstOrNull()
-                        ?: com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP
-                    val initialRecentIds = if (current.recentStopIds.isEmpty()) {
+                        ?: if (pendingExternalStopSelection) {
+                            null
+                        } else {
+                            stops.firstOrNull { it.stopId == savedStopId }
+                                ?: stops.firstOrNull { current.favoriteStopIds.contains(it.stopId) }
+                                ?: stops.firstOrNull { it.stopId == "WEB_Bosquet" }
+                                ?: stops.firstOrNull { it.stopName.contains("Bosquet", true) }
+                                ?: stops.firstOrNull()
+                                ?: com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP
+                        }
+                    val initialRecentIds = if (defaultStop != null && current.recentStopIds.isEmpty()) {
                         preferencesManager?.addRecentStopId(defaultStop.stopId)
                             ?: listOf(defaultStop.stopId)
                     } else {
@@ -813,13 +820,109 @@ class TransitBoardViewModel(
         refreshDepartures(isManual = false, forceRefresh = true)
     }
 
-    fun selectStopById(stopId: String) {
+    fun selectStopById(stopId: String, fallbackStopName: String? = null) {
+        pendingExternalStopSelection = true
+        val cleanFallbackName = fallbackStopName
+            ?.replace("📍", "")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && !it.equals("Arrêt le plus proche", ignoreCase = true) }
+
+        val allLocalStops = _uiState.value.allStops
+        val servingsCache = IdelisRepository.globalDownloadedStopsCache
+
+        fun findInServingsById(id: String): GtfsStop? {
+            val match = servingsCache.firstOrNull { serving ->
+                val poleOrName = serving.pole?.takeIf { it.isNotBlank() } ?: serving.stopName
+                val built = IdelisRepository.buildWebStop(
+                    com.example.data.model.IdelisWebStop(name = serving.stopName, pole = poleOrName),
+                    lat = serving.lat,
+                    lon = serving.lon
+                )
+                built.stopId == id
+            } ?: return null
+            val poleOrName = match.pole?.takeIf { it.isNotBlank() } ?: match.stopName
+            return IdelisRepository.buildWebStop(
+                com.example.data.model.IdelisWebStop(name = match.stopName, pole = poleOrName),
+                lat = match.lat,
+                lon = match.lon
+            )
+        }
+
+        fun findInServingsByName(name: String): GtfsStop? {
+            val match = servingsCache.firstOrNull { it.stopName.equals(name, ignoreCase = true) }
+                ?: return null
+            val poleOrName = match.pole?.takeIf { it.isNotBlank() } ?: match.stopName
+            return IdelisRepository.buildWebStop(
+                com.example.data.model.IdelisWebStop(name = match.stopName, pole = poleOrName),
+                lat = match.lat,
+                lon = match.lon
+            )
+        }
+
+        val immediateStop = allLocalStops.firstOrNull { it.stopId == stopId }
+            ?: findInServingsById(stopId)
+            ?: if (cleanFallbackName != null) {
+                allLocalStops.firstOrNull { it.stopName.equals(cleanFallbackName, ignoreCase = true) }
+                    ?: findInServingsByName(cleanFallbackName)
+                    ?: com.example.data.local.GtfsDatabaseSeeder.INITIAL_STOPS.firstOrNull {
+                        it.stopName.equals(cleanFallbackName, ignoreCase = true)
+                    }
+            } else {
+                null
+            }
+            ?: if (stopId == "WEB_Bosquet" || stopId == "ID_BOSQUET") {
+                com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP
+            } else {
+                com.example.data.local.GtfsDatabaseSeeder.INITIAL_STOPS.firstOrNull { it.stopId == stopId }
+            }
+
+        if (immediateStop != null) {
+            initialDeparturesRequested = true
+            selectStop(immediateStop)
+            pendingExternalStopSelection = false
+            return
+        }
+
+        if (stopId.startsWith("WEB_") || cleanFallbackName != null) {
+            val derivedName = cleanFallbackName
+                ?: stopId.removePrefix("WEB_").replace('_', ' ').trim().ifBlank { "Arrêt Idelis" }
+            val derivedPole = if (stopId.startsWith("WEB_")) {
+                stopId.removePrefix("WEB_").trim()
+            } else {
+                derivedName
+            }
+            val preliminaryStop = GtfsStop(
+                stopId = stopId,
+                stopName = derivedName,
+                stopDesc = "Arrêt réseau idelis.fr",
+                parentStation = derivedPole
+            )
+            initialDeparturesRequested = true
+            selectStop(preliminaryStop)
+        }
+
         viewModelScope.launch {
-            val stop = _uiState.value.allStops.firstOrNull { it.stopId == stopId }
-                ?: repository.getStopById(stopId)
-                ?: if (stopId == "WEB_Bosquet" || stopId == "ID_BOSQUET") com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP else null
-            if (stop != null) {
-                selectStop(stop)
+            try {
+                val dbStop = repository.getStopById(stopId)
+                if (dbStop != null) {
+                    val currentSelected = _uiState.value.selectedStop
+                    if (currentSelected == null) {
+                        initialDeparturesRequested = true
+                        selectStop(dbStop)
+                    } else if (currentSelected.stopId == dbStop.stopId &&
+                        (dbStop.stopLat != 0.0 || dbStop.stopLon != 0.0)
+                    ) {
+                        _uiState.update { state ->
+                            if (state.selectedStop?.stopId == dbStop.stopId) {
+                                state.copy(selectedStop = dbStop)
+                            } else {
+                                state
+                            }
+                        }
+                    }
+                }
+            } finally {
+                pendingExternalStopSelection = false
             }
         }
     }

@@ -519,17 +519,6 @@ fun WidgetConfigureScreen(
         IdelisWidgetPreferences.sortLinesNaturally(rawAll)
     }
 
-    val popularHubs = remember {
-        listOf(
-            "Pôle Bosquet",
-            "Gare de Pau",
-            "Université",
-            "Place de Verdun",
-            "Hôpital François Mitterrand",
-            "Catherine de Bourbon"
-        )
-    }
-
     fun selectFixedStop(stop: GtfsStop) {
         selectedStop = stop
         widgetConfig = widgetConfig.copy(
@@ -856,48 +845,6 @@ fun WidgetConfigureScreen(
                                     focusedBorderColor = primaryColor
                                 )
                             )
-                        }
-
-                        // Pôles majeurs
-                        item(key = "popular_hubs") {
-                            Column {
-                                Text(
-                                    text = "Pôles majeurs",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    popularHubs.forEach { hubName ->
-                                        val matchingStop = stops.firstOrNull {
-                                            it.stopName.contains(hubName, ignoreCase = true)
-                                        }
-                                        val isSelected = !widgetConfig.isDynamicNearest &&
-                                            selectedStop?.stopName?.contains(hubName, ignoreCase = true) == true
-                                        FilterChip(
-                                            selected = isSelected,
-                                            onClick = {
-                                                if (matchingStop != null) {
-                                                    selectFixedStop(matchingStop)
-                                                }
-                                            },
-                                            label = { Text(hubName, fontSize = 12.sp) },
-                                            leadingIcon = if (isSelected) {
-                                                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                            } else null,
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                            )
-                                        )
-                                    }
-                                }
-                            }
                         }
 
                         // Favoris de l'utilisateur

@@ -149,6 +149,11 @@ object IdelisWidgetHelper {
         return File(dir, "$digest.png")
     }
 
+    fun getCachedLineIconBitmap(iconUrl: String?): Bitmap? {
+        val url = iconUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return iconBitmapCache[url]?.takeIf { !it.isRecycled }
+    }
+
     /**
      * Télécharge et met en cache (RAM + disque si context fourni) l'icône PNG officielle de la ligne
      * recadrée en carré 96x96 avec angles arrondis à 30% pour le widget, avec déduplication par URL.
@@ -276,6 +281,14 @@ object IdelisWidgetHelper {
         canvas.drawText(lineRef.take(5), width / 2f, yPos, textPaint)
 
         return bitmap
+    }
+
+    /**
+     * La pastille horaire passe en rouge uniquement lorsque le bus est en temps réel
+     * et arrive dans moins de 2 minutes (0 ou 1 min), jamais à cause d'un simple retard.
+     */
+    fun isRedImminentPill(departure: DepartureComparison): Boolean {
+        return departure.isRealTime && departure.minutesUntilDeparture <= 1L
     }
 
     /**

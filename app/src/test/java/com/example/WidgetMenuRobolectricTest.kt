@@ -120,6 +120,36 @@ class WidgetMenuRobolectricTest {
     }
 
     @Test
+    fun `widget red time pill activates only for realtime arrival under 2 minutes and not for delayed buses further away`() {
+        val base = DepartureComparison(
+            id = "d_base",
+            lineRef = "F",
+            lineName = "Fébus",
+            destinationName = "Gare de Pau",
+            routeColorHex = "F18700",
+            routeTextColorHex = "121212",
+            aimedDepartureTimeFormatted = "14:30",
+            expectedDepartureTimeFormatted = "14:35",
+            delayMinutes = 5,
+            status = DepartureStatus.DELAYED,
+            isRealTime = true,
+            minutesUntilDeparture = 8L,
+            comparisonLabel = "14:30 -> 14:35"
+        )
+
+        // Retardé mais à 8 min -> ne doit PAS être rouge
+        assertFalse(IdelisWidgetHelper.isRedImminentPill(base))
+        // À 2 min -> ne doit PAS être rouge (< 1/2 min)
+        assertFalse(IdelisWidgetHelper.isRedImminentPill(base.copy(minutesUntilDeparture = 2L)))
+        // Théorique même à 1 min -> ne doit PAS être rouge
+        assertFalse(IdelisWidgetHelper.isRedImminentPill(base.copy(isRealTime = false, minutesUntilDeparture = 1L)))
+
+        // Temps réel à 1 min ou 0 min (même à l'heure) -> DOIT être rouge
+        assertTrue(IdelisWidgetHelper.isRedImminentPill(base.copy(delayMinutes = 0, status = DepartureStatus.ON_TIME, minutesUntilDeparture = 1L)))
+        assertTrue(IdelisWidgetHelper.isRedImminentPill(base.copy(delayMinutes = 0, status = DepartureStatus.ON_TIME, minutesUntilDeparture = 0L)))
+    }
+
+    @Test
     fun `upgraded widget layout inflates cleanly in RemoteViews`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val views = RemoteViews(context.packageName, R.layout.widget_idelis_departures)
@@ -325,15 +355,17 @@ class WidgetMenuRobolectricTest {
     }
 
     @Test
-    fun `widget time pill has horizontal padding and minimum dimensions on RemoteViews inflation`() {
+    fun `widget time pill has horizontal padding and minimum dimensions on static 16-row layout without ListView`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val widgetViews = RemoteViews(context.packageName, R.layout.widget_idelis_departures)
         val inflatedWidget = widgetViews.apply(context, null)
-        assertNotNull(inflatedWidget.findViewById<android.widget.ListView>(R.id.widget_departures_list))
 
-        val itemViews = RemoteViews(context.packageName, R.layout.widget_departure_item)
-        val inflatedItem = itemViews.apply(context, null)
-        val pill = inflatedItem.findViewById<android.widget.TextView>(R.id.row_item_time)
+        val row1 = inflatedWidget.findViewById<android.view.View>(R.id.widget_row_1)
+        val row16 = inflatedWidget.findViewById<android.view.View>(R.id.widget_row_16)
+        assertNotNull(row1)
+        assertNotNull(row16)
+
+        val pill = inflatedWidget.findViewById<android.widget.TextView>(R.id.row_1_time)
         assertNotNull(pill)
         assertTrue(pill.paddingStart > 0)
         assertTrue(pill.paddingEnd > 0)
@@ -371,40 +403,145 @@ class WidgetMenuRobolectricTest {
     }
 
     @Test
-    fun `widget RemoteViewsFactory serves more than 8 departures cleanly`() {
+    fun `widget height calculation scales smoothly from compact 1-cell shrink up to 16 complete rows without clipping`() {
+        // Rétréci au minimum (~50dp -> 0 ligne de départ, en-tête seul sans ligne coupée)
+        assertEquals(
+            0,
+            com.example.ui.widget.IdelisAppWidgetProvider.calculateMaxRowsForHeight(
+                heightDp = 50f,
+                isCompact = false,
+                fontScale = 1.0f
+            )
+        )
+        // Taille réduite standard (120dp -> 1 ligne complète)
+        assertEquals(
+            1,
+            com.example.ui.widget.IdelisAppWidgetProvider.calculateMaxRowsForHeight(
+                heightDp = 120f,
+                isCompact = false,
+                fontScale = 1.0f
+            )
+        )
+        // Mode compact permet davantage de lignes dans la même hauteur
+        val standardRows = com.example.ui.widget.IdelisAppWidgetProvider.calculateMaxRowsForHeight(
+            heightDp = 360f,
+            isCompact = false,
+            fontScale = 1.0f
+        )
+        val compactRows = com.example.ui.widget.IdelisAppWidgetProvider.calculateMaxRowsForHeight(
+            heightDp = 360f,
+            isCompact = true,
+            fontScale = 1.0f
+        )
+        assertTrue(compactRows >= standardRows)
+
+        // Grand widget -> affiche plus de 8 bus et s'adapte jusqu'à 16 lignes
+        val tallRows = com.example.ui.widget.IdelisAppWidgetProvider.calculateMaxRowsForHeight(
+            heightDp = 560f,
+            isCompact = false,
+            fontScale = 1.0f
+        )
+        assertTrue(tallRows in 9..16)
+        assertEquals(
+            16,
+            com.example.ui.widget.IdelisAppWidgetProvider.calculateMaxRowsForHeight(
+                heightDp = 900f,
+                isCompact = false,
+                fontScale = 1.0f
+            )
+        )
+    }
+
+    @Test
+    fun `widget click PendingIntent targets currently displayed stop id and name`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val widgetId = 515
-        val deps = (1..15).map { idx ->
-            DepartureComparison(
-                id = "dep_$idx",
-                lineRef = if (idx % 2 == 0) "F" else "T1",
-                lineName = if (idx % 2 == 0) "Fébus" else "T1",
-                destinationName = "Destination $idx",
-                routeColorHex = "0288D1",
-                routeTextColorHex = "FFFFFF",
-                aimedDepartureTimeFormatted = "15:%02d".format(idx),
-                expectedDepartureTimeFormatted = "15:%02d".format(idx),
-                delayMinutes = 0,
-                status = DepartureStatus.ON_TIME,
-                isRealTime = true,
-                minutesUntilDeparture = idx.toLong(),
-                comparisonLabel = "15:%02d".format(idx)
+        val pendingIntent = com.example.ui.widget.IdelisAppWidgetProvider.createOpenAppPendingIntent(
+            context = context,
+            appWidgetId = 12,
+            stopId = "WEB_Gare_de_Pau",
+            stopName = "Gare de Pau"
+        )
+        val shadowPi = org.robolectric.Shadows.shadowOf(pendingIntent)
+        val intent = shadowPi.savedIntent
+        assertEquals("WEB_Gare_de_Pau", intent.getStringExtra(com.example.ui.widget.IdelisAppWidgetProvider.EXTRA_STOP_ID))
+        assertEquals("Gare de Pau", intent.getStringExtra(com.example.ui.widget.IdelisAppWidgetProvider.EXTRA_STOP_NAME))
+        assertTrue(intent.data.toString().contains("WEB_Gare_de_Pau"))
+    }
+
+    @Test
+    fun `viewModel selectStopById opens displayed widget stop instead of reverting to previously saved stop`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = com.example.data.local.PreferencesManager(context)
+        prefs.setUsageStatsEnabled(false)
+        prefs.saveAppUpdateCheckFrequency(AppUpdateCheckFrequency.NEVER)
+        prefs.saveTrafficRefreshFrequency(com.example.data.model.TrafficRefreshFrequency.NEVER)
+        prefs.saveGtfsSyncFrequency(GtfsSyncFrequency.NEVER)
+        prefs.saveLastSelectedStopId("ID_BOSQUET")
+
+        val db = IdelisDatabase.getInstance(context)
+        runBlocking {
+            db.stopDao().insertStops(
+                listOf(
+                    GtfsStop("ID_BOSQUET", "Pôle Bosquet", "Pôle central", 43.2951, -0.3698),
+                    GtfsStop("ID_GARE", "Gare de Pau", "Correspondance SNCF", 43.2928, -0.3705)
+                )
             )
         }
-        IdelisWidgetPreferences.saveWidgetConfig(context, WidgetConfig(appWidgetId = widgetId))
-        IdelisWidgetPreferences.saveWidgetDeparturesSnapshot(context, widgetId, "ID_BOSQUET", deps)
 
-        val factory = com.example.ui.widget.IdelisWidgetRemoteViewsFactory(context, widgetId)
-        factory.onCreate()
-        assertEquals(15, factory.count)
+        val offlineClient = okhttp3.OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                okhttp3.Response.Builder()
+                    .request(chain.request())
+                    .protocol(okhttp3.Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(okhttp3.ResponseBody.create(null, ""))
+                    .build()
+            }
+            .build()
 
-        val lastRowViews = factory.getViewAt(14)
-        assertNotNull(lastRowViews)
-        val inflatedLast = lastRowViews!!.apply(context, null)
-        val destText = inflatedLast.findViewById<android.widget.TextView>(R.id.row_item_destination)
-        val timeText = inflatedLast.findViewById<android.widget.TextView>(R.id.row_item_time)
-        assertEquals("Destination 15", destText.text.toString())
-        assertEquals("Dans 15 min", timeText.text.toString())
+        val repo = com.example.data.repository.IdelisRepository(
+            database = db,
+            appContext = context,
+            preferencesManager = prefs,
+            exploreService = com.example.data.remote.IdelisExploreService(offlineClient),
+            gtfsDownloadService = com.example.data.remote.GtfsDownloadService(db, offlineClient),
+            webScraperService = com.example.data.remote.IdelisWebScraperService(client = offlineClient)
+        )
+        val viewModel = com.example.ui.viewmodel.TransitBoardViewModel(repo, prefs)
+
+        // Simule l'ouverture depuis le widget sur un arrêt favori/dynamique affiché
+        viewModel.selectStopById("WEB_Parc_Lawrance", "Parc Lawrance")
+
+        val shadowMainLooper = org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+        repeat(4) {
+            shadowMainLooper.idleFor(java.time.Duration.ofMillis(50))
+            Thread.sleep(15)
+        }
+        shadowMainLooper.idle()
+
+        val selected = viewModel.uiState.value.selectedStop
+        assertNotNull(selected)
+        assertEquals("WEB_Parc_Lawrance", selected?.stopId)
+        assertEquals("Parc Lawrance", selected?.stopName)
+    }
+
+    @Test
+    fun `widget configure menu no longer shows Poles majeurs section`() {
+        composeTestRule.setContent {
+            MyApplicationTheme(darkTheme = false) {
+                WidgetConfigureScreen(
+                    appWidgetId = 606,
+                    onConfigConfirmed = { _, _, _ -> },
+                    onCancel = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        assertEquals(
+            0,
+            composeTestRule.onAllNodes(androidx.compose.ui.test.hasText("Pôles majeurs")).fetchSemanticsNodes().size
+        )
     }
 
     @Test

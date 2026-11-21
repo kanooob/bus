@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@drawable/widget_bg_dark"
     android:orientation="vertical"
-    android:padding="12dp">
+    android:padding="10dp">
 
     <!-- En-tête : Icône bus/GPS, nom de l'arrêt, statut temps réel et actions rapides -->
     <LinearLayout
@@ -122,38 +122,388 @@
         android:id="@+id/widget_divider"
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:layout_marginTop="8dp"
-        android:layout_marginBottom="7dp"
+        android:layout_marginTop="7dp"
+        android:layout_marginBottom="6dp"
         android:background="#2A3A52"
         android:contentDescription="Séparateur" />
 
-    <!-- Liste déroulante illimitée des départs + vue vide -->
-    <FrameLayout
-        android:id="@+id/widget_list_container"
+    <!-- Vue vide si aucun bus n'est programmé -->
+    <TextView
+        android:id="@+id/widget_empty_view"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="4dp"
+        android:gravity="center"
+        android:text="Aucun départ prévu actuellement"
+        android:textColor="#94A3B8"
+        android:textSize="12sp"
+        android:visibility="gone" />
 
-        <ListView
-            android:id="@+id/widget_departures_list"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:divider="@android:color/transparent"
-            android:dividerHeight="5dp"
-            android:listSelector="@android:color/transparent"
-            android:overScrollMode="ifContentScrolls"
-            android:scrollbars="none" />
+    <!-- Ligne 1 -->
+    <LinearLayout
+        android:id="@+id/widget_row_1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp">
+        <ImageView android:id="@+id/row_1_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_1_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:text="Chargement des départs..." android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_1_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:text="Idelis Pau" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_1_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:text="--:--" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
 
-        <TextView
-            android:id="@+id/widget_empty_view"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:padding="12dp"
-            android:text="Chargement des prochains départs..."
-            android:textColor="#94A3B8"
-            android:textSize="12sp"
-            android:visibility="gone" />
-    </FrameLayout>
+    <!-- Ligne 2 -->
+    <LinearLayout
+        android:id="@+id/widget_row_2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_2_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_2_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_2_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_2_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 3 -->
+    <LinearLayout
+        android:id="@+id/widget_row_3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_3_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_3_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_3_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_3_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 4 -->
+    <LinearLayout
+        android:id="@+id/widget_row_4"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_4_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_4_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_4_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_4_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 5 -->
+    <LinearLayout
+        android:id="@+id/widget_row_5"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_5_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_5_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_5_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_5_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 6 -->
+    <LinearLayout
+        android:id="@+id/widget_row_6"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_6_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_6_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_6_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_6_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 7 -->
+    <LinearLayout
+        android:id="@+id/widget_row_7"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_7_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_7_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_7_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_7_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 8 -->
+    <LinearLayout
+        android:id="@+id/widget_row_8"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_8_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_8_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_8_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_8_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 9 -->
+    <LinearLayout
+        android:id="@+id/widget_row_9"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_9_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_9_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_9_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_9_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 10 -->
+    <LinearLayout
+        android:id="@+id/widget_row_10"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_10_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_10_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_10_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_10_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 11 -->
+    <LinearLayout
+        android:id="@+id/widget_row_11"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_11_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_11_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_11_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_11_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 12 -->
+    <LinearLayout
+        android:id="@+id/widget_row_12"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_12_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_12_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_12_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_12_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 13 -->
+    <LinearLayout
+        android:id="@+id/widget_row_13"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_13_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_13_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_13_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_13_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 14 -->
+    <LinearLayout
+        android:id="@+id/widget_row_14"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_14_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_14_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_14_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_14_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 15 -->
+    <LinearLayout
+        android:id="@+id/widget_row_15"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="4dp"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_15_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_15_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_15_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_15_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Ligne 16 -->
+    <LinearLayout
+        android:id="@+id/widget_row_16"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/widget_row_bg_dark"
+        android:baselineAligned="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="5dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="5dp"
+        android:visibility="gone">
+        <ImageView android:id="@+id/row_16_badge" android:layout_width="28dp" android:layout_height="28dp" android:contentDescription="Ligne" android:scaleType="fitCenter" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:layout_marginEnd="8dp" android:layout_weight="1" android:gravity="center_vertical" android:orientation="vertical">
+            <TextView android:id="@+id/row_16_destination" android:layout_width="match_parent" android:layout_height="wrap_content" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
+            <TextView android:id="@+id/row_16_delay" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp" android:ellipsize="end" android:includeFontPadding="false" android:maxLines="1" android:textColor="#94A3B8" android:textSize="10sp" />
+        </LinearLayout>
+        <TextView android:id="@+id/row_16_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_time_pill_app" android:gravity="center" android:includeFontPadding="false" android:maxLines="1" android:minHeight="24dp" android:minWidth="56dp" android:paddingStart="10dp" android:paddingTop="4dp" android:paddingEnd="10dp" android:paddingBottom="4dp" android:singleLine="true" android:textColor="#FFFFFF" android:textSize="11sp" android:textStyle="bold" />
+    </LinearLayout>
 
 </LinearLayout>

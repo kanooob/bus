@@ -84,9 +84,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntentExtras(intent: Intent?) {
-        val targetStopId = intent?.getStringExtra("EXTRA_STOP_ID")
+        val targetStopId = intent?.getStringExtra(IdelisAppWidgetProvider.EXTRA_STOP_ID)
+        val targetStopName = intent?.getStringExtra(IdelisAppWidgetProvider.EXTRA_STOP_NAME)
         if (!targetStopId.isNullOrBlank()) {
-            viewModel.selectStopById(targetStopId)
+            viewModel.selectStopById(targetStopId, targetStopName)
         }
         if (intent?.getBooleanExtra(AppUpdateNotifier.EXTRA_OPEN_UPDATE, false) == true) {
             viewModel.openUpdatePrompt()

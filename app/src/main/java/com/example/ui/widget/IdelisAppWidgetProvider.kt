@@ -9,12 +9,15 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.location.Location
 import android.location.LocationManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.SizeF
 import android.view.View
 import android.widget.RemoteViews
 import com.example.MainActivity
@@ -22,6 +25,8 @@ import com.example.R
 import com.example.data.local.GtfsDatabaseSeeder
 import com.example.data.local.IdelisDatabase
 import com.example.data.local.PreferencesManager
+import com.example.data.model.DepartureComparison
+import com.example.data.model.DepartureStatus
 import com.example.data.remote.NotificationChannels
 import com.example.data.remote.WidgetUpdateNotifier
 import com.example.data.repository.IdelisRepository
@@ -38,6 +43,34 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
         const val ACTION_REFRESH_WIDGET = "com.example.ui.widget.ACTION_REFRESH_WIDGET"
         const val ACTION_CYCLE_FAVORITE_STOP = "com.example.ui.widget.ACTION_CYCLE_FAVORITE_STOP"
         const val EXTRA_STOP_ID = "EXTRA_STOP_ID"
+        const val EXTRA_STOP_NAME = "EXTRA_STOP_NAME"
+
+        internal data class RowIds(
+            val rowId: Int,
+            val badgeId: Int,
+            val destinationId: Int,
+            val delayId: Int,
+            val timeId: Int
+        )
+
+        internal val ROW_DEFINITIONS = listOf(
+            RowIds(R.id.widget_row_1, R.id.row_1_badge, R.id.row_1_destination, R.id.row_1_delay, R.id.row_1_time),
+            RowIds(R.id.widget_row_2, R.id.row_2_badge, R.id.row_2_destination, R.id.row_2_delay, R.id.row_2_time),
+            RowIds(R.id.widget_row_3, R.id.row_3_badge, R.id.row_3_destination, R.id.row_3_delay, R.id.row_3_time),
+            RowIds(R.id.widget_row_4, R.id.row_4_badge, R.id.row_4_destination, R.id.row_4_delay, R.id.row_4_time),
+            RowIds(R.id.widget_row_5, R.id.row_5_badge, R.id.row_5_destination, R.id.row_5_delay, R.id.row_5_time),
+            RowIds(R.id.widget_row_6, R.id.row_6_badge, R.id.row_6_destination, R.id.row_6_delay, R.id.row_6_time),
+            RowIds(R.id.widget_row_7, R.id.row_7_badge, R.id.row_7_destination, R.id.row_7_delay, R.id.row_7_time),
+            RowIds(R.id.widget_row_8, R.id.row_8_badge, R.id.row_8_destination, R.id.row_8_delay, R.id.row_8_time),
+            RowIds(R.id.widget_row_9, R.id.row_9_badge, R.id.row_9_destination, R.id.row_9_delay, R.id.row_9_time),
+            RowIds(R.id.widget_row_10, R.id.row_10_badge, R.id.row_10_destination, R.id.row_10_delay, R.id.row_10_time),
+            RowIds(R.id.widget_row_11, R.id.row_11_badge, R.id.row_11_destination, R.id.row_11_delay, R.id.row_11_time),
+            RowIds(R.id.widget_row_12, R.id.row_12_badge, R.id.row_12_destination, R.id.row_12_delay, R.id.row_12_time),
+            RowIds(R.id.widget_row_13, R.id.row_13_badge, R.id.row_13_destination, R.id.row_13_delay, R.id.row_13_time),
+            RowIds(R.id.widget_row_14, R.id.row_14_badge, R.id.row_14_destination, R.id.row_14_delay, R.id.row_14_time),
+            RowIds(R.id.widget_row_15, R.id.row_15_badge, R.id.row_15_destination, R.id.row_15_delay, R.id.row_15_time),
+            RowIds(R.id.widget_row_16, R.id.row_16_badge, R.id.row_16_destination, R.id.row_16_delay, R.id.row_16_time)
+        )
 
         internal data class ResolvedWidgetPalette(
             val isLight: Boolean,
@@ -55,6 +88,48 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
             val earlyColor: Int
         )
 
+        internal fun calculateMaxRowsForHeight(
+            heightDp: Float,
+            isCompact: Boolean,
+            fontScale: Float = 1.0f
+        ): Int {
+            if (heightDp <= 0f) return 3
+            val safeFontScale = fontScale.coerceIn(0.85f, 1.8f)
+            // Padding vertical racine (20dp) + en-tête (~32dp+) + séparateur avec marges (14dp) + marge de sécurité
+            val headerOverhead = 68f + (safeFontScale - 1f).coerceAtLeast(0f) * 20f
+            val rowBody = if (isCompact) {
+                maxOf(38f, 16f * safeFontScale + 12f)
+            } else {
+                maxOf(42f, 30f * safeFontScale + 12f)
+            }
+            val rowStep = rowBody + 4f
+            return ((heightDp - headerOverhead + 4f) / rowStep)
+                .toInt()
+                .coerceIn(0, ROW_DEFINITIONS.size)
+        }
+
+        internal fun createOpenAppPendingIntent(
+            context: Context,
+            appWidgetId: Int,
+            stopId: String,
+            stopName: String
+        ): PendingIntent {
+            val openAppIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                data = Uri.parse("idelis://widget/$appWidgetId/stop/${Uri.encode(stopId)}")
+                putExtra(EXTRA_STOP_ID, stopId)
+                putExtra(EXTRA_STOP_NAME, stopName)
+            }
+            return PendingIntent.getActivity(
+                context,
+                appWidgetId * 100 + 1,
+                openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
         internal fun resolvePalette(
             context: Context,
             themeStyle: WidgetThemeStyle,
@@ -67,7 +142,7 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                 else -> themeStyle
             }
             val useMaterialYou = colorMode == WidgetColorMode.MATERIAL_YOU &&
-                android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
             if (useMaterialYou) {
                 val neutralPrimaryLight = androidx.core.content.ContextCompat.getColor(context, android.R.color.system_neutral1_900)
@@ -192,7 +267,7 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
         private fun getLastKnownLocation(context: Context): Location? {
             val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
             val providers = buildList {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     add(LocationManager.FUSED_PROVIDER)
                 }
                 add(LocationManager.GPS_PROVIDER)
@@ -214,15 +289,42 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
             return best
         }
 
-        private fun applyHeaderAndTheme(
+        private fun buildBadgeMap(
             context: Context,
-            views: RemoteViews,
+            departures: List<DepartureComparison>,
+            allowNetworkOrDiskLoad: Boolean
+        ): Map<String, Bitmap> {
+            val map = HashMap<String, Bitmap>(minOf(departures.size, ROW_DEFINITIONS.size))
+            departures.take(ROW_DEFINITIONS.size).forEachIndexed { idx, dep ->
+                val badgeBitmap = if (allowNetworkOrDiskLoad) {
+                    IdelisWidgetHelper.loadLineIconBitmap(dep.iconUrl, context)
+                } else {
+                    IdelisWidgetHelper.getCachedLineIconBitmap(dep.iconUrl)
+                } ?: IdelisWidgetHelper.createLineBadgeBitmap(
+                    lineRef = dep.lineRef,
+                    routeColorHex = dep.routeColorHex,
+                    routeTextColorHex = dep.routeTextColorHex
+                )
+                map["${idx}_${dep.id}"] = badgeBitmap
+            }
+            return map
+        }
+
+        private fun buildConfiguredRemoteViews(
+            context: Context,
             appWidgetId: Int,
             config: WidgetConfig,
             palette: ResolvedWidgetPalette,
             favoriteCount: Int,
-            openAppPendingIntent: PendingIntent
-        ) {
+            displayedStopName: String,
+            statusText: String,
+            emptyText: String,
+            departures: List<DepartureComparison>,
+            badgeBitmaps: Map<String, Bitmap>,
+            openAppPendingIntent: PendingIntent,
+            maxRows: Int
+        ): RemoteViews {
+            val views = RemoteViews(context.packageName, R.layout.widget_idelis_departures)
             views.setInt(R.id.widget_root, "setBackgroundResource", palette.rootBgRes)
             views.setInt(R.id.widget_icon_bus_container, "setBackgroundResource", palette.badgeBgRes)
             views.setImageViewResource(
@@ -233,7 +335,9 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                 R.id.widget_icon_bus,
                 if (config.isDynamicNearest) "Arrêt le plus proche (GPS)" else "Idelis Bus"
             )
+            views.setTextViewText(R.id.widget_stop_name, displayedStopName)
             views.setTextColor(R.id.widget_stop_name, palette.primaryTextColor)
+            views.setTextViewText(R.id.widget_status_text, statusText)
             views.setTextColor(R.id.widget_status_text, palette.secondaryTextColor)
             views.setInt(R.id.widget_divider, "setBackgroundColor", palette.dividerColor)
             views.setTextColor(R.id.widget_empty_view, palette.secondaryTextColor)
@@ -305,19 +409,143 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                 views.setViewVisibility(R.id.widget_actions_container, View.GONE)
             }
 
-            val serviceIntent = Intent(context, IdelisWidgetRemoteViewsService::class.java).apply {
-                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-                data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
-            }
-            @Suppress("DEPRECATION")
-            views.setRemoteAdapter(R.id.widget_departures_list, serviceIntent)
-            views.setEmptyView(R.id.widget_departures_list, R.id.widget_empty_view)
-            views.setPendingIntentTemplate(R.id.widget_departures_list, openAppPendingIntent)
-
             views.setOnClickPendingIntent(R.id.widget_title_area, openAppPendingIntent)
             views.setOnClickPendingIntent(R.id.widget_icon_bus_container, openAppPendingIntent)
             views.setOnClickPendingIntent(R.id.widget_icon_bus, openAppPendingIntent)
             views.setOnClickPendingIntent(R.id.widget_root, openAppPendingIntent)
+            views.setOnClickPendingIntent(R.id.widget_empty_view, openAppPendingIntent)
+
+            if (maxRows <= 0) {
+                views.setViewVisibility(R.id.widget_divider, View.GONE)
+                views.setViewVisibility(R.id.widget_empty_view, View.GONE)
+                ROW_DEFINITIONS.forEach { def ->
+                    views.setViewVisibility(def.rowId, View.GONE)
+                }
+                return views
+            }
+
+            views.setViewVisibility(R.id.widget_divider, View.VISIBLE)
+
+            if (departures.isEmpty()) {
+                views.setViewVisibility(R.id.widget_empty_view, View.VISIBLE)
+                views.setTextViewText(R.id.widget_empty_view, emptyText)
+                ROW_DEFINITIONS.forEach { def ->
+                    views.setViewVisibility(def.rowId, View.GONE)
+                }
+                return views
+            }
+
+            views.setViewVisibility(R.id.widget_empty_view, View.GONE)
+            val isCompact = config.densityMode == WidgetDensityMode.COMPACT
+            val visibleCount = minOf(departures.size, maxRows, ROW_DEFINITIONS.size)
+
+            ROW_DEFINITIONS.forEachIndexed { index, def ->
+                if (index >= visibleCount) {
+                    views.setViewVisibility(def.rowId, View.GONE)
+                } else {
+                    val dep = departures[index]
+                    views.setViewVisibility(def.rowId, View.VISIBLE)
+                    views.setInt(def.rowId, "setBackgroundResource", palette.rowBgRes)
+                    views.setOnClickPendingIntent(def.rowId, openAppPendingIntent)
+
+                    val badgeBitmap = badgeBitmaps["${index}_${dep.id}"]
+                        ?: IdelisWidgetHelper.createLineBadgeBitmap(
+                            lineRef = dep.lineRef,
+                            routeColorHex = dep.routeColorHex,
+                            routeTextColorHex = dep.routeTextColorHex
+                        )
+                    views.setImageViewBitmap(def.badgeId, badgeBitmap)
+
+                    views.setTextViewText(
+                        def.destinationId,
+                        dep.destinationName.ifBlank { "Direction inconnue" }
+                    )
+                    views.setTextColor(def.destinationId, palette.primaryTextColor)
+
+                    val isDelayed = dep.status == DepartureStatus.DELAYED || dep.delayMinutes > 0
+                    val isEarly = dep.status == DepartureStatus.EARLY || dep.delayMinutes < 0
+
+                    if (isCompact) {
+                        views.setViewVisibility(def.delayId, View.GONE)
+                    } else {
+                        views.setViewVisibility(def.delayId, View.VISIBLE)
+                        views.setTextViewText(def.delayId, IdelisWidgetHelper.formatStatusSubtitle(dep))
+                        val delayColor = when {
+                            isDelayed -> palette.delayedColor
+                            isEarly -> palette.earlyColor
+                            dep.isRealTime -> palette.onTimeColor
+                            else -> palette.secondaryTextColor
+                        }
+                        views.setTextColor(def.delayId, delayColor)
+                    }
+
+                    val timePillBgRes = when {
+                        !dep.isRealTime -> R.drawable.widget_time_pill_theoretical
+                        IdelisWidgetHelper.isRedImminentPill(dep) -> R.drawable.widget_time_pill_imminent
+                        else -> palette.normalTimePillBgRes
+                    }
+                    views.setInt(def.timeId, "setBackgroundResource", timePillBgRes)
+                    views.setTextViewText(
+                        def.timeId,
+                        IdelisWidgetHelper.formatWaitingTime(dep, config.timeDisplayMode)
+                    )
+                    views.setTextColor(def.timeId, Color.WHITE)
+                }
+            }
+
+            return views
+        }
+
+        private fun pushMultiSizeWidgetUpdate(
+            context: Context,
+            appWidgetManager: AppWidgetManager,
+            appWidgetId: Int,
+            isCompact: Boolean,
+            optionsOverride: Bundle?,
+            buildForMaxRows: (Int) -> RemoteViews
+        ) {
+            val options = optionsOverride ?: appWidgetManager.getAppWidgetOptions(appWidgetId)
+            val fontScale = context.resources.configuration.fontScale
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                @Suppress("DEPRECATION")
+                val sizes: ArrayList<SizeF>? = options.getParcelableArrayList(AppWidgetManager.OPTION_APPWIDGET_SIZES)
+                if (!sizes.isNullOrEmpty()) {
+                    val sizeMap = LinkedHashMap<SizeF, RemoteViews>(sizes.size)
+                    for (size in sizes) {
+                        val maxRows = calculateMaxRowsForHeight(size.height, isCompact, fontScale)
+                        sizeMap[size] = buildForMaxRows(maxRows)
+                    }
+                    appWidgetManager.updateAppWidget(appWidgetId, RemoteViews(sizeMap))
+                    return
+                }
+            }
+
+            val isPortrait = context.resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+            val rawMaxH = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0)
+            val rawMinH = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0)
+            val effectiveHeight = when {
+                isPortrait && rawMaxH > 0 -> rawMaxH.toFloat()
+                rawMinH > 0 -> rawMinH.toFloat()
+                rawMaxH > 0 -> rawMaxH.toFloat()
+                else -> 180f
+            }
+            val maxRows = calculateMaxRowsForHeight(effectiveHeight, isCompact, fontScale)
+            appWidgetManager.updateAppWidget(appWidgetId, buildForMaxRows(maxRows))
+        }
+
+        private fun filterDeparturesForConfig(
+            allDepartures: List<DepartureComparison>,
+            filteredLines: Set<String>
+        ): List<DepartureComparison> {
+            if (filteredLines.isEmpty()) return allDepartures
+            val allowed = filteredLines
+                .map { IdelisWidgetPreferences.normalizeLineCode(it) }
+                .filter { it.isNotBlank() }
+                .toSet()
+            return allDepartures.filter {
+                IdelisWidgetPreferences.normalizeLineCode(it.lineRef) in allowed
+            }
         }
 
         fun updateAppWidget(
@@ -325,12 +553,14 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
             appWidgetManager: AppWidgetManager,
             appWidgetId: Int,
             postSilentNotification: Boolean = false,
-            isManualTap: Boolean = false
+            isManualTap: Boolean = false,
+            optionsOverride: Bundle? = null
         ) {
             val prefs = PreferencesManager(context)
             val config = IdelisWidgetPreferences.getWidgetConfig(context, appWidgetId)
             val palette = resolvePalette(context, config.themeStyle, config.colorMode)
             val favoriteCount = prefs.getFavoriteStopIds().size
+            val isCompact = config.densityMode == WidgetDensityMode.COMPACT
 
             val isDynamicNearest = config.isDynamicNearest
             val defaultStop = GtfsDatabaseSeeder.INITIAL_STOPS.first()
@@ -384,9 +614,6 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                 stopName = defaultStop.stopName
             }
 
-            val views = RemoteViews(context.packageName, R.layout.widget_idelis_departures)
-            views.setTextViewText(R.id.widget_stop_name, stopName)
-
             val timeFormat = SimpleDateFormat("HH:mm", Locale.FRANCE)
             val currentTimeStr = timeFormat.format(Date())
             val sortedFilterLines = IdelisWidgetPreferences.sortLinesNaturally(config.filteredLines)
@@ -402,38 +629,51 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
             } else {
                 "Temps réel • $currentTimeStr$filterBadge"
             }
-            views.setTextViewText(R.id.widget_status_text, initialStatus)
-            views.setTextViewText(R.id.widget_empty_view, "Chargement des prochains départs...")
 
             val existingSnapshot = IdelisWidgetPreferences.getWidgetDeparturesSnapshot(context, appWidgetId)
             if (!isDynamicNearest && existingSnapshot.stopId.isNotBlank() && existingSnapshot.stopId != stopId) {
                 IdelisWidgetPreferences.clearWidgetDeparturesSnapshot(context, appWidgetId)
             }
-
-            val openAppIntent = Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(EXTRA_STOP_ID, stopId)
+            val syncDepartures = if (existingSnapshot.stopId == stopId) {
+                filterDeparturesForConfig(existingSnapshot.departures, config.filteredLines)
+            } else {
+                emptyList()
             }
-            var openAppPendingIntent = PendingIntent.getActivity(
-                context,
-                appWidgetId * 100 + 1,
-                openAppIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            applyHeaderAndTheme(
+            val syncBadges = if (syncDepartures.isNotEmpty()) {
+                buildBadgeMap(context, syncDepartures, allowNetworkOrDiskLoad = false)
+            } else {
+                emptyMap()
+            }
+            val initialOpenAppPendingIntent = createOpenAppPendingIntent(
                 context = context,
-                views = views,
                 appWidgetId = appWidgetId,
-                config = config,
-                palette = palette,
-                favoriteCount = favoriteCount,
-                openAppPendingIntent = openAppPendingIntent
+                stopId = stopId,
+                stopName = stopName
             )
 
-            // 1. Mise à jour SYNCHRONE immédiate : le lanceur reçoit instantanément une RemoteViews valide
-            appWidgetManager.updateAppWidget(appWidgetId, views)
-            appWidgetManager.notifyAppWidgetViewDataChanged(appWidgetId, R.id.widget_departures_list)
+            // 1. Mise à jour SYNCHRONE immédiate : le lanceur reçoit instantanément la vue adaptée aux dimensions réelles
+            pushMultiSizeWidgetUpdate(
+                context = context,
+                appWidgetManager = appWidgetManager,
+                appWidgetId = appWidgetId,
+                isCompact = isCompact,
+                optionsOverride = optionsOverride
+            ) { maxRows ->
+                buildConfiguredRemoteViews(
+                    context = context,
+                    appWidgetId = appWidgetId,
+                    config = config,
+                    palette = palette,
+                    favoriteCount = favoriteCount,
+                    displayedStopName = stopName,
+                    statusText = initialStatus,
+                    emptyText = "Chargement des prochains départs...",
+                    departures = syncDepartures,
+                    badgeBitmaps = syncBadges,
+                    openAppPendingIntent = initialOpenAppPendingIntent,
+                    maxRows = maxRows
+                )
+            }
 
             // 2. Chargement asynchrone des passages réels
             CoroutineScope(Dispatchers.IO).launch {
@@ -447,12 +687,15 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                 } else {
                     false
                 }
+                var effectiveStopId = stopId
+                var effectiveStopName = stopName
+                var effectiveOpenPendingIntent = initialOpenAppPendingIntent
+                var effectiveStatus = initialStatus
                 try {
                     val database = IdelisDatabase.getInstance(context)
                     val repository = IdelisRepository(database, context, prefs)
 
                     var resolvedStopOverride: com.example.data.model.GtfsStop? = null
-                    var effectiveStopId = stopId
                     if (isDynamicNearest && dynamicLocation != null) {
                         val resolved = repository.resolveAndSaveNearestStop(
                             userLat = dynamicLocation.latitude,
@@ -462,58 +705,42 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                         if (resolved != null) {
                             resolvedStopOverride = resolved.stop
                             effectiveStopId = resolved.stop.stopId
-                            val cleanResolvedName = resolved.stop.stopName.replace("📍", "").trim()
+                            effectiveStopName = resolved.stop.stopName.replace("📍", "").trim()
                             IdelisWidgetPreferences.saveLastNearestStop(
                                 context = context,
                                 appWidgetId = appWidgetId,
                                 stopId = effectiveStopId,
-                                stopName = cleanResolvedName
-                            )
-                            views.setTextViewText(R.id.widget_stop_name, cleanResolvedName)
-                            val updatedOpenIntent = Intent(context, MainActivity::class.java).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                putExtra(EXTRA_STOP_ID, effectiveStopId)
-                            }
-                            openAppPendingIntent = PendingIntent.getActivity(
-                                context,
-                                appWidgetId * 100 + 1,
-                                updatedOpenIntent,
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                            )
-                            applyHeaderAndTheme(
-                                context = context,
-                                views = views,
-                                appWidgetId = appWidgetId,
-                                config = config,
-                                palette = palette,
-                                favoriteCount = favoriteCount,
-                                openAppPendingIntent = openAppPendingIntent
+                                stopName = effectiveStopName
                             )
                         }
                     } else if (isDynamicNearest) {
                         val dbStop = database.stopDao().getStopById(effectiveStopId)
                         if (dbStop != null) {
                             resolvedStopOverride = dbStop
-                            val cleanDbName = dbStop.stopName.replace("📍", "").trim()
+                            effectiveStopId = dbStop.stopId
+                            effectiveStopName = dbStop.stopName.replace("📍", "").trim()
                             IdelisWidgetPreferences.saveLastNearestStop(
                                 context = context,
                                 appWidgetId = appWidgetId,
-                                stopId = dbStop.stopId,
-                                stopName = cleanDbName
+                                stopId = effectiveStopId,
+                                stopName = effectiveStopName
                             )
-                            views.setTextViewText(R.id.widget_stop_name, cleanDbName)
                         }
                     }
 
-                    val updatedTimeStr = timeFormat.format(Date())
-                    views.setTextViewText(
-                        R.id.widget_status_text,
-                        if (isMoving) {
-                            "En mouvement ⚡ • $updatedTimeStr$filterBadge"
-                        } else {
-                            "Temps réel • $updatedTimeStr$filterBadge"
-                        }
+                    effectiveOpenPendingIntent = createOpenAppPendingIntent(
+                        context = context,
+                        appWidgetId = appWidgetId,
+                        stopId = effectiveStopId,
+                        stopName = effectiveStopName
                     )
+
+                    val updatedTimeStr = timeFormat.format(Date())
+                    effectiveStatus = if (isMoving) {
+                        "En mouvement ⚡ • $updatedTimeStr$filterBadge"
+                    } else {
+                        "Temps réel • $updatedTimeStr$filterBadge"
+                    }
 
                     val departuresResult = repository.getDeparturesForStop(
                         stopId = effectiveStopId,
@@ -523,17 +750,7 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                     )
 
                     val allDepartures = departuresResult.departures
-                    val filteredDepartures = if (config.filteredLines.isNotEmpty()) {
-                        val allowed = config.filteredLines
-                            .map { IdelisWidgetPreferences.normalizeLineCode(it) }
-                            .filter { it.isNotBlank() }
-                            .toSet()
-                        allDepartures.filter {
-                            IdelisWidgetPreferences.normalizeLineCode(it.lineRef) in allowed
-                        }
-                    } else {
-                        allDepartures
-                    }
+                    val filteredDepartures = filterDeparturesForConfig(allDepartures, config.filteredLines)
 
                     val widgetDepartures = filteredDepartures.take(IdelisWidgetPreferences.MAX_WIDGET_DEPARTURES)
                     IdelisWidgetPreferences.saveWidgetDeparturesSnapshot(
@@ -551,10 +768,31 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                         else ->
                             "Aucun départ prévu actuellement"
                     }
-                    views.setTextViewText(R.id.widget_empty_view, emptyText)
 
-                    appWidgetManager.updateAppWidget(appWidgetId, views)
-                    appWidgetManager.notifyAppWidgetViewDataChanged(appWidgetId, R.id.widget_departures_list)
+                    val badgeBitmaps = buildBadgeMap(context, widgetDepartures, allowNetworkOrDiskLoad = true)
+
+                    pushMultiSizeWidgetUpdate(
+                        context = context,
+                        appWidgetManager = appWidgetManager,
+                        appWidgetId = appWidgetId,
+                        isCompact = isCompact,
+                        optionsOverride = optionsOverride
+                    ) { maxRows ->
+                        buildConfiguredRemoteViews(
+                            context = context,
+                            appWidgetId = appWidgetId,
+                            config = config,
+                            palette = palette,
+                            favoriteCount = favoriteCount,
+                            displayedStopName = effectiveStopName,
+                            statusText = effectiveStatus,
+                            emptyText = emptyText,
+                            departures = widgetDepartures,
+                            badgeBitmaps = badgeBitmaps,
+                            openAppPendingIntent = effectiveOpenPendingIntent,
+                            maxRows = maxRows
+                        )
+                    }
 
                     // Planifier le prochain rafraîchissement selon les réglages utilisateur
                     val intervalMs = if (isDynamicNearest) {
@@ -569,9 +807,36 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                     } else {
                         cancelScheduledRefresh(context, appWidgetId)
                     }
-                } catch (e: Exception) {
-                    views.setTextViewText(R.id.widget_empty_view, "Horaires en cours d'actualisation")
-                    appWidgetManager.updateAppWidget(appWidgetId, views)
+                } catch (_: Exception) {
+                    val fallbackSnapshot = IdelisWidgetPreferences.getWidgetDeparturesSnapshot(context, appWidgetId)
+                    val fallbackDeps = if (fallbackSnapshot.stopId == effectiveStopId) {
+                        filterDeparturesForConfig(fallbackSnapshot.departures, config.filteredLines)
+                    } else {
+                        emptyList()
+                    }
+                    val fallbackBadges = buildBadgeMap(context, fallbackDeps, allowNetworkOrDiskLoad = false)
+                    pushMultiSizeWidgetUpdate(
+                        context = context,
+                        appWidgetManager = appWidgetManager,
+                        appWidgetId = appWidgetId,
+                        isCompact = isCompact,
+                        optionsOverride = optionsOverride
+                    ) { maxRows ->
+                        buildConfiguredRemoteViews(
+                            context = context,
+                            appWidgetId = appWidgetId,
+                            config = config,
+                            palette = palette,
+                            favoriteCount = favoriteCount,
+                            displayedStopName = effectiveStopName,
+                            statusText = effectiveStatus,
+                            emptyText = "Horaires en cours d'actualisation",
+                            departures = fallbackDeps,
+                            badgeBitmaps = fallbackBadges,
+                            openAppPendingIntent = effectiveOpenPendingIntent,
+                            maxRows = maxRows
+                        )
+                    }
                 } finally {
                     if (notifStarted) {
                         WidgetUpdateNotifier.finishWidgetRefreshing(context)
@@ -739,7 +1004,13 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
         newOptions: Bundle
     ) {
         super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions)
-        updateAppWidget(context, appWidgetManager, appWidgetId, postSilentNotification = false)
+        updateAppWidget(
+            context = context,
+            appWidgetManager = appWidgetManager,
+            appWidgetId = appWidgetId,
+            postSilentNotification = false,
+            optionsOverride = newOptions
+        )
     }
 
     override fun onDeleted(context: Context, appWidgetIds: IntArray) {
