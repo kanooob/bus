@@ -55,6 +55,11 @@
                 android:resource="@xml/idelis_widget_info" />
         </receiver>
 
+        <service
+            android:name=".ui.widget.IdelisWidgetRemoteViewsService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+
         <!-- Activité de sélection d'arrêt par widget -->
         <activity
             android:name=".ui.widget.IdelisWidgetConfigureActivity"

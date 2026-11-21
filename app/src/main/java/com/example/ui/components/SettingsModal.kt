@@ -1187,8 +1187,9 @@ fun SettingsModal(
                                                         activeWidgetIds.forEachIndexed { index, id ->
                                                             if (index > 0) SectionDivider()
                                                             val wConfig = com.example.ui.widget.IdelisWidgetPreferences.getWidgetConfig(context, id)
-                                                            val filterNote = if (wConfig.filteredLines.isNotEmpty()) {
-                                                                " • Lignes ${wConfig.filteredLines.sorted().joinToString(",")}"
+                                                            val sortedNoteLines = com.example.ui.widget.IdelisWidgetPreferences.sortLinesNaturally(wConfig.filteredLines)
+                                                            val filterNote = if (sortedNoteLines.isNotEmpty()) {
+                                                                " • Lignes ${sortedNoteLines.joinToString(",")}"
                                                             } else ""
                                                             val displayName = if (wConfig.isDynamicNearest) {
                                                                 val nearestName = com.example.ui.widget.IdelisWidgetPreferences

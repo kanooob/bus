@@ -279,15 +279,11 @@ fun WidgetConfigureScreen(
     var previewDepartures by remember { mutableStateOf<List<DepartureComparison>>(emptyList()) }
     var isLoadingPreview by remember { mutableStateOf(false) }
     var hasLocPerm by remember { mutableStateOf(hasLocationPermission(context)) }
-    var dbRouteLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var officialRouteLines by remember {
         mutableStateOf(IdelisRepository.globalOfficialRoutesMap.values.map { it.lineCode })
     }
     var stopsByLineSnapshot by remember {
         mutableStateOf<List<StopServing>>(IdelisRepository.globalDownloadedStopsCache)
-    }
-    var gtfsNetworkLines by remember {
-        mutableStateOf(GtfsScheduleIndex.current?.routeDirectionsByLine?.keys?.toList().orEmpty())
     }
     var resolvedTargetStop by remember(appWidgetId) { mutableStateOf(selectedStop) }
 
@@ -297,25 +293,22 @@ fun WidgetConfigureScreen(
         hasLocPerm = hasLocationPermission(context)
     }
 
-    // Chargement initial des arrêts et lignes du réseau (Room + cache disque + OpenData)
+    // Chargement initial des arrêts et lignes commerciales du réseau (Room + cache disque + OpenData)
     LaunchedEffect(Unit) {
-        val (loadedStops, loadedDbRoutes, loadedFavs) = withContext(Dispatchers.IO) {
+        val (loadedStops, loadedFavs) = withContext(Dispatchers.IO) {
             val database = IdelisDatabase.getInstance(context)
             val repo = IdelisRepository(database, context, prefs)
             try {
                 repo.hydrateCachesFromDiskIfNeeded()
             } catch (_: Exception) {}
             val dbStops = database.stopDao().getAllStops().firstOrNull() ?: emptyList()
-            val dbRoutes = database.routeDao().getAllRoutes().firstOrNull() ?: emptyList()
             val list = if (dbStops.isNotEmpty()) dbStops else GtfsDatabaseSeeder.INITIAL_STOPS
-            Triple(list, dbRoutes.map { it.routeShortName }, prefs.getFavoriteStopIds())
+            list to prefs.getFavoriteStopIds()
         }
         stops = loadedStops
-        dbRouteLines = loadedDbRoutes
         favoriteStopIds = loadedFavs
         officialRouteLines = IdelisRepository.globalOfficialRoutesMap.values.map { it.lineCode }
         stopsByLineSnapshot = IdelisRepository.globalDownloadedStopsCache
-        gtfsNetworkLines = GtfsScheduleIndex.current?.routeDirectionsByLine?.keys?.toList().orEmpty()
 
         if (!widgetConfig.isDynamicNearest) {
             val matched = loadedStops.firstOrNull { it.stopId == widgetConfig.stopId }
@@ -334,16 +327,9 @@ fun WidgetConfigureScreen(
                 withTimeoutOrNull(4_000L) {
                     repo.ensureStopsAndRoutesLoaded()
                 }
-                val refreshedRoutes = database.routeDao().getAllRoutes().firstOrNull()
-                    ?.map { it.routeShortName }
-                    .orEmpty()
                 withContext(Dispatchers.Main) {
-                    if (refreshedRoutes.isNotEmpty()) {
-                        dbRouteLines = refreshedRoutes
-                    }
                     officialRouteLines = IdelisRepository.globalOfficialRoutesMap.values.map { it.lineCode }
                     stopsByLineSnapshot = IdelisRepository.globalDownloadedStopsCache
-                    gtfsNetworkLines = GtfsScheduleIndex.current?.routeDirectionsByLine?.keys?.toList().orEmpty()
                 }
             } catch (_: Exception) {}
         }
@@ -461,26 +447,34 @@ fun WidgetConfigureScreen(
     val stopSpecificLines = remember(
         previewDepartures,
         resolvedTargetStop,
-        stopsByLineSnapshot,
-        gtfsNetworkLines
+        stopsByLineSnapshot
     ) {
         val rawStopLines = buildList {
-            previewDepartures.forEach { add(it.lineRef) }
+            previewDepartures
+                .map { IdelisWidgetPreferences.normalizeLineCode(it.lineRef) }
+                .filter { it.isNotBlank() && it.length <= 5 }
+                .forEach { add(it) }
             val target = resolvedTargetStop
             if (target != null) {
                 GtfsScheduleIndex.getDeparturesForStop(
                     stopName = target.stopName,
                     poleName = target.parentStation
-                ).forEach { add(it.routeShortName) }
+                ).map { it.routeShortName }
+                    .filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
+                    .forEach { add(it) }
 
                 val canonical = IdelisRepository.getCanonicalStopName(target.stopName).lowercase(Locale.ROOT)
                 val mapMatches = IdelisRepository.globalServingsByStopName[canonical].orEmpty()
                 if (mapMatches.isNotEmpty()) {
-                    mapMatches.forEach { add(it.lineRef) }
+                    mapMatches.map { it.lineRef }
+                        .filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
+                        .forEach { add(it) }
                 } else if (stopsByLineSnapshot.isNotEmpty()) {
                     stopsByLineSnapshot.forEach { serving ->
                         val sCanon = IdelisRepository.getCanonicalStopName(serving.stopName).lowercase(Locale.ROOT)
-                        if (sCanon == canonical || sCanon.contains(canonical) || canonical.contains(sCanon)) {
+                        if ((sCanon == canonical || sCanon.contains(canonical) || canonical.contains(sCanon)) &&
+                            IdelisWidgetPreferences.isValidCommercialLineCode(serving.lineRef)
+                        ) {
                             add(serving.lineRef)
                         }
                     }
@@ -490,11 +484,12 @@ fun WidgetConfigureScreen(
                     val match = Regex("""Lignes?\s+([A-Za-z0-9,\s]+)""", RegexOption.IGNORE_CASE).find(desc)
                     match?.groupValues?.getOrNull(1)
                         ?.split(",")
+                        ?.filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
                         ?.forEach { add(it) }
                 }
 
                 GtfsDatabaseSeeder.INITIAL_SERVINGS
-                    .filter { it.stopId == target.stopId }
+                    .filter { it.stopId == target.stopId && IdelisWidgetPreferences.isValidCommercialLineCode(it.lineRef) }
                     .forEach { add(it.lineRef) }
             }
         }
@@ -504,18 +499,20 @@ fun WidgetConfigureScreen(
     val allNetworkLines = remember(
         stopSpecificLines,
         officialRouteLines,
-        dbRouteLines,
         stopsByLineSnapshot,
-        gtfsNetworkLines,
         widgetConfig.filteredLines
     ) {
         val rawAll = buildList {
             addAll(IdelisWidgetPreferences.STANDARD_IDELIS_LINES)
             addAll(GtfsDatabaseSeeder.INITIAL_ROUTES.map { it.routeShortName })
-            addAll(dbRouteLines)
-            addAll(officialRouteLines)
-            stopsByLineSnapshot.forEach { add(it.lineRef) }
-            addAll(gtfsNetworkLines)
+            officialRouteLines
+                .filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
+                .forEach { add(it) }
+            stopsByLineSnapshot.forEach { serving ->
+                if (IdelisWidgetPreferences.isValidCommercialLineCode(serving.lineRef)) {
+                    add(serving.lineRef)
+                }
+            }
             addAll(stopSpecificLines)
             addAll(widgetConfig.filteredLines)
         }
@@ -535,13 +532,15 @@ fun WidgetConfigureScreen(
 
     fun selectFixedStop(stop: GtfsStop) {
         selectedStop = stop
-        val stopChanged = widgetConfig.stopId != stop.stopId || widgetConfig.isDynamicNearest
         widgetConfig = widgetConfig.copy(
             stopId = stop.stopId,
             stopName = stop.stopName,
             stopDesc = stop.stopDesc ?: "",
             isDynamicNearest = false,
-            filteredLines = if (stopChanged) emptySet() else widgetConfig.filteredLines
+            homeStopId = stop.stopId,
+            homeStopName = stop.stopName,
+            homeStopDesc = stop.stopDesc ?: "",
+            homeIsDynamicNearest = false
         )
     }
 
@@ -558,7 +557,10 @@ fun WidgetConfigureScreen(
             stopName = displayStopName,
             stopDesc = "Suivi dynamique selon vos déplacements",
             isDynamicNearest = true,
-            filteredLines = emptySet()
+            homeStopId = IdelisWidgetPreferences.DYNAMIC_NEAREST_STOP_ID,
+            homeStopName = displayStopName,
+            homeStopDesc = "Suivi dynamique selon vos déplacements",
+            homeIsDynamicNearest = true
         )
     }
 
@@ -626,8 +628,9 @@ fun WidgetConfigureScreen(
                         .windowInsetsPadding(WindowInsets.navigationBars)
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
-                    val filterSummary = if (widgetConfig.filteredLines.isNotEmpty()) {
-                        " • Lignes ${widgetConfig.filteredLines.sorted().joinToString(", ")}"
+                    val sortedSummaryLines = IdelisWidgetPreferences.sortLinesNaturally(widgetConfig.filteredLines)
+                    val filterSummary = if (sortedSummaryLines.isNotEmpty()) {
+                        " • Lignes ${sortedSummaryLines.joinToString(", ")}"
                     } else {
                         ""
                     }
@@ -714,7 +717,9 @@ fun WidgetConfigureScreen(
                 if (selectedTab == 0) {
                     // ONGLET 1 : SÉLECTION DE L'ARRÊT (tout défile ensemble sans écraser la liste)
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("widget_stop_list"),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
@@ -1180,77 +1185,114 @@ fun WidgetConfigureScreen(
                             }
                         }
 
-                        // Boutons d'actions rapides dans l'en-tête du widget
+                        // Boutons d'actions rapides dans l'en-tête du widget (chacun indépendant)
                         item(key = "actions_section") {
                             WidgetSettingsGroup(title = "Boutons sur le widget", icon = Icons.Default.Tune) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
-                                            widgetConfig = widgetConfig.copy(showQuickActions = !widgetConfig.showQuickActions)
+                                            widgetConfig = widgetConfig.copy(showRefreshButton = !widgetConfig.showRefreshButton)
                                         }
-                                        .padding(vertical = 4.dp),
+                                        .padding(vertical = 4.dp)
+                                        .testTag("widget_toggle_refresh_button"),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "Boutons Actualiser & Menu",
+                                            text = "Bouton Actualiser",
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontWeight = FontWeight.SemiBold
                                         )
                                         Text(
-                                            text = "Affiche les raccourcis en haut à droite du widget",
+                                            text = "Affiche le bouton d'actualisation manuelle des horaires",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     Switch(
-                                        checked = widgetConfig.showQuickActions,
+                                        checked = widgetConfig.showRefreshButton,
                                         onCheckedChange = {
-                                            widgetConfig = widgetConfig.copy(showQuickActions = it)
+                                            widgetConfig = widgetConfig.copy(showRefreshButton = it)
                                         },
                                         colors = SwitchDefaults.colors(checkedTrackColor = primaryColor)
                                     )
                                 }
 
-                                if (widgetConfig.showQuickActions) {
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(vertical = 6.dp),
-                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
-                                    )
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                widgetConfig = widgetConfig.copy(showFavoriteSwitch = !widgetConfig.showFavoriteSwitch)
-                                            }
-                                            .padding(vertical = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "Bouton bascule d'arrêt favori",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            Text(
-                                                text = if (favoriteStopIds.isEmpty()) {
-                                                    "Ajoutez un arrêt en favori ⭐ dans l'appli pour l'utiliser"
-                                                } else {
-                                                    "Permet de faire défiler vos ${favoriteStopIds.size} arrêt(s) favori(s) en 1 appui"
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 6.dp),
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                                )
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            widgetConfig = widgetConfig.copy(showMenuButton = !widgetConfig.showMenuButton)
                                         }
-                                        Switch(
-                                            checked = widgetConfig.showFavoriteSwitch,
-                                            onCheckedChange = {
-                                                widgetConfig = widgetConfig.copy(showFavoriteSwitch = it)
-                                            },
-                                            colors = SwitchDefaults.colors(checkedTrackColor = primaryColor)
+                                        .padding(vertical = 4.dp)
+                                        .testTag("widget_toggle_menu_button"),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Bouton Menu",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "Affiche le bouton d'accès rapide aux paramètres du widget",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
+                                    Switch(
+                                        checked = widgetConfig.showMenuButton,
+                                        onCheckedChange = {
+                                            widgetConfig = widgetConfig.copy(showMenuButton = it)
+                                        },
+                                        colors = SwitchDefaults.colors(checkedTrackColor = primaryColor)
+                                    )
+                                }
+
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 6.dp),
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                                )
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            widgetConfig = widgetConfig.copy(showFavoriteSwitch = !widgetConfig.showFavoriteSwitch)
+                                        }
+                                        .padding(vertical = 4.dp)
+                                        .testTag("widget_toggle_favorite_button"),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Bouton bascule d'arrêt favori",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = if (favoriteStopIds.isEmpty()) {
+                                                "Ajoutez un arrêt en favori ⭐ dans l'appli pour l'utiliser"
+                                            } else {
+                                                "Fait défiler l'arrêt sélectionné et vos ${favoriteStopIds.size} arrêt(s) favori(s)"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = widgetConfig.showFavoriteSwitch,
+                                        onCheckedChange = {
+                                            widgetConfig = widgetConfig.copy(showFavoriteSwitch = it)
+                                        },
+                                        colors = SwitchDefaults.colors(checkedTrackColor = primaryColor)
+                                    )
                                 }
                             }
                         }

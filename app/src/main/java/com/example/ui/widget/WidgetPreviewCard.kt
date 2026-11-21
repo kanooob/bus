@@ -146,9 +146,9 @@ fun WidgetLivePreviewCard(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(24.dp))
             .background(containerBg)
-            .border(1.dp, containerBorder, RoundedCornerShape(20.dp))
+            .border(1.dp, containerBorder, RoundedCornerShape(24.dp))
             .padding(12.dp)
     ) {
         // En-tête du widget
@@ -203,28 +203,33 @@ fun WidgetLivePreviewCard(
                 }
             }
 
-            if (config.showQuickActions) {
+            val showFavPill = config.showFavoriteSwitch && favoriteCount > 0
+            if (showFavPill || config.showRefreshButton || config.showMenuButton) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (config.showFavoriteSwitch && favoriteCount > 0) {
+                    if (showFavPill) {
                         PreviewActionPill(
                             icon = Icons.Default.SwapHoriz,
                             bg = actionBg,
                             tint = actionTint
                         )
                     }
-                    PreviewActionPill(
-                        icon = Icons.Default.Refresh,
-                        bg = actionBg,
-                        tint = actionTint
-                    )
-                    PreviewActionPill(
-                        icon = Icons.Default.Tune,
-                        bg = actionBg,
-                        tint = actionTint
-                    )
+                    if (config.showRefreshButton) {
+                        PreviewActionPill(
+                            icon = Icons.Default.Refresh,
+                            bg = actionBg,
+                            tint = actionTint
+                        )
+                    }
+                    if (config.showMenuButton) {
+                        PreviewActionPill(
+                            icon = Icons.Default.Tune,
+                            bg = actionBg,
+                            tint = actionTint
+                        )
+                    }
                 }
             }
         }
@@ -319,15 +324,18 @@ fun WidgetLivePreviewCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(14.dp))
                                 .background(pillColor)
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = IdelisWidgetHelper.formatWaitingTime(dep, config.timeDisplayMode),
                                 color = pillTextColor,
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }

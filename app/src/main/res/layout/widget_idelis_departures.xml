@@ -7,7 +7,7 @@
     android:orientation="vertical"
     android:padding="12dp">
 
-    <!-- En-tête : Icône bus, nom de l'arrêt, statut temps réel et menu d'actions rapides -->
+    <!-- En-tête : Icône bus/GPS, nom de l'arrêt, statut temps réel et actions rapides -->
     <LinearLayout
         android:id="@+id/widget_header_container"
         android:layout_width="match_parent"
@@ -35,7 +35,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
+            android:layout_marginEnd="4dp"
             android:layout_weight="1"
             android:orientation="vertical">
 
@@ -76,7 +76,7 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- Boutons d'actions rapides : Favori suivant, Actualiser, Menu / Configurer -->
+        <!-- Boutons d'actions rapides indépendants : Favori suivant, Actualiser, Menu -->
         <LinearLayout
             android:id="@+id/widget_actions_container"
             android:layout_width="wrap_content"
@@ -88,7 +88,7 @@
                 android:id="@+id/widget_btn_cycle_stop"
                 android:layout_width="30dp"
                 android:layout_height="30dp"
-                android:layout_marginEnd="4dp"
+                android:layout_marginStart="4dp"
                 android:background="@drawable/widget_action_pill_dark"
                 android:contentDescription="Passer à l'arrêt favori suivant"
                 android:padding="6dp"
@@ -99,7 +99,7 @@
                 android:id="@+id/widget_btn_refresh"
                 android:layout_width="30dp"
                 android:layout_height="30dp"
-                android:layout_marginEnd="4dp"
+                android:layout_marginStart="4dp"
                 android:background="@drawable/widget_action_pill_dark"
                 android:contentDescription="Actualiser les horaires"
                 android:padding="6dp"
@@ -109,6 +109,7 @@
                 android:id="@+id/widget_btn_configure"
                 android:layout_width="30dp"
                 android:layout_height="30dp"
+                android:layout_marginStart="4dp"
                 android:background="@drawable/widget_action_pill_dark"
                 android:contentDescription="Menu et configuration du widget"
                 android:padding="6dp"
@@ -126,506 +127,33 @@
         android:background="#2A3A52"
         android:contentDescription="Séparateur" />
 
-    <!-- Vue vide si aucun bus n'est programmé -->
-    <TextView
-        android:id="@+id/widget_empty_view"
+    <!-- Liste déroulante illimitée des départs + vue vide -->
+    <FrameLayout
+        android:id="@+id/widget_list_container"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:layout_marginBottom="6dp"
-        android:gravity="center"
-        android:text="Aucun départ prévu actuellement"
-        android:textColor="#94A3B8"
-        android:textSize="12sp"
-        android:visibility="gone" />
+        android:layout_height="0dp"
+        android:layout_weight="1">
 
-    <!-- Ligne 1 -->
-    <LinearLayout
-        android:id="@+id/widget_row_1"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="5dp"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="5dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="5dp">
-
-        <ImageView
-            android:id="@+id/row_1_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_1_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="Chargement des départs..."
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_1_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="Idelis Pau"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
+        <ListView
+            android:id="@+id/widget_departures_list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="@android:color/transparent"
+            android:dividerHeight="5dp"
+            android:listSelector="@android:color/transparent"
+            android:overScrollMode="ifContentScrolls"
+            android:scrollbars="none" />
 
         <TextView
-            android:id="@+id/row_1_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
+            android:id="@+id/widget_empty_view"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
             android:gravity="center"
-            android:text="--:--"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Ligne 2 -->
-    <LinearLayout
-        android:id="@+id/widget_row_2"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="5dp"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="5dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="5dp"
-        android:visibility="gone">
-
-        <ImageView
-            android:id="@+id/row_2_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_2_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_2_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/row_2_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Ligne 3 -->
-    <LinearLayout
-        android:id="@+id/widget_row_3"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="5dp"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="5dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="5dp"
-        android:visibility="gone">
-
-        <ImageView
-            android:id="@+id/row_3_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_3_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_3_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/row_3_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Ligne 4 -->
-    <LinearLayout
-        android:id="@+id/widget_row_4"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="5dp"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="5dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="5dp"
-        android:visibility="gone">
-
-        <ImageView
-            android:id="@+id/row_4_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_4_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_4_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/row_4_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Ligne 5 -->
-    <LinearLayout
-        android:id="@+id/widget_row_5"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="5dp"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="5dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="5dp"
-        android:visibility="gone">
-
-        <ImageView
-            android:id="@+id/row_5_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_5_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_5_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/row_5_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Ligne 6 -->
-    <LinearLayout
-        android:id="@+id/widget_row_6"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="5dp"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="4dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="4dp"
-        android:visibility="gone">
-
-        <ImageView
-            android:id="@+id/row_6_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_6_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_6_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/row_6_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Ligne 7 -->
-    <LinearLayout
-        android:id="@+id/widget_row_7"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="5dp"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="4dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="4dp"
-        android:visibility="gone">
-
-        <ImageView
-            android:id="@+id/row_7_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_7_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_7_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/row_7_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Ligne 8 -->
-    <LinearLayout
-        android:id="@+id/widget_row_8"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="@drawable/widget_row_bg_dark"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingTop="4dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="4dp"
-        android:visibility="gone">
-
-        <ImageView
-            android:id="@+id/row_8_badge"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:contentDescription="Ligne"
-            android:scaleType="fitCenter" />
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_marginEnd="6dp"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/row_8_destination"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/row_8_delay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:textColor="#94A3B8"
-                android:textSize="10sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/row_8_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/widget_time_pill"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="11sp"
-            android:textStyle="bold" />
-    </LinearLayout>
+            android:padding="12dp"
+            android:text="Chargement des prochains départs..."
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    </FrameLayout>
 
 </LinearLayout>

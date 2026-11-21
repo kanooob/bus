@@ -34,20 +34,31 @@ data class WidgetConfig(
     val stopName: String = "Pôle Bosquet",
     val stopDesc: String = "",
     val isDynamicNearest: Boolean = false,
+    val homeStopId: String = stopId,
+    val homeStopName: String = stopName,
+    val homeStopDesc: String = stopDesc,
+    val homeIsDynamicNearest: Boolean = isDynamicNearest,
     val themeStyle: WidgetThemeStyle = WidgetThemeStyle.SYSTEM,
     val colorMode: WidgetColorMode = WidgetColorMode.APP_DEFAULT,
     val timeDisplayMode: WidgetTimeDisplayMode = WidgetTimeDisplayMode.COUNTDOWN,
     val densityMode: WidgetDensityMode = WidgetDensityMode.STANDARD,
-    val showQuickActions: Boolean = true,
+    val showRefreshButton: Boolean = true,
+    val showMenuButton: Boolean = true,
     val showFavoriteSwitch: Boolean = true,
     val filteredLines: Set<String> = emptySet()
+)
+
+data class WidgetDepartureSnapshot(
+    val stopId: String,
+    val departures: List<com.example.data.model.DepartureComparison>
 )
 
 /**
  * Gestion de la persistance de configuration indépendante par widget (appWidgetId).
  * Permet à chaque widget :
- * - D'avoir un arrêt spécifique fixe ou le mode dynamique "Arrêt le plus proche"
- * - De personnaliser son thème, sa palette (Appli / Material You), sa densité, le format d'heure, les boutons rapides et le filtre de lignes
+ * - D'avoir un arrêt principal fixe ou le mode dynamique "Arrêt le plus proche" (conservé lors de la bascule favoris)
+ * - De personnaliser son thème, sa palette (Appli / Material You), sa densité, le format d'heure, chaque bouton rapide et le filtre de lignes
+ * - De stocker les prochains départs affichés dans la liste déroulante du widget
  */
 object IdelisWidgetPreferences {
 
@@ -56,17 +67,26 @@ object IdelisWidgetPreferences {
     private const val PREF_PREFIX_STOP_NAME = "widget_stop_name_"
     private const val PREF_PREFIX_STOP_DESC = "widget_stop_desc_"
     private const val PREF_PREFIX_IS_DYNAMIC_NEAREST = "widget_is_dynamic_nearest_"
+    private const val PREF_PREFIX_HOME_STOP_ID = "widget_home_stop_id_"
+    private const val PREF_PREFIX_HOME_STOP_NAME = "widget_home_stop_name_"
+    private const val PREF_PREFIX_HOME_STOP_DESC = "widget_home_stop_desc_"
+    private const val PREF_PREFIX_HOME_IS_DYNAMIC_NEAREST = "widget_home_is_dynamic_nearest_"
     private const val PREF_PREFIX_THEME_STYLE = "widget_theme_style_"
     private const val PREF_PREFIX_COLOR_MODE = "widget_color_mode_"
     private const val PREF_PREFIX_TIME_MODE = "widget_time_mode_"
     private const val PREF_PREFIX_DENSITY_MODE = "widget_density_mode_"
     private const val PREF_PREFIX_SHOW_ACTIONS = "widget_show_actions_"
+    private const val PREF_PREFIX_SHOW_REFRESH_BTN = "widget_show_refresh_btn_"
+    private const val PREF_PREFIX_SHOW_MENU_BTN = "widget_show_menu_btn_"
     private const val PREF_PREFIX_SHOW_FAV_SWITCH = "widget_show_fav_switch_"
     private const val PREF_PREFIX_FILTERED_LINES = "widget_filtered_lines_"
     private const val PREF_PREFIX_LAST_NEAREST_ID = "widget_last_nearest_id_"
     private const val PREF_PREFIX_LAST_NEAREST_NAME = "widget_last_nearest_name_"
+    private const val PREF_PREFIX_SNAPSHOT_STOP_ID = "widget_snapshot_stop_id_"
+    private const val PREF_PREFIX_SNAPSHOT_DEPARTURES = "widget_snapshot_departures_"
 
     const val DYNAMIC_NEAREST_STOP_ID = "DYNAMIC_NEAREST_STOP"
+    const val MAX_WIDGET_DEPARTURES = 30
 
     val STANDARD_IDELIS_LINES = listOf(
         "F", "T1", "T2", "T3", "T4",
@@ -117,6 +137,20 @@ object IdelisWidgetPreferences {
         }
     }
 
+    fun isValidCommercialLineCode(raw: String): Boolean {
+        val code = normalizeLineCode(raw)
+        if (code.isBlank() || code.length > 5) return false
+        if (code.any { !it.isLetterOrDigit() }) return false
+        return when {
+            code == "F" || code == "COXI" -> true
+            code.matches(Regex("""^T\d{1,2}$""")) -> true
+            code.all { it.isDigit() } -> (code.toIntOrNull() ?: 0) in 5..39
+            code.matches(Regex("""^[A-PR-Z]$""")) -> true
+            code.matches(Regex("""^[NP]\d{1,2}$""")) -> true
+            else -> false
+        }
+    }
+
     fun sortLinesNaturally(lines: Iterable<String>): List<String> {
         return lines
             .map { normalizeLineCode(it) }
@@ -129,6 +163,34 @@ object IdelisWidgetPreferences {
                     { lineSortKey(it).third }
                 )
             )
+    }
+
+    /**
+     * Construit la boucle de rotation du bouton "Arrêt favori" :
+     * l'arrêt sélectionné/configuré à la base (fixe ou GPS proche) reste toujours dans la boucle
+     * afin de pouvoir y revenir même lorsqu'il y a 2 favoris ou plus.
+     */
+    fun buildStopCycleOrder(
+        homeStopId: String,
+        homeIsDynamicNearest: Boolean,
+        favoriteStopIds: Collection<String>
+    ): List<String> {
+        val homeTarget = if (homeIsDynamicNearest) DYNAMIC_NEAREST_STOP_ID else homeStopId.trim()
+        val sortedFavs = favoriteStopIds
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+
+        return buildList {
+            if (homeTarget.isNotBlank()) add(homeTarget)
+            sortedFavs.forEach { fav ->
+                if (fav != homeTarget) add(fav)
+            }
+            if (size == 1 && !homeIsDynamicNearest) {
+                add(DYNAMIC_NEAREST_STOP_ID)
+            }
+        }
     }
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -147,11 +209,16 @@ object IdelisWidgetPreferences {
         stopDesc: String = "",
         isDynamicNearest: Boolean = false
     ) {
+        val cleanName = cleanDisplayStopName(stopName)
         getPrefs(context).edit()
             .putString(PREF_PREFIX_STOP_ID + appWidgetId, stopId)
-            .putString(PREF_PREFIX_STOP_NAME + appWidgetId, cleanDisplayStopName(stopName))
+            .putString(PREF_PREFIX_STOP_NAME + appWidgetId, cleanName)
             .putString(PREF_PREFIX_STOP_DESC + appWidgetId, stopDesc)
             .putBoolean(PREF_PREFIX_IS_DYNAMIC_NEAREST + appWidgetId, isDynamicNearest)
+            .putString(PREF_PREFIX_HOME_STOP_ID + appWidgetId, stopId)
+            .putString(PREF_PREFIX_HOME_STOP_NAME + appWidgetId, cleanName)
+            .putString(PREF_PREFIX_HOME_STOP_DESC + appWidgetId, stopDesc)
+            .putBoolean(PREF_PREFIX_HOME_IS_DYNAMIC_NEAREST + appWidgetId, isDynamicNearest)
             .apply()
     }
 
@@ -162,11 +229,16 @@ object IdelisWidgetPreferences {
             .putString(PREF_PREFIX_STOP_NAME + id, cleanDisplayStopName(config.stopName))
             .putString(PREF_PREFIX_STOP_DESC + id, config.stopDesc)
             .putBoolean(PREF_PREFIX_IS_DYNAMIC_NEAREST + id, config.isDynamicNearest)
+            .putString(PREF_PREFIX_HOME_STOP_ID + id, config.homeStopId)
+            .putString(PREF_PREFIX_HOME_STOP_NAME + id, cleanDisplayStopName(config.homeStopName))
+            .putString(PREF_PREFIX_HOME_STOP_DESC + id, config.homeStopDesc)
+            .putBoolean(PREF_PREFIX_HOME_IS_DYNAMIC_NEAREST + id, config.homeIsDynamicNearest)
             .putString(PREF_PREFIX_THEME_STYLE + id, config.themeStyle.name)
             .putString(PREF_PREFIX_COLOR_MODE + id, config.colorMode.name)
             .putString(PREF_PREFIX_TIME_MODE + id, config.timeDisplayMode.name)
             .putString(PREF_PREFIX_DENSITY_MODE + id, config.densityMode.name)
-            .putBoolean(PREF_PREFIX_SHOW_ACTIONS + id, config.showQuickActions)
+            .putBoolean(PREF_PREFIX_SHOW_REFRESH_BTN + id, config.showRefreshButton)
+            .putBoolean(PREF_PREFIX_SHOW_MENU_BTN + id, config.showMenuButton)
             .putBoolean(PREF_PREFIX_SHOW_FAV_SWITCH + id, config.showFavoriteSwitch)
             .putStringSet(
                 PREF_PREFIX_FILTERED_LINES + id,
@@ -191,23 +263,142 @@ object IdelisWidgetPreferences {
         val densityMode = enumValues<WidgetDensityMode>().firstOrNull { it.name == densityRaw }
             ?: WidgetDensityMode.STANDARD
 
+        val activeStopId = getWidgetStopId(context, appWidgetId)
+        val activeStopName = getWidgetStopName(context, appWidgetId)
+        val activeStopDesc = getWidgetStopDesc(context, appWidgetId)
+        val activeDynamic = isWidgetDynamicNearest(context, appWidgetId)
+
+        val homeStopId = prefs.getString(PREF_PREFIX_HOME_STOP_ID + appWidgetId, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: activeStopId
+        val homeStopName = prefs.getString(PREF_PREFIX_HOME_STOP_NAME + appWidgetId, null)
+            ?.let(::cleanDisplayStopName)
+            ?.takeIf { it.isNotBlank() }
+            ?: activeStopName
+        val homeStopDesc = prefs.getString(PREF_PREFIX_HOME_STOP_DESC + appWidgetId, null)
+            ?: activeStopDesc
+        val homeIsDynamic = if (prefs.contains(PREF_PREFIX_HOME_IS_DYNAMIC_NEAREST + appWidgetId)) {
+            prefs.getBoolean(PREF_PREFIX_HOME_IS_DYNAMIC_NEAREST + appWidgetId, false) ||
+                homeStopId == DYNAMIC_NEAREST_STOP_ID
+        } else {
+            activeDynamic
+        }
+
+        val legacyQuickActions = prefs.getBoolean(PREF_PREFIX_SHOW_ACTIONS + appWidgetId, true)
+        val showRefreshButton = if (prefs.contains(PREF_PREFIX_SHOW_REFRESH_BTN + appWidgetId)) {
+            prefs.getBoolean(PREF_PREFIX_SHOW_REFRESH_BTN + appWidgetId, true)
+        } else {
+            legacyQuickActions
+        }
+        val showMenuButton = if (prefs.contains(PREF_PREFIX_SHOW_MENU_BTN + appWidgetId)) {
+            prefs.getBoolean(PREF_PREFIX_SHOW_MENU_BTN + appWidgetId, true)
+        } else {
+            legacyQuickActions
+        }
+
         return WidgetConfig(
             appWidgetId = appWidgetId,
-            stopId = getWidgetStopId(context, appWidgetId),
-            stopName = getWidgetStopName(context, appWidgetId),
-            stopDesc = getWidgetStopDesc(context, appWidgetId),
-            isDynamicNearest = isWidgetDynamicNearest(context, appWidgetId),
+            stopId = activeStopId,
+            stopName = activeStopName,
+            stopDesc = activeStopDesc,
+            isDynamicNearest = activeDynamic,
+            homeStopId = homeStopId,
+            homeStopName = homeStopName,
+            homeStopDesc = homeStopDesc,
+            homeIsDynamicNearest = homeIsDynamic,
             themeStyle = themeStyle,
             colorMode = colorMode,
             timeDisplayMode = timeMode,
             densityMode = densityMode,
-            showQuickActions = prefs.getBoolean(PREF_PREFIX_SHOW_ACTIONS + appWidgetId, true),
+            showRefreshButton = showRefreshButton,
+            showMenuButton = showMenuButton,
             showFavoriteSwitch = prefs.getBoolean(PREF_PREFIX_SHOW_FAV_SWITCH + appWidgetId, true),
             filteredLines = (prefs.getStringSet(PREF_PREFIX_FILTERED_LINES + appWidgetId, emptySet()) ?: emptySet())
                 .map { normalizeLineCode(it) }
                 .filter { it.isNotBlank() }
                 .toSet()
         )
+    }
+
+    fun saveWidgetDeparturesSnapshot(
+        context: Context,
+        appWidgetId: Int,
+        stopId: String,
+        departures: List<com.example.data.model.DepartureComparison>
+    ) {
+        val array = org.json.JSONArray()
+        departures.take(MAX_WIDGET_DEPARTURES).forEach { dep ->
+            val obj = org.json.JSONObject().apply {
+                put("id", dep.id)
+                put("lineRef", dep.lineRef)
+                put("lineName", dep.lineName)
+                put("destinationName", dep.destinationName)
+                put("iconUrl", dep.iconUrl ?: "")
+                put("routeColorHex", dep.routeColorHex)
+                put("routeTextColorHex", dep.routeTextColorHex)
+                put("aimedTime", dep.aimedDepartureTimeFormatted)
+                put("expectedTime", dep.expectedDepartureTimeFormatted ?: "")
+                put("delayMinutes", dep.delayMinutes)
+                put("status", dep.status.name)
+                put("isRealTime", dep.isRealTime)
+                put("minutesUntilDeparture", dep.minutesUntilDeparture)
+                put("comparisonLabel", dep.comparisonLabel)
+            }
+            array.put(obj)
+        }
+        getPrefs(context).edit()
+            .putString(PREF_PREFIX_SNAPSHOT_STOP_ID + appWidgetId, stopId)
+            .putString(PREF_PREFIX_SNAPSHOT_DEPARTURES + appWidgetId, array.toString())
+            .apply()
+    }
+
+    fun clearWidgetDeparturesSnapshot(context: Context, appWidgetId: Int) {
+        getPrefs(context).edit()
+            .remove(PREF_PREFIX_SNAPSHOT_STOP_ID + appWidgetId)
+            .remove(PREF_PREFIX_SNAPSHOT_DEPARTURES + appWidgetId)
+            .apply()
+    }
+
+    fun getWidgetDeparturesSnapshot(context: Context, appWidgetId: Int): WidgetDepartureSnapshot {
+        val prefs = getPrefs(context)
+        val stopId = prefs.getString(PREF_PREFIX_SNAPSHOT_STOP_ID + appWidgetId, "") ?: ""
+        val raw = prefs.getString(PREF_PREFIX_SNAPSHOT_DEPARTURES + appWidgetId, null)
+            ?: return WidgetDepartureSnapshot(stopId = stopId, departures = emptyList())
+        val list = try {
+            val array = org.json.JSONArray(raw)
+            buildList {
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    val statusName = obj.optString("status", com.example.data.model.DepartureStatus.ON_TIME.name)
+                    val status = enumValues<com.example.data.model.DepartureStatus>()
+                        .firstOrNull { it.name == statusName }
+                        ?: com.example.data.model.DepartureStatus.ON_TIME
+                    val expected = obj.optString("expectedTime", "").takeIf { it.isNotBlank() }
+                    val iconUrl = obj.optString("iconUrl", "").takeIf { it.isNotBlank() }
+                    add(
+                        com.example.data.model.DepartureComparison(
+                            id = obj.optString("id", "dep_$i"),
+                            lineRef = obj.optString("lineRef", ""),
+                            lineName = obj.optString("lineName", ""),
+                            destinationName = obj.optString("destinationName", ""),
+                            iconUrl = iconUrl,
+                            routeColorHex = obj.optString("routeColorHex", "0288D1"),
+                            routeTextColorHex = obj.optString("routeTextColorHex", "FFFFFF"),
+                            aimedDepartureTimeFormatted = obj.optString("aimedTime", "--:--"),
+                            expectedDepartureTimeFormatted = expected,
+                            delayMinutes = obj.optInt("delayMinutes", 0),
+                            status = status,
+                            isRealTime = obj.optBoolean("isRealTime", false),
+                            minutesUntilDeparture = obj.optLong("minutesUntilDeparture", 0L),
+                            comparisonLabel = obj.optString("comparisonLabel", "")
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+        return WidgetDepartureSnapshot(stopId = stopId, departures = list)
     }
 
     fun saveLastNearestStop(context: Context, appWidgetId: Int, stopId: String, stopName: String) {
@@ -274,15 +465,23 @@ object IdelisWidgetPreferences {
             editor.remove(PREF_PREFIX_STOP_NAME + appWidgetId)
             editor.remove(PREF_PREFIX_STOP_DESC + appWidgetId)
             editor.remove(PREF_PREFIX_IS_DYNAMIC_NEAREST + appWidgetId)
+            editor.remove(PREF_PREFIX_HOME_STOP_ID + appWidgetId)
+            editor.remove(PREF_PREFIX_HOME_STOP_NAME + appWidgetId)
+            editor.remove(PREF_PREFIX_HOME_STOP_DESC + appWidgetId)
+            editor.remove(PREF_PREFIX_HOME_IS_DYNAMIC_NEAREST + appWidgetId)
             editor.remove(PREF_PREFIX_THEME_STYLE + appWidgetId)
             editor.remove(PREF_PREFIX_COLOR_MODE + appWidgetId)
             editor.remove(PREF_PREFIX_TIME_MODE + appWidgetId)
             editor.remove(PREF_PREFIX_DENSITY_MODE + appWidgetId)
             editor.remove(PREF_PREFIX_SHOW_ACTIONS + appWidgetId)
+            editor.remove(PREF_PREFIX_SHOW_REFRESH_BTN + appWidgetId)
+            editor.remove(PREF_PREFIX_SHOW_MENU_BTN + appWidgetId)
             editor.remove(PREF_PREFIX_SHOW_FAV_SWITCH + appWidgetId)
             editor.remove(PREF_PREFIX_FILTERED_LINES + appWidgetId)
             editor.remove(PREF_PREFIX_LAST_NEAREST_ID + appWidgetId)
             editor.remove(PREF_PREFIX_LAST_NEAREST_NAME + appWidgetId)
+            editor.remove(PREF_PREFIX_SNAPSHOT_STOP_ID + appWidgetId)
+            editor.remove(PREF_PREFIX_SNAPSHOT_DEPARTURES + appWidgetId)
         }
         editor.apply()
     }
