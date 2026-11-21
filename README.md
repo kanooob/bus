@@ -2,7 +2,7 @@
   <img src="docs/logo.png" width="140" height="140" alt="Logo Mon Fébus" />
   <h1>Mon Fébus</h1>
   <p>
-    Application Android temps réel pour le réseau de transport <strong>Idelis</strong> (Pau Béarn Pyrénées) :
+    Application Android temps réel pour le réseau de transport <strong>Idelis</strong> :
     prochains départs en direct, widget dynamique sur l'écran d'accueil, infos trafic et horaires hors-ligne.
   </p>
 </div>
@@ -18,16 +18,3 @@
 - **Base GTFS locale** : fallback hors-ligne et synchronisation des données GTFS du réseau Idelis.
 - **Mises à jour intégrées** : vérification et téléchargement des nouvelles versions depuis les releases GitHub.
 - **Sauvegarde & personnalisation** : thèmes clair/sombre/système, choix de la couleur principale, et export/import des préférences en JSON.
-
-## Compiler et exécuter localement
-
-**Prérequis :** [Android Studio](https://developer.android.com/studio) (JDK 11+, Android SDK 36)
-
-1. Cloner le dépôt :
-   ```bash
-   git clone https://github.com/kanooob/bus.git
-   ```
-2. Ouvrir le dossier du projet dans **Android Studio**.
-3. Laisser Gradle synchroniser les dépendances.
-4. *(Optionnel)* Si vous compilez en local en dehors de l'environnement AI Studio, vérifier la configuration de signature dans `app/build.gradle.kts` (`debugConfig` / `release`).
-5. Lancer l'application sur un émulateur ou un appareil Android (`minSdk 24`).
