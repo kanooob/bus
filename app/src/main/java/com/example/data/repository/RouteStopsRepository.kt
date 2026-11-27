@@ -29,10 +29,6 @@ class RouteStopsRepository(
         private val QUAI_PAREN_SUFFIX_REGEX = Regex("""\s*\(Quai\s+[^)]+\)\s*$""", RegexOption.IGNORE_CASE)
         private val GENERIC_PAREN_SUFFIX_REGEX = Regex("""\s*\([^)]*\)\s*$""")
         private val QUAI_WORD_REGEX = Regex("""(?i)\bquai[s]?\s+[a-z0-9]+\b|\bquai[s]?\b""")
-        private val CITY_PREFIX_REGEX = Regex(
-            """^(pau|lescar|lons|billere|bizanos|jurancon|serres-castet|artigueloutan|mazeres|mazeres-lezons|gan|morlaas|sendets|ousseau|ousse|lee|idron|aressy)\s+""",
-            RegexOption.IGNORE_CASE
-        )
 
         private fun normalizeString(text: String): String {
             val normalized = Normalizer.normalize(text.lowercase(Locale.ROOT), Normalizer.Form.NFD)
@@ -46,9 +42,12 @@ class RouteStopsRepository(
         private fun normalizeForStopMatch(raw: String): String {
             val noParen = raw.replace(QUAI_PAREN_SUFFIX_REGEX, "")
             val noDiacritics = normalizeString(noParen)
-            return noDiacritics
-                .replace(QUAI_WORD_REGEX, " ")
-                .replace(CITY_PREFIX_REGEX, "")
+            val withoutQuai = noDiacritics.replace(QUAI_WORD_REGEX, " ").replace(Regex("\\s+"), " ").trim()
+            val withoutCity = StopSearchMatcher.stripLeadingCommune(
+                withoutQuai,
+                IdelisRepository.getDynamicCommunes()
+            )
+            return withoutCity
                 .replace("f. mitterrand", "mitterrand")
                 .replace("f.mitterrand", "mitterrand")
                 .replace("francois mitterrand", "mitterrand")

@@ -26,8 +26,8 @@ object StopSearchMatcher {
         "lycee", "college", "ecole", "stade", "stades", "cite", "residence"
     )
 
-    private val COMMUNE_PREFIX_REGEX = Regex(
-        """^(PAU|LESCAR|LONS|BILL[ÈE]RE|BIZANOS|JURAN[ÇC]ON|SERRES[- ]CASTET|ARTIGUELOUTAN|MAZ[ÈE]RES[- ]LEZONS|MAZ[ÈE]RES|MORLA[ÀA]S|IDRON|SENDETS|OUSSE|L[ÉE]E|ARESSY|GELOS|GAN|LAROIN|POEY[- ]DE[- ]LESCAR|SAUVAGNON|MONTARDON|BOUILLON|UZOS|RONTIGNON|NARCASTET|MEILLON|ASSAT|BORDES|NOUSTY|ARTIX|SOUMOULOU|BOSDARROS)\s*[-–]?\s+""",
+    val COMMUNE_PREFIX_REGEX = Regex(
+        """^(PAU|LESCAR|LONS|BILL[ÈE]RE|BIZANOS|JURAN[ÇC]ON|SERRES[- ]CASTET|ARTIGUELOUTAN|MAZ[ÈE]RES[- ]LEZONS|MAZ[ÈE]RES|MORLA[ÀA]S|IDRON|SENDETS|OUSSE|L[ÉE]E|ARESSY|GELOS|GAN|LAROIN|POEY[- ]DE[- ]LESCAR|SAUVAGNON|MONTARDON|BOUILLON|UZOS|RONTIGNON|NARCASTET|MEILLON|ASSAT|BORDES|NOUSTY|ARTIX|SOUMOULOU|BOSDARROS|SIROS|BEYRIE|DENGUIN|AUSSEVIELLE|SAUVETERRE)\s*[-–]?\s+""",
         RegexOption.IGNORE_CASE
     )
 
@@ -50,9 +50,26 @@ object StopSearchMatcher {
             .trim(' ', '-', '–', ',', ':')
     }
 
-    fun stripLeadingCommune(raw: String): String {
-        val stripped = raw.replace(COMMUNE_PREFIX_REGEX, "").trim(' ', '-', '–', ',', ':')
+    fun stripLeadingCommune(raw: String, extraCommunes: Collection<String> = emptyList()): String {
+        var stripped = raw.replace(COMMUNE_PREFIX_REGEX, "").trim(' ', '-', '–', ',', ':')
+        if (stripped == raw.trim() && extraCommunes.isNotEmpty()) {
+            val rawNorm = normalizeForComparison(raw)
+            for (commune in extraCommunes) {
+                val cNorm = normalizeForComparison(commune)
+                if (cNorm.length >= 3 && rawNorm.startsWith("$cNorm ")) {
+                    val trimmedCandidate = raw.trim().drop(commune.trim().length).trim(' ', '-', '–', ',', ':')
+                    if (trimmedCandidate.isNotBlank()) {
+                        stripped = trimmedCandidate
+                        break
+                    }
+                }
+            }
+        }
         return stripped.ifBlank { raw.trim() }
+    }
+
+    fun stripCommuneAndQuai(raw: String, extraCommunes: Collection<String> = emptyList()): String {
+        return stripLeadingCommune(stripQuai(raw), extraCommunes)
     }
 
     /**

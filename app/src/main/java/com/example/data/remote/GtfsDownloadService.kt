@@ -10,6 +10,7 @@ import com.example.data.model.GtfsStopTime
 import com.example.data.model.GtfsSyncReport
 import com.example.data.model.GtfsTrip
 import com.example.data.model.IdelisPeriod
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import com.example.data.repository.IdelisRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -76,9 +77,12 @@ class GtfsDownloadService(
             Log.d(TAG, "Téléchargement du ZIP GTFS Idelis depuis : $url (premièreSync=$isFirstSync)")
             val downloadResult = waybackFetcher.fetchGtfsZip(url, isFirstSync = isFirstSync)
             if (downloadResult.isFailure) {
-                val err = downloadResult.exceptionOrNull()?.message
-                    ?: "Erreur lors du téléchargement du GTFS"
-                Log.w(TAG, "Échec téléchargement GTFS (direct + Wayback) : $err")
+                val rawErr = downloadResult.exceptionOrNull()
+                val err = NetworkErrorHelper.formatError(
+                    rawErr,
+                    fallback = "Erreur lors du téléchargement du GTFS"
+                )
+                Log.w(TAG, "Échec téléchargement GTFS (direct + Wayback) : ${rawErr?.message}")
                 return@withContext GtfsSyncReport(
                     success = false,
                     errorMessage = err
@@ -172,10 +176,10 @@ class GtfsDownloadService(
                     database.routeDao().insertRoutes(rawRoutes)
                 }
                 if (rawTrips.isNotEmpty()) {
-                    database.stopTimeDao().insertTrips(rawTrips.take(3000))
+                    database.stopTimeDao().insertTrips(rawTrips.take(10000))
                 }
                 if (rawStopTimes.isNotEmpty()) {
-                    database.stopTimeDao().insertStopTimes(rawStopTimes.take(5000))
+                    database.stopTimeDao().insertStopTimes(rawStopTimes.take(25000))
                 }
                 if (rawCalendars.isNotEmpty()) {
                     database.calendarDao().clearAllCalendars()
@@ -200,10 +204,14 @@ class GtfsDownloadService(
                 usedWaybackFallback = usedWayback
             )
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.e(TAG, "Erreur traitement GTFS : ${e.message}", e)
             GtfsSyncReport(
                 success = false,
-                errorMessage = e.message ?: "Erreur inconnue lors du traitement du GTFS"
+                errorMessage = NetworkErrorHelper.formatError(
+                    e,
+                    fallback = "Erreur inconnue lors du traitement du GTFS"
+                )
             )
         }
     }
@@ -234,7 +242,8 @@ class GtfsDownloadService(
                     }
                 }
             } catch (e: Exception) {
-                results.add("$label : Erreur (${e.message})")
+                e.rethrowIfCancellation()
+                results.add("$label : ${NetworkErrorHelper.formatError(e, "Erreur réseau")}")
             }
         }
         results
@@ -245,12 +254,13 @@ class GtfsDownloadService(
         if (!lines.hasNext()) return
 
         val headerLine = lines.next().removePrefix("\uFEFF")
-        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val idIdx = headers.indexOf("stop_id")
         val nameIdx = headers.indexOf("stop_name")
         val latIdx = headers.indexOf("stop_lat")
         val lonIdx = headers.indexOf("stop_lon")
         val descIdx = headers.indexOf("stop_desc")
+        val parentIdx = headers.indexOf("parent_station")
 
         while (lines.hasNext()) {
             val line = lines.next()
@@ -261,7 +271,8 @@ class GtfsDownloadService(
                 val name = parts[nameIdx].trim()
                 val lat = if (latIdx in parts.indices) parts[latIdx].toDoubleOrNull() ?: 0.0 else 0.0
                 val lon = if (lonIdx in parts.indices) parts[lonIdx].toDoubleOrNull() ?: 0.0 else 0.0
-                val desc = if (descIdx in parts.indices) parts[descIdx] else null
+                val desc = if (descIdx in parts.indices) parts[descIdx].takeIf { it.isNotBlank() } else null
+                val parent = if (parentIdx in parts.indices) parts[parentIdx].trim().takeIf { it.isNotBlank() } else null
 
                 if (id.isNotBlank() && name.isNotBlank()) {
                     outList.add(
@@ -269,6 +280,7 @@ class GtfsDownloadService(
                             stopId = id,
                             stopName = name,
                             stopDesc = desc,
+                            parentStation = parent,
                             stopLat = lat,
                             stopLon = lon
                         )
@@ -283,7 +295,7 @@ class GtfsDownloadService(
         if (!lines.hasNext()) return
 
         val headerLine = lines.next().removePrefix("\uFEFF")
-        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val idIdx = headers.indexOf("route_id")
         val shortNameIdx = headers.indexOf("route_short_name")
         val longNameIdx = headers.indexOf("route_long_name")
@@ -321,14 +333,14 @@ class GtfsDownloadService(
         if (!lines.hasNext()) return
 
         val headerLine = lines.next().removePrefix("\uFEFF")
-        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val tripIdIdx = headers.indexOf("trip_id")
         val routeIdIdx = headers.indexOf("route_id")
         val serviceIdIdx = headers.indexOf("service_id")
         val headsignIdx = headers.indexOf("trip_headsign")
 
         var count = 0
-        while (lines.hasNext() && count < 2500) {
+        while (lines.hasNext() && count < 10000) {
             val line = lines.next()
             if (line.isBlank()) continue
             val parts = parseCsvLine(line)
@@ -358,7 +370,7 @@ class GtfsDownloadService(
         if (!lines.hasNext()) return
 
         val headerLine = lines.next().removePrefix("\uFEFF")
-        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val tripIdIdx = headers.indexOf("trip_id")
         val arrTimeIdx = headers.indexOf("arrival_time")
         val depTimeIdx = headers.indexOf("departure_time")
@@ -366,7 +378,7 @@ class GtfsDownloadService(
         val seqIdx = headers.indexOf("stop_sequence")
 
         var count = 0
-        while (lines.hasNext() && count < 4000) {
+        while (lines.hasNext() && count < 25000) {
             val line = lines.next()
             if (line.isBlank()) continue
             val parts = parseCsvLine(line)
@@ -398,7 +410,7 @@ class GtfsDownloadService(
         if (!lines.hasNext()) return
 
         val headerLine = lines.next().removePrefix("\uFEFF")
-        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val serviceIdIdx = headers.indexOf("service_id")
         val monIdx = headers.indexOf("monday")
         val tueIdx = headers.indexOf("tuesday")
@@ -441,7 +453,7 @@ class GtfsDownloadService(
         if (!lines.hasNext()) return
 
         val headerLine = lines.next().removePrefix("\uFEFF")
-        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val serviceIdIdx = headers.indexOf("service_id")
         val dateIdx = headers.indexOf("date")
         val exceptionIdx = headers.indexOf("exception_type")

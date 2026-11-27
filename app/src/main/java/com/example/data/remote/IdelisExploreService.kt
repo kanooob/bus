@@ -8,18 +8,18 @@ import com.example.data.model.IdeCycleStation
 import com.example.data.model.IdelisPeriod
 import com.example.data.model.ParkAndRide
 import com.example.data.model.TrafficAlert
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
-import java.text.SimpleDateFormat
+import java.io.IOException
 import java.util.Calendar
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import java.util.zip.ZipInputStream
 
 /**
  * Modèle pour une ligne officielle issue de lignes-du-reseau-idelis-gtfs.
@@ -85,6 +85,73 @@ class IdelisExploreService(
         return value.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
     }
 
+    private fun extractLatLon(obj: JSONObject): Pair<Double, Double> {
+        var lat = obj.optDouble("latitude", Double.NaN).takeIf { !it.isNaN() }
+        var lon = obj.optDouble("longitude", Double.NaN).takeIf { !it.isNaN() }
+
+        if (lat == null || lon == null) {
+            val geoPointObj = obj.optJSONObject("geo_point_2d")
+            if (geoPointObj != null) {
+                lat = lat ?: geoPointObj.optDouble("lat", Double.NaN).takeIf { !it.isNaN() }
+                lon = lon ?: geoPointObj.optDouble("lon", Double.NaN).takeIf { !it.isNaN() }
+            } else {
+                val geoPointArr = obj.optJSONArray("geo_point_2d")
+                if (geoPointArr != null && geoPointArr.length() >= 2) {
+                    val a0 = geoPointArr.optDouble(0, Double.NaN)
+                    val a1 = geoPointArr.optDouble(1, Double.NaN)
+                    if (!a0.isNaN() && !a1.isNaN()) {
+                        lat = lat ?: a0
+                        lon = lon ?: a1
+                    }
+                }
+            }
+        }
+
+        if (lat == null || lon == null) {
+            val coords = obj.optJSONObject("geometry")?.optJSONArray("coordinates")
+            if (coords != null && coords.length() >= 2) {
+                val cLon = coords.optDouble(0, Double.NaN)
+                val cLat = coords.optDouble(1, Double.NaN)
+                if (!cLat.isNaN() && !cLon.isNaN()) {
+                    lat = lat ?: cLat
+                    lon = lon ?: cLon
+                }
+            }
+        }
+
+        val validLat = lat?.takeIf { it in -90.0..90.0 } ?: 0.0
+        val validLon = lon?.takeIf { it in -180.0..180.0 } ?: 0.0
+        return if (validLat != 0.0 && validLon != 0.0) validLat to validLon else 0.0 to 0.0
+    }
+
+    private suspend fun executeGetJsonWithRetry(request: Request): String {
+        var lastError: IOException? = null
+        for (attempt in 0..1) {
+            try {
+                val body = okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpStatusException(response.code, response.message)
+                    }
+                    response.body?.string().orEmpty()
+                }
+                if (body.isBlank()) {
+                    throw InvalidServerResponseException("Réponse JSON vide reçue de data.idelis.fr")
+                }
+                return body
+            } catch (e: HttpStatusException) {
+                throw e
+            } catch (e: InvalidServerResponseException) {
+                throw e
+            } catch (e: IOException) {
+                lastError = e
+                if (attempt == 0) {
+                    delay(200L)
+                }
+            }
+        }
+        throw lastError ?: IOException("Erreur réseau inconnue")
+    }
+
     /**
      * Télécharge les lignes du réseau avec descriptifs officiels, terminus et couleurs :
      * URL : https://data.idelis.fr/api/explore/v2.1/catalog/datasets/lignes-du-reseau-idelis-gtfs/exports/json
@@ -98,15 +165,7 @@ class IdelisExploreService(
 
         try {
             Log.d(TAG, "Téléchargement lignes GTFS : $URL_EXPORTS_ROUTES")
-            val jsonString = okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
-                }
-                response.body?.string().orEmpty()
-            }
-            if (jsonString.isBlank()) {
-                return@withContext Result.failure(Exception("Réponse JSON vide"))
-            }
+            val jsonString = executeGetJsonWithRetry(request)
 
             val list = mutableListOf<OfficialRouteGtfs>()
             val trimmed = jsonString.trim().removePrefix("\uFEFF").trim()
@@ -142,6 +201,7 @@ class IdelisExploreService(
             Log.d(TAG, "${list.size} lignes GTFS officielles récupérées")
             Result.success(list)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Erreur téléchargement lignes GTFS : ${e.message}")
             Result.failure(e)
         }
@@ -160,15 +220,7 @@ class IdelisExploreService(
 
         try {
             Log.d(TAG, "Téléchargement arrêts et sens : $URL_EXPORTS_STOPS")
-            val jsonString = okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
-                }
-                response.body?.string().orEmpty()
-            }
-            if (jsonString.isBlank()) {
-                return@withContext Result.failure(Exception("Réponse JSON vide"))
-            }
+            val jsonString = executeGetJsonWithRetry(request)
 
             val list = mutableListOf<StopServing>()
             val trimmed = jsonString.trim().removePrefix("\uFEFF").trim()
@@ -186,18 +238,13 @@ class IdelisExploreService(
                     ?: "").trim()
                 val lineRef = (obj.optNullableString("ligne")
                     ?: obj.optNullableString("ndeg_de_ligne")
+                    ?: obj.optNullableString("numero_ligne")
                     ?: obj.optNullableString("line")
                     ?: "").trim()
                 val direction = (obj.optNullableString("direction")
                     ?: obj.optNullableString("destination")
                     ?: "").trim()
-                val geoPoint = obj.optJSONObject("geo_point_2d")
-                val lat = obj.optDouble("latitude", Double.NaN).takeIf { !it.isNaN() }
-                    ?: geoPoint?.optDouble("lat", Double.NaN)?.takeIf { !it.isNaN() }
-                    ?: 43.3000
-                val lon = obj.optDouble("longitude", Double.NaN).takeIf { !it.isNaN() }
-                    ?: geoPoint?.optDouble("lon", Double.NaN)?.takeIf { !it.isNaN() }
-                    ?: -0.3700
+                val (lat, lon) = extractLatLon(obj)
 
                 if (stopName.isNotBlank() && lineRef.isNotBlank()) {
                     list.add(
@@ -221,6 +268,7 @@ class IdelisExploreService(
             Log.d(TAG, "${list.size} correspondances arrêts/lignes récupérées")
             Result.success(list)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Erreur téléchargement arrêts par sens : ${e.message}")
             Result.failure(e)
         }
@@ -239,15 +287,7 @@ class IdelisExploreService(
 
         try {
             Log.d(TAG, "Téléchargement icônes : $URL_EXPORTS_ICONS")
-            val jsonString = okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("HTTP ${response.code}: ${response.message}"))
-                }
-                response.body?.string().orEmpty()
-            }
-            if (jsonString.isBlank()) {
-                return@withContext Result.failure(Exception("Réponse JSON vide"))
-            }
+            val jsonString = executeGetJsonWithRetry(request)
 
             val trimmed = jsonString.trim().removePrefix("\uFEFF").trim()
             val jsonArray = when {
@@ -300,6 +340,7 @@ class IdelisExploreService(
             Log.d(TAG, "${iconsMap.size} icônes de lignes enregistrées")
             Result.success(iconsMap)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Erreur téléchargement icônes : ${e.message}")
             Result.failure(e)
         }
@@ -382,19 +423,26 @@ class IdelisExploreService(
         val worksNotes = mutableListOf<String>()
 
         try {
-            val fetched = waybackGtfsFetcher.fetchGtfsZip(URL_GTFS_ZIP).getOrNull()
-            val bytes = fetched?.bytes
-            if (bytes != null && bytes.isNotEmpty()) {
-                val snapshot = GtfsScheduleIndex.updateFromZipBytes(bytes, nowCal)
-                if (snapshot != null) {
-                    detectedPeriod = snapshot.activePeriod
-                    worksNotes.addAll(snapshot.worksNotes)
-                }
+            val fetchResult = waybackGtfsFetcher.fetchGtfsZip(URL_GTFS_ZIP)
+            if (fetchResult.isFailure) {
+                return@withContext Result.failure(
+                    fetchResult.exceptionOrNull()
+                        ?: InvalidServerResponseException("Impossible de télécharger l'archive GTFS.")
+                )
             }
+            val bytes = fetchResult.getOrNull()?.bytes
+            if (bytes == null || bytes.isEmpty()) {
+                return@withContext Result.failure(InvalidServerResponseException("Archive GTFS reçue vide."))
+            }
+            val snapshot = GtfsScheduleIndex.updateFromZipBytes(bytes, nowCal)
+                ?: return@withContext Result.failure(InvalidServerResponseException("Archive GTFS invalide ou illisible."))
+            detectedPeriod = snapshot.activePeriod
+            worksNotes.addAll(snapshot.worksNotes)
             Result.success(Pair(detectedPeriod, worksNotes))
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Erreur lecture GTFS Zip : ${e.message}")
-            Result.success(Pair(detectedPeriod, worksNotes))
+            Result.failure(e)
         }
     }
 }

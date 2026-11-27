@@ -3,6 +3,7 @@ package com.example.ui.components
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -383,6 +384,38 @@ fun TrafficInfoModal(
                         }
                     }
                 } else {
+                    if (!errorMessage.isNullOrBlank()) {
+                        item(key = "traffic_error_banner") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.errorContainer)
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                                    .testTag("traffic_error_banner"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = errorMessage,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                OutlinedButton(
+                                    onClick = onRefresh,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("retry_traffic_button")
+                                ) {
+                                    Text("Réessayer", fontWeight = FontWeight.Bold, color = primaryColor)
+                                }
+                            }
+                        }
+                    }
                     items(alerts, key = { it.id }) { alert ->
                         Card(
                             colors = CardDefaults.cardColors(
@@ -473,7 +506,13 @@ fun TrafficInfoModal(
                                             try {
                                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(alert.deviationLink))
                                                 context.startActivity(intent)
-                                            } catch (_: Exception) {}
+                                            } catch (_: Exception) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "Aucune application disponible pour ouvrir ce lien",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
                                         },
                                         shape = RoundedCornerShape(12.dp),
                                         modifier = Modifier.fillMaxWidth()

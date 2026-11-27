@@ -43,5 +43,6 @@ data class RouteLineDetail(
     val isDelayIndeterminate: Boolean = false,
     val rawDelayMinutes: Int? = null,
     val stopsRemainingToTerminus: Int? = null,
-    val isLoadingStops: Boolean = false
+    val isLoadingStops: Boolean = false,
+    val errorMessage: String? = null
 )

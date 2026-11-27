@@ -10,6 +10,7 @@ import android.util.Log
 import com.example.data.local.PreferencesManager
 import com.example.data.model.TrafficAlert
 import com.example.data.model.TrafficRefreshFrequency
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -63,6 +64,7 @@ class TrafficAlertSyncReceiver : BroadcastReceiver() {
                     )
                 }
             } catch (e: Exception) {
+                e.rethrowIfCancellation()
                 Log.w(TAG, "Erreur vérification info trafic en arrière-plan: ${e.message}")
             } finally {
                 pendingResult.finish()

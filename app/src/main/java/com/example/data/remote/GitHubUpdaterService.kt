@@ -9,6 +9,7 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -194,7 +195,7 @@ class GitHubUpdaterService(
                         client.newCall(listReq).execute().use { listResp ->
                             if (!listResp.isSuccessful) {
                                 return@withContext Result.failure(
-                                    Exception("Aucune release publiée trouvée sur GitHub ($owner/$repo, HTTP ${listResp.code})")
+                                    HttpStatusException(listResp.code, listResp.message)
                                 )
                             }
                             val arrStr = listResp.body?.string().orEmpty()
@@ -204,7 +205,7 @@ class GitHubUpdaterService(
                     }
                     else -> {
                         return@withContext Result.failure(
-                            Exception("Erreur API GitHub HTTP ${response.code}: ${response.message}")
+                            HttpStatusException(response.code, response.message)
                         )
                     }
                 }
@@ -218,6 +219,7 @@ class GitHubUpdaterService(
 
             Result.success(parseReleaseJson(releaseJson, owner, repo, currentVersion))
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.e(TAG, "Erreur vérification mise à jour GitHub: ${e.message}", e)
             Result.failure(e)
         }
@@ -289,6 +291,7 @@ class GitHubUpdaterService(
             )
             Result.success(parseReleaseJson(resolvedJson, owner, repo, cleanVersion))
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Impossible de récupérer le contenu de la version v$currentVersion: ${e.message}")
             Result.failure(e)
         }
@@ -381,10 +384,10 @@ class GitHubUpdaterService(
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("Échec téléchargement APK HTTP ${response.code}"))
+                    return@withContext Result.failure(HttpStatusException(response.code, response.message))
                 }
 
-                val body = response.body ?: return@withContext Result.failure(Exception("Corps APK vide"))
+                val body = response.body ?: return@withContext Result.failure(InvalidServerResponseException("Corps APK vide"))
                 val totalBytes = body.contentLength().let { len ->
                     if (len > 0) len else release.apkSizeBytes
                 }
@@ -422,6 +425,7 @@ class GitHubUpdaterService(
             onProgress(100, finalFile.length(), finalFile.length())
             Result.success(finalFile)
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             tempFile.delete()
             Log.e(TAG, "Erreur téléchargement APK: ${e.message}", e)
             Result.failure(e)

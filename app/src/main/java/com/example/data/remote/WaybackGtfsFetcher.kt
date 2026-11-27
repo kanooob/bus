@@ -2,11 +2,13 @@ package com.example.data.remote
 
 import android.util.Log
 import com.example.BuildConfig
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
@@ -266,7 +268,12 @@ class WaybackGtfsFetcher(
                 append(" et aucun instantané valide trouvé sur la Wayback Machine")
             }
         }
-        return Result.failure(IllegalStateException(combinedMsg))
+        val directErr = directAttempt.exceptionOrNull()
+        val typedFailure = when (directErr) {
+            is HttpStatusException, is InvalidServerResponseException -> directErr
+            else -> IOException(combinedMsg, directErr)
+        }
+        return Result.failure(typedFailure)
     }
 
     private fun tryWaybackAvailability(targetUrl: String): Result<GtfsZipDownloadResult> {
@@ -281,12 +288,12 @@ class WaybackGtfsFetcher(
 
             val jsonStr = okHttpClient.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) {
-                    return Result.failure(IllegalStateException("Availability HTTP ${res.code}"))
+                    return Result.failure(HttpStatusException(res.code, res.message))
                 }
                 res.body?.string().orEmpty()
             }
             if (jsonStr.isBlank()) {
-                return Result.failure(IllegalStateException("Réponse Availability vide"))
+                return Result.failure(InvalidServerResponseException("Réponse Availability vide"))
             }
 
             val root = JSONObject(jsonStr)
@@ -328,6 +335,7 @@ class WaybackGtfsFetcher(
             }
             Result.failure(lastErr ?: IllegalStateException("Instantané Availability invalide"))
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Erreur Wayback Availability pour $targetUrl : ${e.message}")
             Result.failure(e)
         }
@@ -345,12 +353,12 @@ class WaybackGtfsFetcher(
 
             val jsonStr = okHttpClient.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) {
-                    return Result.failure(IllegalStateException("CDX HTTP ${res.code}"))
+                    return Result.failure(HttpStatusException(res.code, res.message))
                 }
                 res.body?.string().orEmpty()
             }
             if (jsonStr.isBlank()) {
-                return Result.failure(IllegalStateException("Réponse CDX vide"))
+                return Result.failure(InvalidServerResponseException("Réponse CDX vide"))
             }
 
             val array = JSONArray(jsonStr)
@@ -388,6 +396,7 @@ class WaybackGtfsFetcher(
 
             Result.failure(lastErr ?: IllegalStateException("Aucun instantané CDX ZIP valide"))
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Log.w(TAG, "Erreur Wayback CDX pour $targetUrl : ${e.message}")
             Result.failure(e)
         }
@@ -409,13 +418,13 @@ class WaybackGtfsFetcher(
 
             val bytes = okHttpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    return Result.failure(IllegalStateException("HTTP ${response.code}"))
+                    return Result.failure(HttpStatusException(response.code, response.message))
                 }
                 response.body?.bytes()
             }
 
             if (bytes == null || bytes.isEmpty()) {
-                return Result.failure(IllegalStateException("Archive GTFS reçue vide"))
+                return Result.failure(InvalidServerResponseException("Archive GTFS reçue vide"))
             }
             if (isValidGtfsZip(bytes)) {
                 return Result.success(ResolvedZipDownload(bytes = bytes, resolvedSourceUrl = url))
@@ -436,22 +445,23 @@ class WaybackGtfsFetcher(
 
                     val zipBytes = okHttpClient.newCall(zipReq).execute().use { zipRes ->
                         if (!zipRes.isSuccessful) {
-                            return Result.failure(IllegalStateException("HTTP ${zipRes.code} sur $extractedZipUrl"))
+                            return Result.failure(HttpStatusException(zipRes.code, zipRes.message))
                         }
                         zipRes.body?.bytes()
                     }
                     if (zipBytes == null || zipBytes.isEmpty()) {
-                        return Result.failure(IllegalStateException("Archive gtfs.zip reçue vide"))
+                        return Result.failure(InvalidServerResponseException("Archive gtfs.zip reçue vide"))
                     }
                     if (!isValidGtfsZip(zipBytes)) {
-                        return Result.failure(IllegalStateException("Fichier téléchargé depuis $extractedZipUrl invalide (pas un ZIP GTFS)"))
+                        return Result.failure(InvalidServerResponseException("Archive GTFS reçue corrompue ou invalide (pas un ZIP GTFS)."))
                     }
                     return Result.success(ResolvedZipDownload(bytes = zipBytes, resolvedSourceUrl = extractedZipUrl))
                 }
             }
 
-            Result.failure(IllegalStateException("Contenu reçu invalide (pas une archive GTFS ZIP)"))
+            Result.failure(InvalidServerResponseException("Contenu reçu invalide (pas une archive GTFS ZIP)."))
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             Result.failure(e)
         }
     }

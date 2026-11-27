@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -103,6 +104,8 @@ import com.example.data.model.ThemeMode
 import com.example.data.model.WidgetLocationFrequency
 import com.example.data.model.WidgetRefreshFrequency
 import com.example.data.remote.GtfsScheduleIndex
+import com.example.data.remote.NetworkErrorHelper
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import com.example.data.remote.StopServing
 import com.example.data.repository.IdelisRepository
 import com.example.ui.theme.MyApplicationTheme
@@ -277,7 +280,10 @@ fun WidgetConfigureScreen(
     var locationFreq by remember { mutableStateOf(prefs.getWidgetLocationFrequency()) }
 
     var previewDepartures by remember { mutableStateOf<List<DepartureComparison>>(emptyList()) }
+    var previewErrorMessage by remember { mutableStateOf<String?>(null) }
     var isLoadingPreview by remember { mutableStateOf(false) }
+    var webSearchErrorMessage by remember { mutableStateOf<String?>(null) }
+    var webSearchRetryKey by remember { mutableIntStateOf(0) }
     var hasLocPerm by remember { mutableStateOf(hasLocationPermission(context)) }
     var officialRouteLines by remember {
         mutableStateOf(IdelisRepository.globalOfficialRoutesMap.values.map { it.lineCode })
@@ -300,7 +306,9 @@ fun WidgetConfigureScreen(
             val repo = IdelisRepository(database, context, prefs)
             try {
                 repo.hydrateCachesFromDiskIfNeeded()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
+            }
             val dbStops = database.stopDao().getAllStops().firstOrNull() ?: emptyList()
             val list = if (dbStops.isNotEmpty()) dbStops else GtfsDatabaseSeeder.INITIAL_STOPS
             list to prefs.getFavoriteStopIds()
@@ -331,26 +339,44 @@ fun WidgetConfigureScreen(
                     officialRouteLines = IdelisRepository.globalOfficialRoutesMap.values.map { it.lineCode }
                     stopsByLineSnapshot = IdelisRepository.globalDownloadedStopsCache
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
+            }
         }
     }
 
     // Recherche en direct sur idelis.fr avec debounce
-    LaunchedEffect(searchQuery) {
+    LaunchedEffect(searchQuery, webSearchRetryKey) {
         val trimmed = searchQuery.trim()
         if (trimmed.length < 2) {
             webSuggestions = emptyList()
+            webSearchErrorMessage = null
             isWebSearching = false
             return@LaunchedEffect
         }
         delay(320L)
         isWebSearching = true
-        val results = withContext(Dispatchers.IO) {
-            val database = IdelisDatabase.getInstance(context)
-            val repo = IdelisRepository(database, context, prefs)
-            repo.searchWebStops(trimmed).getOrDefault(emptyList())
+        webSearchErrorMessage = null
+        val result = withContext(Dispatchers.IO) {
+            try {
+                val database = IdelisDatabase.getInstance(context)
+                val repo = IdelisRepository(database, context, prefs)
+                repo.searchWebStops(trimmed)
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
+                Result.failure(e)
+            }
         }
-        webSuggestions = results
+        if (result.isSuccess) {
+            webSuggestions = result.getOrNull().orEmpty()
+            webSearchErrorMessage = null
+        } else {
+            webSuggestions = emptyList()
+            webSearchErrorMessage = NetworkErrorHelper.formatError(
+                result.exceptionOrNull(),
+                fallback = "Impossible de rechercher l'arrêt sur idelis.fr."
+            )
+        }
         isWebSearching = false
     }
 
@@ -358,7 +384,8 @@ fun WidgetConfigureScreen(
     LaunchedEffect(selectedStop, widgetConfig.isDynamicNearest, hasLocPerm) {
         val stop = selectedStop ?: return@LaunchedEffect
         isLoadingPreview = true
-        val (loadedDeps, loadedNearestName, effectiveStop) = withContext(Dispatchers.IO) {
+        previewErrorMessage = null
+        val outcome = withContext(Dispatchers.IO) {
             try {
                 val database = IdelisDatabase.getInstance(context)
                 val repo = IdelisRepository(database, context, prefs)
@@ -413,17 +440,25 @@ fun WidgetConfigureScreen(
                     forceOffline = false,
                     stopOverride = if (widgetConfig.isDynamicNearest && targetStop.stopId == IdelisWidgetPreferences.DYNAMIC_NEAREST_STOP_ID) null else targetStop
                 )
-                Triple(res.departures, nearestStopName, targetStop)
-            } catch (_: Exception) {
-                Triple(emptyList<DepartureComparison>(), null, stop)
+                val err = if (res.isError) res.errorMessage ?: res.statusMessage else null
+                WidgetPreviewOutcome(res.departures, nearestStopName, targetStop, err)
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
+                WidgetPreviewOutcome(
+                    departures = emptyList(),
+                    nearestStopName = null,
+                    effectiveStop = stop,
+                    errorMessage = NetworkErrorHelper.formatError(e, "Impossible de charger l'aperçu")
+                )
             }
         }
-        previewDepartures = loadedDeps
-        resolvedTargetStop = effectiveStop
-        if (!loadedNearestName.isNullOrBlank()) {
-            resolvedNearestName = loadedNearestName
+        previewDepartures = outcome.departures
+        previewErrorMessage = outcome.errorMessage
+        resolvedTargetStop = outcome.effectiveStop
+        if (!outcome.nearestStopName.isNullOrBlank()) {
+            resolvedNearestName = outcome.nearestStopName
             if (widgetConfig.isDynamicNearest) {
-                widgetConfig = widgetConfig.copy(stopName = loadedNearestName)
+                widgetConfig = widgetConfig.copy(stopName = outcome.nearestStopName)
             }
         }
         isLoadingPreview = false
@@ -444,10 +479,22 @@ fun WidgetConfigureScreen(
         }
     }
 
+    val officialLineSet = remember(officialRouteLines) {
+        officialRouteLines.map { IdelisWidgetPreferences.normalizeLineCode(it) }
+            .filter { it.isNotBlank() && it.length <= 5 }
+            .toSet()
+    }
+
+    fun isAcceptedWidgetLineCode(raw: String): Boolean {
+        val code = IdelisWidgetPreferences.normalizeLineCode(raw)
+        return IdelisWidgetPreferences.isValidCommercialLineCode(code) || code in officialLineSet
+    }
+
     val stopSpecificLines = remember(
         previewDepartures,
         resolvedTargetStop,
-        stopsByLineSnapshot
+        stopsByLineSnapshot,
+        officialLineSet
     ) {
         val rawStopLines = buildList {
             previewDepartures
@@ -460,20 +507,20 @@ fun WidgetConfigureScreen(
                     stopName = target.stopName,
                     poleName = target.parentStation
                 ).map { it.routeShortName }
-                    .filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
+                    .filter { isAcceptedWidgetLineCode(it) }
                     .forEach { add(it) }
 
                 val canonical = IdelisRepository.getCanonicalStopName(target.stopName).lowercase(Locale.ROOT)
                 val mapMatches = IdelisRepository.globalServingsByStopName[canonical].orEmpty()
                 if (mapMatches.isNotEmpty()) {
                     mapMatches.map { it.lineRef }
-                        .filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
+                        .filter { isAcceptedWidgetLineCode(it) }
                         .forEach { add(it) }
                 } else if (stopsByLineSnapshot.isNotEmpty()) {
                     stopsByLineSnapshot.forEach { serving ->
                         val sCanon = IdelisRepository.getCanonicalStopName(serving.stopName).lowercase(Locale.ROOT)
                         if ((sCanon == canonical || sCanon.contains(canonical) || canonical.contains(sCanon)) &&
-                            IdelisWidgetPreferences.isValidCommercialLineCode(serving.lineRef)
+                            isAcceptedWidgetLineCode(serving.lineRef)
                         ) {
                             add(serving.lineRef)
                         }
@@ -484,12 +531,12 @@ fun WidgetConfigureScreen(
                     val match = Regex("""Lignes?\s+([A-Za-z0-9,\s]+)""", RegexOption.IGNORE_CASE).find(desc)
                     match?.groupValues?.getOrNull(1)
                         ?.split(",")
-                        ?.filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
+                        ?.filter { isAcceptedWidgetLineCode(it) }
                         ?.forEach { add(it) }
                 }
 
                 GtfsDatabaseSeeder.INITIAL_SERVINGS
-                    .filter { it.stopId == target.stopId && IdelisWidgetPreferences.isValidCommercialLineCode(it.lineRef) }
+                    .filter { it.stopId == target.stopId && isAcceptedWidgetLineCode(it.lineRef) }
                     .forEach { add(it.lineRef) }
             }
         }
@@ -500,16 +547,18 @@ fun WidgetConfigureScreen(
         stopSpecificLines,
         officialRouteLines,
         stopsByLineSnapshot,
-        widgetConfig.filteredLines
+        widgetConfig.filteredLines,
+        officialLineSet
     ) {
         val rawAll = buildList {
             addAll(IdelisWidgetPreferences.STANDARD_IDELIS_LINES)
             addAll(GtfsDatabaseSeeder.INITIAL_ROUTES.map { it.routeShortName })
             officialRouteLines
-                .filter { IdelisWidgetPreferences.isValidCommercialLineCode(it) }
+                .map { IdelisWidgetPreferences.normalizeLineCode(it) }
+                .filter { it.isNotBlank() && it.length <= 5 && it.all { ch -> ch.isLetterOrDigit() } }
                 .forEach { add(it) }
             stopsByLineSnapshot.forEach { serving ->
-                if (IdelisWidgetPreferences.isValidCommercialLineCode(serving.lineRef)) {
+                if (isAcceptedWidgetLineCode(serving.lineRef)) {
                     add(serving.lineRef)
                 }
             }
@@ -847,6 +896,38 @@ fun WidgetConfigureScreen(
                             )
                         }
 
+                        // Erreur recherche en direct idelis.fr + bouton réessayer
+                        if (!webSearchErrorMessage.isNullOrBlank()) {
+                            item(key = "web_search_error") {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(MaterialTheme.colorScheme.errorContainer)
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                        .testTag("widget_search_error"),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = webSearchErrorMessage ?: "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedButton(
+                                        onClick = { webSearchRetryKey++ },
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .testTag("widget_search_retry_button"),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("Réessayer", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
                         // Favoris de l'utilisateur
                         if (favoriteStops.isNotEmpty() && searchQuery.isBlank()) {
                             item(key = "favorites_header") {
@@ -1009,7 +1090,8 @@ fun WidgetConfigureScreen(
                                     departures = previewDepartures,
                                     favoriteCount = favoriteStopIds.size,
                                     isLoading = isLoadingPreview,
-                                    resolvedStopName = if (widgetConfig.isDynamicNearest) resolvedNearestName else widgetConfig.stopName
+                                    resolvedStopName = if (widgetConfig.isDynamicNearest) resolvedNearestName else widgetConfig.stopName,
+                                    errorMessage = previewErrorMessage
                                 )
                             }
                         }
@@ -1557,6 +1639,13 @@ private fun WidgetSettingsGroup(
         }
     }
 }
+
+private data class WidgetPreviewOutcome(
+    val departures: List<DepartureComparison>,
+    val nearestStopName: String?,
+    val effectiveStop: GtfsStop,
+    val errorMessage: String?
+)
 
 private fun formatWidgetLineChipLabel(lineCode: String): String {
     return when (lineCode) {

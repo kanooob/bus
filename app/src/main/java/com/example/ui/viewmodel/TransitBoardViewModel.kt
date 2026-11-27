@@ -906,17 +906,19 @@ class TransitBoardViewModel(
             )
         }
 
+        val nameMatchedStop = if (cleanFallbackName != null) {
+            allLocalStops.firstOrNull { it.stopName.equals(cleanFallbackName, ignoreCase = true) }
+                ?: findInServingsByName(cleanFallbackName)
+                ?: com.example.data.local.GtfsDatabaseSeeder.INITIAL_STOPS.firstOrNull {
+                    it.stopName.equals(cleanFallbackName, ignoreCase = true)
+                }
+        } else {
+            null
+        }
+
         val immediateStop = allLocalStops.firstOrNull { it.stopId == stopId }
             ?: findInServingsById(stopId)
-            ?: if (cleanFallbackName != null) {
-                allLocalStops.firstOrNull { it.stopName.equals(cleanFallbackName, ignoreCase = true) }
-                    ?: findInServingsByName(cleanFallbackName)
-                    ?: com.example.data.local.GtfsDatabaseSeeder.INITIAL_STOPS.firstOrNull {
-                        it.stopName.equals(cleanFallbackName, ignoreCase = true)
-                    }
-            } else {
-                null
-            }
+            ?: if (!stopId.startsWith("WEB_")) nameMatchedStop else null
             ?: if (stopId == "WEB_Bosquet" || stopId == "ID_BOSQUET") {
                 com.example.data.repository.IdelisRepository.DEFAULT_INITIAL_STOP
             } else {
@@ -933,16 +935,19 @@ class TransitBoardViewModel(
         if (stopId.startsWith("WEB_") || cleanFallbackName != null) {
             val derivedName = cleanFallbackName
                 ?: stopId.removePrefix("WEB_").replace('_', ' ').trim().ifBlank { "Arrêt Idelis" }
-            val derivedPole = if (stopId.startsWith("WEB_")) {
-                stopId.removePrefix("WEB_").trim()
-            } else {
-                derivedName
-            }
+            val derivedPole = nameMatchedStop?.parentStation?.takeIf { it.isNotBlank() }
+                ?: if (stopId.startsWith("WEB_")) {
+                    stopId.removePrefix("WEB_").trim()
+                } else {
+                    derivedName
+                }
             val preliminaryStop = GtfsStop(
                 stopId = stopId,
                 stopName = derivedName,
                 stopDesc = "Arrêt réseau idelis.fr",
-                parentStation = derivedPole
+                parentStation = derivedPole,
+                stopLat = nameMatchedStop?.stopLat ?: 0.0,
+                stopLon = nameMatchedStop?.stopLon ?: 0.0
             )
             initialDeparturesRequested = true
             selectStop(preliminaryStop)
@@ -967,7 +972,42 @@ class TransitBoardViewModel(
                             }
                         }
                     }
+                } else {
+                    val queryName = cleanFallbackName
+                        ?: stopId.removePrefix("WEB_").replace('_', ' ').trim()
+                    val preferredPole = stopId.takeIf { it.startsWith("WEB_") }
+                        ?.removePrefix("WEB_")
+                        ?.trim()
+                    if (queryName.isNotBlank()) {
+                        val webMatch = repository.resolveWebStopByName(
+                            rawStopName = queryName,
+                            fallbackPole = preferredPole
+                        )
+                        if (webMatch != null) {
+                            val resolvedStop = if (stopId.startsWith("WEB_")) {
+                                repository.ensureStopSaved(
+                                    GtfsStop(
+                                        stopId = stopId,
+                                        stopName = cleanFallbackName ?: webMatch.name,
+                                        stopDesc = "Arrêt réseau idelis.fr (Pôle : ${webMatch.pole})",
+                                        parentStation = webMatch.pole
+                                    )
+                                )
+                            } else {
+                                repository.saveWebStop(webMatch)
+                            }
+                            val currentSelected = _uiState.value.selectedStop
+                            if (currentSelected == null) {
+                                initialDeparturesRequested = true
+                                selectStop(resolvedStop)
+                            } else if (currentSelected.stopId == stopId) {
+                                selectStop(resolvedStop)
+                            }
+                        }
+                    }
                 }
+            } catch (e: Exception) {
+                e.rethrowIfCancellation()
             } finally {
                 pendingExternalStopSelection = false
             }
@@ -1187,7 +1227,9 @@ class TransitBoardViewModel(
 
         if (needsHydrateOrFetch) {
             routeDetailLoadJob = viewModelScope.launch {
-                fun updateModalIfStillOpen(stillLoading: Boolean) {
+                var lastFetchError: Throwable? = null
+
+                fun updateModalIfStillOpen(stillLoading: Boolean, errorMessage: String? = null) {
                     val stateNow = _uiState.value
                     if (stateNow.selectedDepartureForRouteDetail?.id != departure.id) return
                     val stopName = stateNow.selectedStop?.stopName ?: "Pôle Bosquet"
@@ -1197,7 +1239,13 @@ class TransitBoardViewModel(
                         chosenDirection = departure.destinationName,
                         isTerminusAtTop = true,
                         isLoadingStops = stillLoading
-                    )
+                    ).let { detail ->
+                        if (!stillLoading && detail.stops.isEmpty() && !errorMessage.isNullOrBlank()) {
+                            detail.copy(errorMessage = errorMessage)
+                        } else {
+                            detail
+                        }
+                    }
                     _uiState.update { latest ->
                         if (latest.selectedDepartureForRouteDetail?.id == departure.id) {
                             latest.copy(selectedRouteDetail = updated)
@@ -1208,7 +1256,12 @@ class TransitBoardViewModel(
                 }
 
                 // 1. Hydrater depuis le disque (rapide)
-                repository.hydrateCachesFromDiskIfNeeded()
+                try {
+                    repository.hydrateCachesFromDiskIfNeeded()
+                } catch (e: Exception) {
+                    e.rethrowIfCancellation()
+                    lastFetchError = e
+                }
                 updateModalIfStillOpen(
                     stillLoading = com.example.data.remote.GtfsScheduleIndex.current == null ||
                         IdelisRepository.globalDownloadedStopsCache.isEmpty()
@@ -1216,17 +1269,36 @@ class TransitBoardViewModel(
 
                 // 2. Télécharger les arrêts OpenDataSoft si absents (contient toutes les lignes et arrêts)
                 if (IdelisRepository.globalDownloadedStopsCache.isEmpty()) {
-                    repository.ensureStopsCacheLoaded(forceRefresh = true)
-                    repository.ensureOfficialRoutesLoaded(forceRefresh = false)
+                    try {
+                        repository.ensureStopsCacheLoaded(forceRefresh = true)
+                        repository.ensureOfficialRoutesLoaded(forceRefresh = false)
+                    } catch (e: Exception) {
+                        e.rethrowIfCancellation()
+                        lastFetchError = e
+                    }
                     updateModalIfStillOpen(stillLoading = com.example.data.remote.GtfsScheduleIndex.current == null)
                 }
 
                 // 3. Télécharger / indexer le GTFS ZIP si encore absent (ordre stop_sequence exact)
                 if (com.example.data.remote.GtfsScheduleIndex.current == null) {
-                    repository.downloadOpenDataOnLaunch(forceRefresh = false, skipGtfsZip = false)
+                    try {
+                        val res = repository.downloadOpenDataOnLaunch(forceRefresh = false, skipGtfsZip = false)
+                        if (res.isFailure && lastFetchError == null) {
+                            lastFetchError = res.exceptionOrNull()
+                        }
+                    } catch (e: Exception) {
+                        e.rethrowIfCancellation()
+                        lastFetchError = e
+                    }
                 }
 
-                updateModalIfStillOpen(stillLoading = false)
+                val formattedError = lastFetchError?.let { err ->
+                    NetworkErrorHelper.formatError(
+                        err,
+                        fallback = "Impossible de charger les arrêts de la ligne. Vérifiez votre connexion."
+                    )
+                }
+                updateModalIfStillOpen(stillLoading = false, errorMessage = formattedError)
             }
         }
     }
@@ -1382,9 +1454,24 @@ class TransitBoardViewModel(
 
                 val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
                 val updatedStr = timeFormat.format(Date())
+                val updatedDbStop = repository.getStopById(stop.stopId)
 
                 _uiState.update { current ->
+                    val currentStop = current.selectedStop
+                    val refreshedSelectedStop = if (
+                        currentStop != null &&
+                        updatedDbStop != null &&
+                        currentStop.stopId == updatedDbStop.stopId &&
+                        (currentStop.parentStation != updatedDbStop.parentStation ||
+                            currentStop.stopLat != updatedDbStop.stopLat ||
+                            currentStop.stopLon != updatedDbStop.stopLon)
+                    ) {
+                        updatedDbStop
+                    } else {
+                        currentStop
+                    }
                     current.copy(
+                        selectedStop = refreshedSelectedStop,
                         departures = result.departures,
                         filteredDepartures = filtered,
                         availableLines = lines,

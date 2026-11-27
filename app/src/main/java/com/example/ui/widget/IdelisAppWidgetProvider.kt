@@ -27,6 +27,8 @@ import com.example.data.local.IdelisDatabase
 import com.example.data.local.PreferencesManager
 import com.example.data.model.DepartureComparison
 import com.example.data.model.DepartureStatus
+import com.example.data.remote.NetworkErrorHelper
+import com.example.data.remote.NetworkErrorHelper.rethrowIfCancellation
 import com.example.data.remote.NotificationChannels
 import com.example.data.remote.WidgetUpdateNotifier
 import com.example.data.repository.IdelisRepository
@@ -749,27 +751,58 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                         stopOverride = resolvedStopOverride
                     )
 
-                    val allDepartures = departuresResult.departures
-                    val filteredDepartures = filterDeparturesForConfig(allDepartures, config.filteredLines)
+                    val widgetDepartures: List<DepartureComparison>
+                    val statusForWidget: String
+                    val emptyText: String
+                    val allowNetworkBadges: Boolean
 
-                    val widgetDepartures = filteredDepartures.take(IdelisWidgetPreferences.MAX_WIDGET_DEPARTURES)
-                    IdelisWidgetPreferences.saveWidgetDeparturesSnapshot(
-                        context = context,
-                        appWidgetId = appWidgetId,
-                        stopId = effectiveStopId,
-                        departures = widgetDepartures
-                    )
-
-                    val emptyText = when {
-                        config.filteredLines.isNotEmpty() && allDepartures.isNotEmpty() ->
-                            "Aucun départ pour les lignes ${sortedFilterLines.joinToString(", ")}"
-                        departuresResult.isStopNotServed ->
-                            "Arrêt actuellement non desservi"
-                        else ->
-                            "Aucun départ prévu actuellement"
+                    if (departuresResult.isError) {
+                        // Ne jamais écraser les horaires en cache avec une liste vide en cas d'erreur réseau
+                        val fallbackSnapshot = IdelisWidgetPreferences.getWidgetDeparturesSnapshot(context, appWidgetId)
+                        val fallbackAll = if (fallbackSnapshot.stopId == effectiveStopId) {
+                            fallbackSnapshot.departures
+                        } else {
+                            emptyList()
+                        }
+                        widgetDepartures = filterDeparturesForConfig(fallbackAll, config.filteredLines)
+                            .take(IdelisWidgetPreferences.MAX_WIDGET_DEPARTURES)
+                        statusForWidget = if (widgetDepartures.isNotEmpty()) {
+                            "Hors ligne (cache) • $updatedTimeStr$filterBadge"
+                        } else {
+                            "Erreur réseau • $updatedTimeStr$filterBadge"
+                        }
+                        emptyText = when {
+                            config.filteredLines.isNotEmpty() && fallbackAll.isNotEmpty() ->
+                                "Aucun départ pour les lignes ${sortedFilterLines.joinToString(", ")}"
+                            !departuresResult.errorMessage.isNullOrBlank() ->
+                                departuresResult.errorMessage
+                            else ->
+                                "Impossible d'actualiser les horaires"
+                        }
+                        allowNetworkBadges = false
+                    } else {
+                        val allDepartures = departuresResult.departures
+                        val filteredDepartures = filterDeparturesForConfig(allDepartures, config.filteredLines)
+                        widgetDepartures = filteredDepartures.take(IdelisWidgetPreferences.MAX_WIDGET_DEPARTURES)
+                        IdelisWidgetPreferences.saveWidgetDeparturesSnapshot(
+                            context = context,
+                            appWidgetId = appWidgetId,
+                            stopId = effectiveStopId,
+                            departures = widgetDepartures
+                        )
+                        statusForWidget = effectiveStatus
+                        emptyText = when {
+                            config.filteredLines.isNotEmpty() && allDepartures.isNotEmpty() ->
+                                "Aucun départ pour les lignes ${sortedFilterLines.joinToString(", ")}"
+                            departuresResult.isStopNotServed ->
+                                "Arrêt actuellement non desservi"
+                            else ->
+                                "Aucun départ prévu actuellement"
+                        }
+                        allowNetworkBadges = true
                     }
 
-                    val badgeBitmaps = buildBadgeMap(context, widgetDepartures, allowNetworkOrDiskLoad = true)
+                    val badgeBitmaps = buildBadgeMap(context, widgetDepartures, allowNetworkOrDiskLoad = allowNetworkBadges)
 
                     pushMultiSizeWidgetUpdate(
                         context = context,
@@ -785,7 +818,7 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                             palette = palette,
                             favoriteCount = favoriteCount,
                             displayedStopName = effectiveStopName,
-                            statusText = effectiveStatus,
+                            statusText = statusForWidget,
                             emptyText = emptyText,
                             departures = widgetDepartures,
                             badgeBitmaps = badgeBitmaps,
@@ -807,7 +840,8 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                     } else {
                         cancelScheduledRefresh(context, appWidgetId)
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    e.rethrowIfCancellation()
                     val fallbackSnapshot = IdelisWidgetPreferences.getWidgetDeparturesSnapshot(context, appWidgetId)
                     val fallbackDeps = if (fallbackSnapshot.stopId == effectiveStopId) {
                         filterDeparturesForConfig(fallbackSnapshot.departures, config.filteredLines)
@@ -815,6 +849,16 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                         emptyList()
                     }
                     val fallbackBadges = buildBadgeMap(context, fallbackDeps, allowNetworkOrDiskLoad = false)
+                    val updatedTimeStr = timeFormat.format(Date())
+                    val fallbackStatus = if (fallbackDeps.isNotEmpty()) {
+                        "Hors ligne (cache) • $updatedTimeStr$filterBadge"
+                    } else {
+                        "Erreur réseau • $updatedTimeStr$filterBadge"
+                    }
+                    val errMsg = NetworkErrorHelper.formatError(
+                        e,
+                        fallback = "Impossible d'actualiser les horaires"
+                    )
                     pushMultiSizeWidgetUpdate(
                         context = context,
                         appWidgetManager = appWidgetManager,
@@ -829,8 +873,8 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                             palette = palette,
                             favoriteCount = favoriteCount,
                             displayedStopName = effectiveStopName,
-                            statusText = effectiveStatus,
-                            emptyText = "Horaires en cours d'actualisation",
+                            statusText = fallbackStatus,
+                            emptyText = errMsg,
                             departures = fallbackDeps,
                             badgeBitmaps = fallbackBadges,
                             openAppPendingIntent = effectiveOpenPendingIntent,
@@ -867,6 +911,14 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                         if (found != null) return found.stopName to (found.stopDesc ?: "")
                         if (id == currentConfig.homeStopId && !currentConfig.homeIsDynamicNearest) {
                             return currentConfig.homeStopName to currentConfig.homeStopDesc
+                        }
+                        val openDataMatch = IdelisRepository.globalDownloadedStopsCache.firstOrNull { serving ->
+                            val poleNorm = serving.pole?.trim()?.replace(Regex("[^a-zA-Z0-9]"), "_")
+                            serving.pole?.equals(id, ignoreCase = true) == true ||
+                                (poleNorm != null && "WEB_$poleNorm".equals(id, ignoreCase = true))
+                        }
+                        if (openDataMatch != null) {
+                            return openDataMatch.stopName to "Arrêt Idelis"
                         }
                         if (id.startsWith("WEB_")) {
                             val clean = id.removePrefix("WEB_").replace('_', ' ').trim()
@@ -925,7 +977,9 @@ class IdelisAppWidgetProvider : AppWidgetProvider() {
                         postSilentNotification = false,
                         isManualTap = true
                     )
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    e.rethrowIfCancellation()
+                }
             }
         }
 

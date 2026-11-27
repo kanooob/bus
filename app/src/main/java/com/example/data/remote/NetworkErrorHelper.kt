@@ -8,6 +8,8 @@ import java.net.ConnectException
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.net.UnknownServiceException
+import java.util.zip.ZipException
 import javax.net.ssl.SSLException
 
 /**
@@ -59,6 +61,9 @@ object NetworkErrorHelper {
             is ConnectException -> "Impossible de joindre le serveur Idelis. Réessayez dans un instant."
             is SocketTimeoutException -> "Délai d'attente dépassé. Le serveur met trop de temps à répondre."
             is SSLException -> "Connexion sécurisée impossible (erreur SSL/TLS)."
+            is UnknownServiceException -> "Connexion non sécurisée refusée par le système. Vérifiez l'URL du serveur."
+            is SecurityException -> "Accès réseau bloqué par les permissions système."
+            is ZipException -> "Archive GTFS reçue corrompue ou incomplète. Veuillez réessayer."
             is EOFException, is SocketException ->
                 "Connexion interrompue pendant le chargement. Veuillez réessayer."
             is JSONException -> "Réponse mal formée reçue du serveur (JSON invalide)."
@@ -90,6 +95,8 @@ object NetworkErrorHelper {
                 "Connexion sécurisée impossible (erreur SSL/TLS)."
             lower.contains("eof") || lower.contains("connection reset") || lower.contains("broken pipe") ->
                 "Connexion interrompue pendant le chargement. Veuillez réessayer."
+            lower.contains("zip") || lower.contains("corrompu") || lower.contains("corrupted") ->
+                "Archive GTFS reçue corrompue ou incomplète. Veuillez réessayer."
             lower.contains("ajax only") || lower.contains("réponse vide") || lower.contains("reponse vide") ->
                 "Réponse incomplète du serveur Idelis. Veuillez réessayer."
             lower.contains("annulé") || lower.contains("canceled") || lower.contains("cancelled") ->

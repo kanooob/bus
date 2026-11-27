@@ -11,7 +11,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -50,6 +51,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -94,6 +96,7 @@ fun RouteStopsModal(
     routeDetail: RouteLineDetail,
     currentStopName: String,
     onStopSelected: ((String) -> Unit)? = null,
+    onRetryLoadStops: (() -> Unit)? = null,
     onDismissRequest: () -> Unit,
     isDarkTheme: Boolean = false,
     modifier: Modifier = Modifier
@@ -183,11 +186,14 @@ fun RouteStopsModal(
     Surface(
         modifier = modifier
             .fillMaxSize()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = {}
-            )
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            }
             .testTag("route_stops_modal"),
         color = bgColor
     ) {
@@ -568,6 +574,49 @@ fun RouteStopsModal(
                                         fontWeight = FontWeight.Medium
                                     )
                                 )
+                            }
+                        }
+                    }
+                    routeDetail.stops.isEmpty() && !routeDetail.errorMessage.isNullOrBlank() -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(MaterialTheme.colorScheme.errorContainer)
+                                    .padding(16.dp)
+                                    .testTag("route_stops_error"),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = routeDetail.errorMessage,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        textAlign = TextAlign.Center,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                                if (onRetryLoadStops != null) {
+                                    OutlinedButton(
+                                        onClick = onRetryLoadStops,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .testTag("retry_route_stops_button")
+                                    ) {
+                                        Text(
+                                            text = "Réessayer",
+                                            fontWeight = FontWeight.Bold,
+                                            color = routeColor
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

@@ -6,6 +6,7 @@ import com.example.data.model.GtfsCalendarDate
 import com.example.data.model.GtfsTheoreticalDeparture
 import com.example.data.model.IdelisPeriod
 import com.example.data.repository.IdelisRepository
+import com.example.data.repository.StopSearchMatcher
 import java.io.ByteArrayInputStream
 import java.text.Normalizer
 import java.text.SimpleDateFormat
@@ -36,7 +37,8 @@ object GtfsScheduleIndex {
         val departuresByCanonicalStop: Map<String, List<GtfsTheoreticalDeparture>>,
         val departuresByNormalizedStop: Map<String, List<GtfsTheoreticalDeparture>>,
         val activeServiceIds: Set<String>,
-        val routeDirectionsByLine: Map<String, List<RouteDirectionStops>> = emptyMap()
+        val routeDirectionsByLine: Map<String, List<RouteDirectionStops>> = emptyMap(),
+        val routeColorsByLine: Map<String, Pair<String, String>> = emptyMap()
     )
 
     private data class RouteMeta(
@@ -150,7 +152,7 @@ object GtfsScheduleIndex {
         return noDiacritics
             .replace(Regex("""\bquai[s]?\s+[a-z0-9]+\b"""), " ")
             .replace(Regex("""\bquai[s]?\b"""), " ")
-            .replace(Regex("""^(pau|lescar|lons|billere|bizanos|jurancon|serres-castet|artigueloutan|mazeres)\s+"""), "")
+            .replace(StopSearchMatcher.COMMUNE_PREFIX_REGEX, "")
             .replace(Regex("""[^a-z0-9]+"""), " ")
             .trim()
     }
@@ -271,6 +273,15 @@ object GtfsScheduleIndex {
         return emptyList()
     }
 
+    fun getRouteColorsForLine(lineCode: String): Pair<String, String>? {
+        val map = current?.routeColorsByLine ?: return null
+        for (key in buildLineCodeAliases(lineCode)) {
+            val found = map[key]
+            if (found != null) return found
+        }
+        return null
+    }
+
     private fun cleanStopNameForRouteDisplay(rawName: String): String {
         val trimmed = rawName.trim()
         if (trimmed.isBlank()) return trimmed
@@ -348,7 +359,7 @@ object GtfsScheduleIndex {
                         if (name == "stop_times.txt") {
                             val reader = zis.bufferedReader(Charsets.UTF_8)
                             val headerLine = reader.readLine()?.removePrefix("\uFEFF") ?: break
-                            val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF") }
+                            val headers = parseCsvLine(headerLine).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
                             val tripIdx = headers.indexOf("trip_id")
                             val arrIdx = headers.indexOf("arrival_time")
                             val depIdx = headers.indexOf("departure_time")
@@ -424,6 +435,16 @@ object GtfsScheduleIndex {
                 tripStopPoints = tripStopPoints
             )
 
+            val routeColorsByLine = HashMap<String, Pair<String, String>>()
+            for ((routeId, meta) in routesMap) {
+                val colorPair = meta.colorHex to meta.textColorHex
+                for (alias in buildLineCodeAliases(meta.shortName) + buildLineCodeAliases(routeId)) {
+                    if (alias.isNotBlank()) {
+                        routeColorsByLine.putIfAbsent(alias, colorPair)
+                    }
+                }
+            }
+
             val todayStr = currentDateString(targetCal)
             Log.d(
                 TAG,
@@ -439,7 +460,8 @@ object GtfsScheduleIndex {
                 departuresByCanonicalStop = byCanonical,
                 departuresByNormalizedStop = byNormalized,
                 activeServiceIds = activeServiceIds,
-                routeDirectionsByLine = routeDirectionsByLine
+                routeDirectionsByLine = routeDirectionsByLine,
+                routeColorsByLine = routeColorsByLine
             )
         } catch (e: Exception) {
             Log.w(TAG, "Erreur indexation GTFS : ${e.message}")
@@ -747,7 +769,7 @@ object GtfsScheduleIndex {
     private fun parseStops(content: String): Map<String, StopMeta> {
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return emptyMap()
-        val headers = parseCsvLine(lines.next().removePrefix("\uFEFF")).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(lines.next().removePrefix("\uFEFF")).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val idIdx = headers.indexOf("stop_id")
         val nameIdx = headers.indexOf("stop_name")
         if (idIdx < 0 || nameIdx < 0) return emptyMap()
@@ -774,7 +796,7 @@ object GtfsScheduleIndex {
     ): Map<String, TripMeta> {
         val lines = content.lineSequence().iterator()
         if (!lines.hasNext()) return emptyMap()
-        val headers = parseCsvLine(lines.next().removePrefix("\uFEFF")).map { it.trim().removePrefix("\uFEFF") }
+        val headers = parseCsvLine(lines.next().removePrefix("\uFEFF")).map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         val tripIdIdx = headers.indexOf("trip_id")
         val routeIdIdx = headers.indexOf("route_id")
         val serviceIdIdx = headers.indexOf("service_id")

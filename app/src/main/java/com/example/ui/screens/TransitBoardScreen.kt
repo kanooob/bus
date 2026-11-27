@@ -478,6 +478,11 @@ fun TransitBoardScreen(
                     routeDetail = detail,
                     currentStopName = uiState.selectedStop?.stopName ?: "Pôle Bosquet",
                     onStopSelected = { stopName -> viewModel.selectStopFromRouteDetail(stopName) },
+                    onRetryLoadStops = {
+                        uiState.selectedDepartureForRouteDetail?.let { dep ->
+                            viewModel.selectDepartureForRouteDetail(dep)
+                        }
+                    },
                     onDismissRequest = { viewModel.clearSelectedRouteDetail() },
                     isDarkTheme = effectiveDarkTheme
                 )

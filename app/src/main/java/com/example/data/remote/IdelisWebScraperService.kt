@@ -307,16 +307,20 @@ class IdelisWebScraperService(
 
         val departures = mutableListOf<IdelisWebDeparture>()
         val rawNotServedEntries = mutableListOf<NotServedEntry>()
-        val ligneGroups = doc.select(".ligne-group")
+        var ligneGroups = doc.select(".ligne-group")
+        if (ligneGroups.isEmpty()) {
+            ligneGroups = doc.select(".line-group, [data-ligne], .stop-monitoring-line")
+        }
 
         for (group in ligneGroups) {
             // 1. Extraction de la ligne et du picto
             val imgPicto = group.selectFirst("img.picto-ligne")
+                ?: group.selectFirst("img[src*='picto'], img[src*='ligne'], img[alt*='Ligne']")
             val pictoSrc = resolveIdelisUrl(imgPicto?.attr("src"))
             val pictoAlt = imgPicto?.attr("alt")?.trim() ?: ""
 
             // Nom ou code de la ligne (ex: "F", "A", "B", "T1", "COXI")
-            val lineRef = extractLineRef(pictoAlt, pictoSrc, group.text())
+            val lineRef = extractLineRef(pictoAlt, pictoSrc, group.attr("data-ligne").ifBlank { group.text() })
             val lineName = when {
                 lineRef.equals("F", ignoreCase = true) -> "Fébus"
                 lineRef.equals("COXI", ignoreCase = true) -> "Coxitis"
@@ -354,10 +358,19 @@ class IdelisWebScraperService(
                 notServedTimesForCurrentDirection.clear()
             }
 
-            val rows = group.children().flatMap { if (it.hasClass("row")) listOf(it) else it.select(".row") }
+            var rows = group.children().flatMap { if (it.hasClass("row")) listOf(it) else it.select(".row") }
+            if (rows.isEmpty()) {
+                rows = group.select(".stop-monitoring-row, .direction-row, .horaires-row, li, div:has(> span.text-black-50)")
+                    .filter { it !== group }
+            }
+            if (rows.isEmpty()) {
+                rows = group.children().toList()
+            }
 
             for (row in rows) {
                 val directionSpan = row.selectFirst("span.text-black-50")
+                    ?: row.selectFirst(".direction, .stop-direction, [class*='direction']")
+                val timeBoxes = row.select(".p-1.text-center.border, .border.rounded, .horaire-box, .time-box, [data-horaire]")
                 if (directionSpan != null) {
                     flushCurrentNotServedDirection()
                     val text = directionSpan.text()
@@ -369,11 +382,12 @@ class IdelisWebScraperService(
                     val parsed = parseDirectionAndQuai(text)
                     currentDirection = cleanNotServedTextFromLabel(parsed.first)
                     currentQuai = parsed.second?.let { cleanNotServedTextFromLabel(it) }?.takeIf { it.isNotBlank() }
-                    continue
+                    if (timeBoxes.isEmpty()) {
+                        continue
+                    }
                 }
 
                 // Recherche des cases horaires
-                val timeBoxes = row.select(".p-1.text-center.border, .border.rounded")
                 if (timeBoxes.isNotEmpty()) {
                     for (box in timeBoxes) {
                         val boxText = box.text().trim()
@@ -862,7 +876,8 @@ class IdelisWebScraperService(
                     }
                     pageCache[targetUrl] = body
                     body
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    e.rethrowIfCancellation()
                     pageCache[targetUrl] = ""
                     ""
                 }
@@ -944,6 +959,7 @@ class IdelisWebScraperService(
             }
             period
         } catch (e: Exception) {
+            e.rethrowIfCancellation()
             safeLogD("Lecture période sur idelis.fr indisponible : ${e.message}")
             null
         }
@@ -1178,6 +1194,7 @@ class IdelisWebScraperService(
         return webDepartures.mapIndexed { index, dep ->
             val waitMins = dep.waitMinutes?.toLong() ?: 0L
             val routeColor = getLineColorHex(dep.lineRef)
+            val routeTextColor = com.example.data.repository.IdelisRepository.computeContrastTextHex(routeColor)
 
             // Calcul de l'heure estimée au format HH:mm
             val timeCal = Calendar.getInstance(parisTz).apply {
@@ -1192,7 +1209,7 @@ class IdelisWebScraperService(
                 lineName = dep.lineName,
                 destinationName = dep.direction + (quaiLabel?.let { " ($it)" } ?: ""),
                 routeColorHex = routeColor,
-                routeTextColorHex = "#FFFFFF",
+                routeTextColorHex = routeTextColor,
                 aimedDepartureTimeFormatted = if (dep.timeText.contains(":")) dep.timeText else formattedTime,
                 expectedDepartureTimeFormatted = if (dep.isRealTime) {
                     if (waitMins <= 0) "Imminent" else "Dans $waitMins min"
@@ -1209,23 +1226,34 @@ class IdelisWebScraperService(
     }
 
     private fun extractLineRef(alt: String, src: String?, fallbackText: String): String {
-        // Ex: "Ligne F" -> "F"
-        val altMatch = Regex("""Ligne\s+([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE).find(alt)
+        // Ex: "Ligne F" -> "F", "Ligne T10" -> "T10"
+        val altMatch = Regex("""(?:Ligne|Chronobus)\s+([A-Za-z0-9]+)""", RegexOption.IGNORE_CASE).find(alt)
         if (altMatch != null) {
             return altMatch.groupValues[1].uppercase(Locale.ROOT)
         }
+        if (alt.equals("Fébus", ignoreCase = true) || alt.equals("Febus", ignoreCase = true)) return "F"
+        if (alt.equals("Coxitis", ignoreCase = true)) return "COXI"
 
-        // Ex: /fileadmin/user_upload/pictos/F.png -> "F"
+        // Ex: /fileadmin/user_upload/pictos/F.png ou picto_T1.png -> "F" / "T1"
         if (src != null) {
-            val fileMatch = Regex("""/([A-Za-z0-9_-]+)\.(png|jpg|svg)""", RegexOption.IGNORE_CASE).find(src)
+            val fileMatch = Regex("""/([A-Za-z0-9_-]+)\.(png|jpg|jpeg|svg|webp)""", RegexOption.IGNORE_CASE).find(src)
             if (fileMatch != null) {
-                return fileMatch.groupValues[1].uppercase(Locale.ROOT)
+                val cleaned = fileMatch.groupValues[1]
+                    .removePrefix("picto_")
+                    .removePrefix("picto-")
+                    .removePrefix("ligne_")
+                    .removePrefix("ligne-")
+                    .removePrefix("line_")
+                    .removePrefix("line-")
+                    .uppercase(Locale.ROOT)
+                if (cleaned.isNotBlank()) return cleaned
             }
         }
 
-        // Fallback
-        val textMatch = Regex("""\b([A-Z][0-9]?|[0-9]{1,2}|COXI)\b""").find(fallbackText)
-        return textMatch?.value ?: "BUS"
+        // Fallback texte (supporte F, T1..T99, N1, FLEX1, 5..99, COXI...)
+        val textMatch = Regex("""\b(COXI|[A-Z]\d{1,2}|\d{1,2}|[A-Z]{2,5}\d{0,2}|[A-Z])\b""", RegexOption.IGNORE_CASE)
+            .find(fallbackText)
+        return textMatch?.value?.uppercase(Locale.ROOT) ?: "BUS"
     }
 
     internal fun parseDirectionAndQuai(text: String): Pair<String, String?> {
@@ -1255,9 +1283,16 @@ class IdelisWebScraperService(
         return Pair(dir, rawStop)
     }
 
-    private fun computeWaitMinutes(timeText: String): Int {
+    internal fun computeWaitMinutes(timeText: String): Int {
         val clean = timeText.trim()
-        if (clean.equals("Imminent", ignoreCase = true) || clean.equals("À l'approche", ignoreCase = true) || clean.isBlank()) {
+        if (clean.equals("Imminent", ignoreCase = true) ||
+            clean.equals("À l'approche", ignoreCase = true) ||
+            clean.equals("A l'approche", ignoreCase = true) ||
+            clean.equals("En gare", ignoreCase = true) ||
+            clean.contains("< 1") ||
+            clean.contains("<1") ||
+            clean.isBlank()
+        ) {
             return 0
         }
 
@@ -1267,21 +1302,20 @@ class IdelisWebScraperService(
             return minMatch.groupValues[1].toIntOrNull() ?: 0
         }
 
-        // Ex: "15:41"
-        val timeMatch = Regex("""(\d{1,2}):(\d{2})""").find(clean)
+        // Ex: "15:41", "15h41", "24:10" (service après minuit)
+        val timeMatch = Regex("""(\d{1,2})\s*[:hH]\s*(\d{2})""").find(clean)
         if (timeMatch != null) {
-            val hour = timeMatch.groupValues[1].toInt()
-            val minute = timeMatch.groupValues[2].toInt()
+            val rawHour = timeMatch.groupValues[1].toIntOrNull() ?: return 0
+            val minute = (timeMatch.groupValues[2].toIntOrNull() ?: return 0).coerceIn(0, 59)
             val parisTz = TimeZone.getTimeZone("Europe/Paris")
             val now = Calendar.getInstance(parisTz)
 
             val target = Calendar.getInstance(parisTz).apply {
-                set(Calendar.HOUR_OF_DAY, hour)
+                set(Calendar.HOUR_OF_DAY, rawHour % 24)
                 set(Calendar.MINUTE, minute)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
-                // Si l'heure cible est passée depuis longtemps (ex: passage à minuit)
-                if (before(now) && get(Calendar.HOUR_OF_DAY) < 4 && now.get(Calendar.HOUR_OF_DAY) >= 20) {
+                if (rawHour >= 24 || (before(now) && get(Calendar.HOUR_OF_DAY) < 4 && now.get(Calendar.HOUR_OF_DAY) >= 20)) {
                     add(Calendar.DATE, 1)
                 }
             }
@@ -1294,6 +1328,10 @@ class IdelisWebScraperService(
     }
 
     private fun getLineColorHex(lineRef: String): String {
+        val dynamicColor = com.example.data.repository.IdelisRepository.resolveDynamicLineColorHex(lineRef)
+        if (!dynamicColor.isNullOrBlank()) {
+            return if (dynamicColor.startsWith("#")) dynamicColor else "#$dynamicColor"
+        }
         return when (lineRef.uppercase(Locale.ROOT)) {
             "F" -> "#FFC107"     // Jaune Fébus
             "A" -> "#0085CA"     // Ligne A
@@ -1315,7 +1353,7 @@ class IdelisWebScraperService(
             "13" -> "#F4511E"
             "14" -> "#43A047"
             "COXI" -> "#8C935D"
-            else -> "#8C935D"
+            else -> "#${com.example.data.repository.IdelisRepository.deterministicColorHex(lineRef)}"
         }
     }
 }

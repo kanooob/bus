@@ -52,6 +52,7 @@ fun WidgetLivePreviewCard(
     favoriteCount: Int = 0,
     isLoading: Boolean = false,
     resolvedStopName: String? = null,
+    errorMessage: String? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -247,16 +248,27 @@ fun WidgetLivePreviewCard(
             )
         } else if (visibleDepartures.isEmpty()) {
             Text(
-                text = if (sortedFilteredLines.isNotEmpty() && departures.isNotEmpty()) {
-                    "Aucun départ pour les lignes ${sortedFilteredLines.joinToString(", ")}"
-                } else {
-                    "Aucun départ immédiat pour cet arrêt"
+                text = when {
+                    !errorMessage.isNullOrBlank() -> errorMessage
+                    sortedFilteredLines.isNotEmpty() && departures.isNotEmpty() ->
+                        "Aucun départ pour les lignes ${sortedFilteredLines.joinToString(", ")}"
+                    else -> "Aucun départ immédiat pour cet arrêt"
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = secondaryText,
+                color = if (!errorMessage.isNullOrBlank()) delayedColor else secondaryText,
                 modifier = Modifier.padding(vertical = 8.dp)
             )
         } else {
+            if (!errorMessage.isNullOrBlank()) {
+                Text(
+                    text = errorMessage,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = delayedColor,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 visibleDepartures.forEach { dep ->
                     val routeColor = try {
